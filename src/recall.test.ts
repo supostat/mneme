@@ -389,7 +389,7 @@ describe("recall malformed vector skip", () => {
   });
 });
 
-describe("recall cross-lingual query", () => {
+describe("recall cross-lingual and mixed queries", () => {
   // A multilingual embedder maps a Cyrillic query to the same concept vector as an English note.
   function crossLingualClient(translations: Map<string, string>): EmbeddingsClient {
     return {
@@ -411,11 +411,32 @@ describe("recall cross-lingual query", () => {
     const translations = new Map([[cyrillicQuery, targetBody]]);
     const { indexPath, eventsDir } = await setupIndex(specs, crossLingualClient(translations));
 
-    // Control: the FTS channel alone finds nothing, since the index holds only English tokens.
-    const ftsOnly = await recall(openRecall(indexPath, eventsDir, offlineClient()), cyrillicQuery, 100000);
-    expect(ftsOnly.returnedIds).toEqual([]);
+    // Control: with the embedder down only the FTS channel runs. The widened extractTerms sends the
+    // Cyrillic terms into `"term"*` MATCH syntax, so this run also pins that unicode61 tolerates
+    // quoted unicode prefixes -- an empty rank map, never a raised error -- and that a query the
+    // vector channel cannot serve honestly reports degradation instead of a silent empty hit.
+    const control = await recall(openRecall(indexPath, eventsDir, offlineClient()), cyrillicQuery, 100000);
+    expect(control.returnedIds).toEqual([]);
+    expect(control.degraded).toBe(true);
 
     const result = await recall(openRecall(indexPath, eventsDir, crossLingualClient(translations)), cyrillicQuery, 100000);
+    // Served purely by cosine: a live embedder with stored vectors is the normal mode, not degraded.
+    expect(result.degraded).toBe(false);
+    expect(result.returnedIds[0]).toBe(ulid(0));
+  });
+
+  test("a mixed Russian-and-English query feeds both channels without either suppressing the other", async () => {
+    const specs: NoteSpec[] = [
+      { id: ulid(0), body: "payment flow retry and refund handling", anchor: "src/pay.ts" },
+      { id: ulid(1), body: "caching guidance for read heavy endpoints", anchor: "src/cache.ts" },
+      { id: ulid(2), body: "structured logging conventions across services", anchor: "src/log.ts" },
+    ];
+    const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
+    const deps = openRecall(indexPath, eventsDir, bagOfWordsClient());
+
+    // "починить" carries no index token; "payment"/"flow" drive FTS while the whole string drives the
+    // vector. Both channels vote the payments note first -- neither the latin terms nor the prose wins alone.
+    const result = await recall(deps, "починить payment flow", 100000);
 
     expect(result.degraded).toBe(false);
     expect(result.returnedIds[0]).toBe(ulid(0));
