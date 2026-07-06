@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { runGit, initRepo } from "./git";
 import { serializeNote } from "./note";
 import type { Note, NoteFrontmatter } from "./note";
-import { rebuild, dumpIndex, dumpVectors } from "./index-db";
+import { rebuild, dumpIndex, dumpVectors, nearestNeighbor } from "./index-db";
 import { OllamaEmbeddingsClient, EMBEDDING_DIMENSION, OLLAMA_BASE_URL } from "./embeddings";
 import type { EmbeddingsClient } from "./embeddings";
 
@@ -253,6 +253,72 @@ describe("rebuild content-hash embedding cache", () => {
     await rebuild(deps);
 
     expect(log.calls.flat().sort()).toEqual(["alpha body", "beta body"]);
+  });
+});
+
+function vectorFrom(components: number[]): Float32Array {
+  const vector = new Float32Array(EMBEDDING_DIMENSION);
+  components.forEach((value, index) => {
+    vector[index] = value;
+  });
+  return vector;
+}
+
+function keyedVectorClient(byBody: Map<string, number[]>): EmbeddingsClient {
+  return {
+    embed: async (inputs) => {
+      if (inputs.length === 0) return { available: true, embeddings: [] };
+      return {
+        available: true,
+        embeddings: inputs.map((body) => {
+          const components = byBody.get(body);
+          if (components === undefined) throw new Error(`no vector for body: ${body}`);
+          return vectorFrom(components);
+        }),
+      };
+    },
+  };
+}
+
+describe("nearestNeighbor", () => {
+  test("returns the note whose stored vector is closest by cosine", async () => {
+    const corpus = makeCorpus();
+    const projectRoot = mkdtempSync(join(tmpdir(), "mneme-norepo-"));
+    writeNote(corpus.notesDir, note({ id: ulid(0) }, "alpha body"));
+    writeNote(corpus.notesDir, note({ id: ulid(1) }, "beta body"));
+    const client = keyedVectorClient(new Map([["alpha body", [1, 0]], ["beta body", [0, 1]]]));
+    await rebuild({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, embeddings: client });
+
+    const result = nearestNeighbor(corpus.indexPath, vectorFrom([0.9, 0.1]));
+
+    expect(result?.id).toBe(ulid(0));
+    expect(result!.similarity).toBeGreaterThan(0.9);
+  });
+
+  test("breaks ties on equal similarity by ascending id", async () => {
+    const corpus = makeCorpus();
+    const projectRoot = mkdtempSync(join(tmpdir(), "mneme-norepo-"));
+    writeNote(corpus.notesDir, note({ id: ulid(1) }, "shared body"));
+    writeNote(corpus.notesDir, note({ id: ulid(0) }, "shared body"));
+    const client = keyedVectorClient(new Map([["shared body", [1, 1]]]));
+    await rebuild({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, embeddings: client });
+
+    const result = nearestNeighbor(corpus.indexPath, vectorFrom([1, 1]));
+
+    expect(result?.id).toBe(ulid(0));
+  });
+
+  test("returns undefined for a missing index path", () => {
+    expect(nearestNeighbor(join(tmpdir(), "mneme-absent-index.db"), vectorFrom([1, 0]))).toBeUndefined();
+  });
+
+  test("returns undefined when the vector table holds zero rows", async () => {
+    const corpus = makeCorpus();
+    const projectRoot = mkdtempSync(join(tmpdir(), "mneme-norepo-"));
+    writeNote(corpus.notesDir, note({ id: ulid(0) }, "no vectors stored offline"));
+    await rebuild({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, embeddings: offlineClient() });
+
+    expect(nearestNeighbor(corpus.indexPath, vectorFrom([1, 0]))).toBeUndefined();
   });
 });
 

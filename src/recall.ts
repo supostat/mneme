@@ -1,12 +1,15 @@
 import type { Database } from "bun:sqlite";
 import type { EmbeddingsClient } from "./embeddings";
-import { EMBEDDING_DIMENSION, RECALL_EMBED_ATTEMPTS, RECALL_EMBED_TIMEOUT_MS } from "./embeddings";
+import {
+  cosineSimilarity,
+  floatsFromBlob,
+  RECALL_EMBED_ATTEMPTS,
+  RECALL_EMBED_TIMEOUT_MS,
+} from "./embeddings";
 import type { EventWriter } from "./events";
 
 const RRF_K = 60;
 const TOKEN_BYTES = 4;
-const FLOAT_BYTES = 4;
-const EMBEDDING_BLOB_BYTES = EMBEDDING_DIMENSION * FLOAT_BYTES;
 
 export interface RecallDeps {
   db: Database;
@@ -14,8 +17,14 @@ export interface RecallDeps {
   eventWriter: EventWriter;
 }
 
+export interface RecalledNote {
+  id: string;
+  body: string;
+}
+
 export interface RecallResult {
   returnedIds: string[];
+  notes: RecalledNote[];
   degraded: boolean;
 }
 
@@ -42,9 +51,10 @@ export async function recall(deps: RecallDeps, query: string, budget: number): P
       ? rankCosine(deps.db, queryVector)
       : new Map<string, number>();
   const fused = fuse(deps.db, ftsRanks, cosineRanks);
-  const returnedIds = greedyFill(deps.db, fused, budget);
+  const notes = greedyFill(deps.db, fused, budget);
+  const returnedIds = notes.map((note) => note.id);
   deps.eventWriter.append({ type: "recall", query, budget, returned_ids: returnedIds, degraded });
-  return { returnedIds, degraded };
+  return { returnedIds, notes, degraded };
 }
 
 function extractTerms(query: string): string[] {
@@ -122,42 +132,24 @@ function readStaleness(db: Database): Map<string, number> {
   return new Map(rows.map((row) => [row.id, row.staleness_boost]));
 }
 
-function greedyFill(db: Database, fused: ScoredNote[], budget: number): string[] {
+function greedyFill(db: Database, fused: ScoredNote[], budget: number): RecalledNote[] {
   const bodyById = new Map(
     (db.query("SELECT id, body FROM fts").all() as Array<{ id: string; body: string }>).map(
       (row) => [row.id, row.body],
     ),
   );
-  const included: string[] = [];
+  const included: RecalledNote[] = [];
   let used = 0;
   for (const { id } of fused) {
     const body = bodyById.get(id);
     if (body === undefined) continue;
     const estimate = Math.ceil(Buffer.byteLength(body, "utf8") / TOKEN_BYTES);
     if (used + estimate <= budget) {
-      included.push(id);
+      included.push({ id, body });
       used += estimate;
     }
   }
   return included;
-}
-
-function cosineSimilarity(left: Float32Array, right: Float32Array): number {
-  let dot = 0;
-  let leftNorm = 0;
-  let rightNorm = 0;
-  for (let index = 0; index < left.length; index++) {
-    dot += left[index]! * right[index]!;
-    leftNorm += left[index]! * left[index]!;
-    rightNorm += right[index]! * right[index]!;
-  }
-  const denominator = Math.sqrt(leftNorm) * Math.sqrt(rightNorm);
-  return denominator === 0 ? 0 : dot / denominator;
-}
-
-function floatsFromBlob(blob: Uint8Array): Float32Array | undefined {
-  if (blob.byteLength !== EMBEDDING_BLOB_BYTES) return undefined;
-  return new Float32Array(blob.buffer, blob.byteOffset, blob.byteLength / FLOAT_BYTES);
 }
 
 function compareIds(left: string, right: string): number {

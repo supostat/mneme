@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { parseNote } from "./note";
 import type { Note } from "./note";
 import { stalenessBoost } from "./staleness";
-import { EMBEDDING_MODEL } from "./embeddings";
+import { EMBEDDING_MODEL, cosineSimilarity, floatsFromBlob } from "./embeddings";
 import type { EmbeddingsClient } from "./embeddings";
 
 const SCHEMA_STATEMENTS = [
@@ -159,6 +159,37 @@ function blobOf(vector: Float32Array): Uint8Array {
 
 function sha256Hex(body: string): string {
   return createHash("sha256").update(body, "utf8").digest("hex");
+}
+
+export interface NearestNeighbor {
+  id: string;
+  similarity: number;
+}
+
+export function nearestNeighbor(
+  indexPath: string,
+  queryVector: Float32Array,
+): NearestNeighbor | undefined {
+  if (!existsSync(indexPath)) return undefined;
+  const database = new Database(indexPath, { readonly: true });
+  try {
+    const rows = database.query("SELECT id, embedding FROM vec").all() as Array<{
+      id: string;
+      embedding: Uint8Array;
+    }>;
+    let best: NearestNeighbor | undefined;
+    for (const row of rows) {
+      const vector = floatsFromBlob(row.embedding);
+      if (vector === undefined) continue;
+      const similarity = cosineSimilarity(queryVector, vector);
+      if (best === undefined || similarity > best.similarity || (similarity === best.similarity && row.id < best.id)) {
+        best = { id: row.id, similarity };
+      }
+    }
+    return best;
+  } finally {
+    database.close();
+  }
 }
 
 export function dumpIndex(indexPath: string): string {

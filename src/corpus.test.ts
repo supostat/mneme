@@ -52,7 +52,7 @@ describe("resolveCorpus first initialization", () => {
 
     expect(await isRepo(corpus.corpusDir)).toBe(true);
     expect(readFileSync(join(corpus.corpusDir, ".gitignore"), "utf8")).toBe(
-      "index.db\nevents/\n",
+      "index.db\nevents/\nstaging/\n*.dedup.json\n",
     );
 
     expect(corpus.indexPath).toBe(join(corpus.corpusDir, "index.db"));

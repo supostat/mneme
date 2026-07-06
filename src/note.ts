@@ -19,6 +19,10 @@ export class NoteValidationError extends Error {}
 
 const ID_REGEX =
   /^(?:[0-9ABCDEFGHJKMNPQRSTVWXYZ]{26}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
+
+export function isNoteId(value: string): boolean {
+  return ID_REGEX.test(value);
+}
 const COMMIT_REGEX = /^[0-9a-f]{7,40}$/;
 const CREATED_REGEX = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
 const CONTROL_CHARACTERS_REGEX = /[\0\r\n]/;
@@ -104,7 +108,7 @@ function validateFrontmatter(candidate: Record<string, unknown>): NoteFrontmatte
 }
 
 function validateId(value: unknown): string {
-  if (typeof value !== "string" || !ID_REGEX.test(value)) {
+  if (typeof value !== "string" || !isNoteId(value)) {
     throw new NoteValidationError(`id must be a ULID or UUID: ${String(value)}`);
   }
   return value;
@@ -163,7 +167,7 @@ function validateCreated(value: unknown): string {
 }
 
 function validateSupersedes(value: unknown): string {
-  if (typeof value !== "string" || !ID_REGEX.test(value)) {
+  if (typeof value !== "string" || !isNoteId(value)) {
     throw new NoteValidationError(`supersedes must be a ULID or UUID: ${String(value)}`);
   }
   return value;

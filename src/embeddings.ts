@@ -8,6 +8,26 @@ export const RECALL_EMBED_ATTEMPTS = 1;
 export const EMBED_RETRY_BACKOFF_MS = 50;
 
 const EMBED_ENDPOINT = "/api/embed";
+const FLOAT_BYTES = 4;
+export const EMBEDDING_BLOB_BYTES = EMBEDDING_DIMENSION * FLOAT_BYTES;
+
+export function cosineSimilarity(left: Float32Array, right: Float32Array): number {
+  let dot = 0;
+  let leftNorm = 0;
+  let rightNorm = 0;
+  for (let index = 0; index < left.length; index++) {
+    dot += left[index]! * right[index]!;
+    leftNorm += left[index]! * left[index]!;
+    rightNorm += right[index]! * right[index]!;
+  }
+  const denominator = Math.sqrt(leftNorm) * Math.sqrt(rightNorm);
+  return denominator === 0 ? 0 : dot / denominator;
+}
+
+export function floatsFromBlob(blob: Uint8Array): Float32Array | undefined {
+  if (blob.byteLength !== EMBEDDING_BLOB_BYTES) return undefined;
+  return new Float32Array(blob.buffer, blob.byteOffset, blob.byteLength / FLOAT_BYTES);
+}
 
 export interface EmbedResult {
   available: boolean;

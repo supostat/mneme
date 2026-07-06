@@ -40,7 +40,7 @@ const CURRENT_FORMAT_VERSION = 2;
 const MIGRATABLE_FORMAT_VERSIONS = new Set([1]);
 const MANIFEST_FILENAME = "manifest.json";
 const GITIGNORE_FILENAME = ".gitignore";
-const GITIGNORE_CONTENT = "index.db\nevents/\n";
+const GITIGNORE_CONTENT = "index.db\nevents/\nstaging/\n*.dedup.json\n";
 const DEFAULT_CORPUS_DIRECTORY_NAME = ".mneme";
 
 export function canonicalize(path: string): string {

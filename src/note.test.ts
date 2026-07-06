@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test";
-import { serializeNote, parseNote, NoteValidationError } from "./note";
+import { serializeNote, parseNote, isNoteId, NoteValidationError } from "./note";
 import type { Note, NoteFrontmatter } from "./note";
 
 const baseFrontmatter: NoteFrontmatter = {
@@ -154,6 +154,29 @@ describe("note body validation", () => {
 
   test("blank first line is rejected", () => {
     expect(serializeWith({}, "\nsecond line has content")).toThrow(NoteValidationError);
+  });
+});
+
+describe("isNoteId", () => {
+  test("accepts a ULID", () => {
+    expect(isNoteId("01ARZ3NDEKTSV4RRFFQ69G5FAV")).toBe(true);
+  });
+
+  test("accepts a lowercase UUIDv4", () => {
+    expect(isNoteId("550e8400-e29b-41d4-a716-446655440000")).toBe(true);
+  });
+
+  test("rejects an uppercase UUID", () => {
+    expect(isNoteId("550E8400-E29B-41D4-A716-446655440000")).toBe(false);
+  });
+
+  test("rejects a too-short id", () => {
+    expect(isNoteId("01ARZ3NDEKTSV4RRFFQ69G5F")).toBe(false);
+  });
+
+  test("rejects garbage", () => {
+    expect(isNoteId("not-an-id")).toBe(false);
+    expect(isNoteId("")).toBe(false);
   });
 });
 
