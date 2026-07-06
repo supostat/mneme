@@ -1,0 +1,25 @@
+
+
+# dev-workflow (session data)
+.dev-vault/daily/
+.dev-vault/branches/
+.dev-vault/.intelligence.json
+# node / bun
+node_modules/
+*.tsbuildinfo
+
+# dev-workflow (stack-detected)
+.DS_Store
+*.swp
+*.swo
+*~
+coverage/
+.env
+.env.*
+.claude
+.dev-vault
+.vscode
+.mcp.json
+CLAUDE.md
+.engram/
+docs
