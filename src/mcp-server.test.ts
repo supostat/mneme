@@ -117,7 +117,7 @@ function expectNonceFences(text: string): void {
 // createServer draws the session id from idFactory first, so the first staged note is ulid(1).
 
 describe("mcp-server tool surface", () => {
-  test("exposes exactly the four mneme tools", async () => {
+  test("exposes exactly the five mneme tools", async () => {
     const client = await connect({
       projectRoot: await buildProjectRepo(),
       corpusHome: corpusHomeDir(),
@@ -133,6 +133,7 @@ describe("mcp-server tool surface", () => {
       "remember",
       "staging_list",
       "staging_resolve",
+      "stats",
     ]);
   });
 });
@@ -271,6 +272,54 @@ describe("mcp-server staging digest", () => {
     expect(listed).toContain("anchors: src/a.ts [tracked], src/fresh.ts [untracked-exists], src/gone.ts [missing]");
     expect(listed).toContain("dedup: unavailable");
     expect(listed).not.toContain("no close");
+  });
+});
+
+describe("mcp-server stats", () => {
+  test("stats on a fresh server renders every ratio honestly as n/a", async () => {
+    const client = await connect({
+      projectRoot: await buildProjectRepo(),
+      corpusHome: corpusHomeDir(),
+      embeddings: offlineClient(),
+      idFactory: sequentialIds(),
+      clock: fixedClock,
+    });
+
+    const stats = await callText(client, "stats", {});
+
+    expect(stats).toContain("Accepted notes (historical): 0");
+    expect(stats).toContain("Cross-session reuse: n/a (0 accepted notes)");
+    expect(stats).toContain("Recall degradation: n/a (0 recall events)");
+  });
+
+  test("a note staged and accepted in one session and recalled later in another reads as cross-session reuse", async () => {
+    const projectRoot = await buildProjectRepo();
+    const corpusHome = corpusHomeDir();
+    const noteBody = "cross session reuse subject matter";
+    const acceptingSession = await connect({
+      projectRoot,
+      corpusHome,
+      embeddings: bagClient(),
+      idFactory: sequentialIds(),
+      clock: () => new Date("2026-07-06T10:00:00.000Z"),
+    });
+    const noteId = ulid(1);
+    await callText(acceptingSession, "remember", { type: "pattern", body: noteBody, anchors: ["src/a.ts"] });
+    await callText(acceptingSession, "staging_resolve", { id: noteId, decision: "accept" });
+
+    let recallingCounter = 0;
+    const recallingSession = await connect({
+      projectRoot,
+      corpusHome,
+      embeddings: bagClient(),
+      idFactory: () => ulid(50 + recallingCounter++),
+      clock: () => new Date("2026-07-06T11:00:00.000Z"),
+    });
+    const recalled = await callText(recallingSession, "recall", { query: noteBody, budget: 2000 });
+    expect(recalled).toContain(noteId);
+
+    const stats = await callText(recallingSession, "stats", {});
+    expect(stats).toContain("Cross-session reuse: 1/1 (100.0%)");
   });
 });
 

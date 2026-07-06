@@ -22,4 +22,5 @@ coverage/
 .mcp.json
 CLAUDE.md
 .engram/
-docs
+docs/*
+!docs/METRICS.md

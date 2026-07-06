@@ -8,7 +8,7 @@ import { Database } from "bun:sqlite";
 import packageJson from "../package.json";
 import { resolveCorpus } from "./corpus";
 import type { Corpus } from "./corpus";
-import { EventWriter } from "./events";
+import { EventWriter, readEvents } from "./events";
 import { OllamaEmbeddingsClient } from "./embeddings";
 import type { EmbeddingsClient } from "./embeddings";
 import { rebuild } from "./index-db";
@@ -17,6 +17,7 @@ import type { RecalledNote } from "./recall";
 import { NOTE_TYPES } from "./note";
 import type { NoteType } from "./note";
 import { remember, stagingList, stagingResolve } from "./staging";
+import { computeStats, formatStats } from "./stats";
 import type { StagingDeps, StagingEntry, RememberResult, ResolveDecision, ResolveResult } from "./staging";
 import type { StagedAnchor } from "./anchor-liveness";
 import type { DedupSummary } from "./dedup-sidecar";
@@ -38,6 +39,10 @@ const STAGING_LIST_DESCRIPTION =
 const STAGING_RESOLVE_DESCRIPTION =
   "Apply the HUMAN's decision on one staged note: accept, reject, or supersede a prior note. " +
   "Only call this after the human has explicitly decided.";
+const STATS_DESCRIPTION =
+  "Report proof metrics computed from the event log: cross-session reuse, never-retrieved fraction, " +
+  "recall degradation, live corpus size by type, and NOOP confirmations. Present the numbers to the " +
+  "human; the output contains no note bodies.";
 
 const REMEMBER_INPUT = { type: z.enum(NOTE_TYPES), body: z.string(), anchors: z.array(z.string()) };
 const RECALL_INPUT = { query: z.string(), budget: z.number().int().positive().optional() };
@@ -104,6 +109,13 @@ function registerTools(
   server.registerTool("staging_resolve", { description: STAGING_RESOLVE_DESCRIPTION, inputSchema: STAGING_RESOLVE_INPUT }, (args) =>
     dispatch(context, "staging_resolve", (current) => stagingResolveTool(buildStagingDeps(current), args)),
   );
+  server.registerTool("stats", { description: STATS_DESCRIPTION, inputSchema: {} }, () =>
+    dispatch(context, "stats", (current) => statsTool(current)),
+  );
+}
+
+function statsTool(context: ServerContext): CallToolResult {
+  return textResult(formatStats(computeStats(readEvents(context.corpus.eventsDir))));
 }
 
 async function dispatch(
