@@ -16,7 +16,6 @@ export interface CorpusManifest {
   path: string;
   created: string;
   format_version: number;
-  embedding_model: string | null;
 }
 
 export interface Corpus {
@@ -37,7 +36,8 @@ export interface ResolveCorpusOptions {
 
 const SUBDIRECTORIES = ["notes", "staging", "archive", "events"] as const;
 const DIRECTORY_MODE = 0o700;
-const CURRENT_FORMAT_VERSION = 1;
+const CURRENT_FORMAT_VERSION = 2;
+const MIGRATABLE_FORMAT_VERSIONS = new Set([1]);
 const MANIFEST_FILENAME = "manifest.json";
 const GITIGNORE_FILENAME = ".gitignore";
 const GITIGNORE_CONTENT = "index.db\nevents/\n";
@@ -95,6 +95,7 @@ function ensureManifest(
   clock: () => Date,
 ): void {
   if (existsSync(manifestPath)) {
+    migrateManifestIfNeeded(manifestPath);
     const manifest = readManifest(manifestPath);
     if (manifest.path !== canonicalRoot) {
       throw new CorpusError(
@@ -110,9 +111,27 @@ function ensureManifest(
     path: canonicalRoot,
     created: clock().toISOString(),
     format_version: CURRENT_FORMAT_VERSION,
-    embedding_model: null,
   };
   writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+}
+
+// Format 1 reserved a null-only `embedding_model` field; ADR D7 moved vector-model provenance to
+// the disposable index, leaving that field a dead column. Format 2 drops it. An existing v1 manifest
+// is rewritten in place; malformed records are left untouched so readManifest reports the exact fault.
+function migrateManifestIfNeeded(manifestPath: string): void {
+  const record = parseManifestFile(manifestPath);
+  if (!MIGRATABLE_FORMAT_VERSIONS.has(record.format_version as number)) {
+    return;
+  }
+  if (typeof record.path !== "string" || typeof record.created !== "string") {
+    return;
+  }
+  const migrated: CorpusManifest = {
+    path: record.path,
+    created: record.created,
+    format_version: CURRENT_FORMAT_VERSION,
+  };
+  writeFileSync(manifestPath, JSON.stringify(migrated, null, 2) + "\n");
 }
 
 export function readManifest(manifestPath: string): CorpusManifest {
@@ -128,14 +147,10 @@ export function readManifest(manifestPath: string): CorpusManifest {
       `manifest has unknown format_version ${String(record.format_version)}: ${manifestPath}`,
     );
   }
-  if (!("embedding_model" in record) || record.embedding_model !== null) {
-    throw new CorpusError(`manifest embedding_model must be null: ${manifestPath}`);
-  }
   return {
     path: record.path,
     created: record.created,
     format_version: CURRENT_FORMAT_VERSION,
-    embedding_model: null,
   };
 }
 

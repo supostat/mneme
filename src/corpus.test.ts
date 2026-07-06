@@ -46,8 +46,8 @@ describe("resolveCorpus first initialization", () => {
 
     const manifest = JSON.parse(readFileSync(corpus.manifestPath, "utf8"));
     expect(manifest.path).toBe(canonicalize(projectRoot));
-    expect(manifest.format_version).toBe(1);
-    expect(manifest.embedding_model).toBeNull();
+    expect(manifest.format_version).toBe(2);
+    expect("embedding_model" in manifest).toBe(false);
     expect(typeof manifest.created).toBe("string");
 
     expect(await isRepo(corpus.corpusDir)).toBe(true);
@@ -180,21 +180,6 @@ describe("readManifest field validation via resolveCorpus", () => {
     return { projectRoot, corpusHome };
   }
 
-  test("non-null embedding_model throws CorpusError", async () => {
-    const { projectRoot, corpusHome } = corpusWithManifest(
-      JSON.stringify({
-        path: "/some/project",
-        created: "2026-07-06T10:00:00.000Z",
-        format_version: 1,
-        embedding_model: "text-embedding-3-small",
-      }),
-    );
-
-    await expect(
-      resolveCorpus(projectRoot, { corpusHome, clock: fixedClock }),
-    ).rejects.toThrow(CorpusError);
-  });
-
   test("missing or non-string path throws CorpusError", async () => {
     const { projectRoot, corpusHome } = corpusWithManifest(
       JSON.stringify({
@@ -237,5 +222,50 @@ describe("readManifest field validation via resolveCorpus", () => {
     await expect(
       resolveCorpus(projectRoot, { corpusHome, clock: fixedClock }),
     ).rejects.toThrow(CorpusError);
+  });
+});
+
+describe("format_version migration", () => {
+  function writeLegacyV1Manifest(created: string): { projectRoot: string; corpusHome: string } {
+    const projectRoot = tempProject();
+    const corpusHome = tempHome();
+    const corpusDir = join(corpusHome, mungePath(canonicalize(projectRoot)));
+    mkdirSync(corpusDir, { recursive: true });
+    writeFileSync(
+      join(corpusDir, MANIFEST_FILENAME),
+      JSON.stringify({
+        path: canonicalize(projectRoot),
+        created,
+        format_version: 1,
+        embedding_model: null,
+      }),
+    );
+    return { projectRoot, corpusHome };
+  }
+
+  test("a v1 manifest is migrated to v2 in place, dropping embedding_model", async () => {
+    const created = "2026-05-01T00:00:00.000Z";
+    const { projectRoot, corpusHome } = writeLegacyV1Manifest(created);
+
+    const corpus = await resolveCorpus(projectRoot, { corpusHome, clock: fixedClock });
+
+    const manifest = JSON.parse(readFileSync(corpus.manifestPath, "utf8"));
+    expect(manifest.format_version).toBe(2);
+    expect("embedding_model" in manifest).toBe(false);
+    expect(manifest.path).toBe(canonicalize(projectRoot));
+    expect(manifest.created).toBe(created);
+  });
+
+  test("migration is idempotent: a second resolve leaves the v2 manifest untouched", async () => {
+    const created = "2026-05-01T00:00:00.000Z";
+    const { projectRoot, corpusHome } = writeLegacyV1Manifest(created);
+
+    const first = await resolveCorpus(projectRoot, { corpusHome, clock: fixedClock });
+    const afterFirst = readFileSync(first.manifestPath, "utf8");
+    await resolveCorpus(projectRoot, { corpusHome, clock: fixedClock });
+    const afterSecond = readFileSync(first.manifestPath, "utf8");
+
+    expect(afterSecond).toBe(afterFirst);
+    expect(JSON.parse(afterSecond).created).toBe(created);
   });
 });
