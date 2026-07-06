@@ -131,8 +131,14 @@ function validateAnchor(value: unknown): string {
   if (value.startsWith("/") || value.startsWith("-")) {
     throw new NoteValidationError(`anchor must be repository-relative: ${value}`);
   }
+  if (value.startsWith(":")) {
+    throw new NoteValidationError(`anchor must not start with a git pathspec sigil: ${value}`);
+  }
   if (CONTROL_CHARACTERS_REGEX.test(value)) {
     throw new NoteValidationError("anchor must not contain NUL, CR or LF");
+  }
+  if (value.includes("\\")) {
+    throw new NoteValidationError(`backslash is not allowed in an anchor: ${value}`);
   }
   for (const segment of value.split("/")) {
     if (segment === "" || segment === "..") {

@@ -27,6 +27,7 @@ export interface Corpus {
   stagingDir: string;
   archiveDir: string;
   eventsDir: string;
+  indexPath: string;
 }
 
 export interface ResolveCorpusOptions {
@@ -78,6 +79,7 @@ export async function resolveCorpus(
     stagingDir: join(corpusDir, "staging"),
     archiveDir: join(corpusDir, "archive"),
     eventsDir: join(corpusDir, "events"),
+    indexPath: join(corpusDir, "index.db"),
   };
 }
 

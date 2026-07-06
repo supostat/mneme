@@ -93,6 +93,11 @@ describe("note frontmatter validation", () => {
     expect(serializeWith({ anchors: ["src/../etc/passwd"] })).toThrow(NoteValidationError);
   });
 
+  test("anchor with a leading git pathspec sigil is rejected", () => {
+    expect(serializeWith({ anchors: [":(exclude)src"] })).toThrow(NoteValidationError);
+    expect(serializeWith({ anchors: [":/"] })).toThrow(NoteValidationError);
+  });
+
   test("anchor with an empty segment is rejected", () => {
     expect(serializeWith({ anchors: ["src//git.ts"] })).toThrow(NoteValidationError);
   });
@@ -103,6 +108,14 @@ describe("note frontmatter validation", () => {
 
   test("anchor with a NUL byte is rejected", () => {
     expect(serializeWith({ anchors: ["src/git\0.ts"] })).toThrow(NoteValidationError);
+  });
+
+  test("anchor with a backslash separator is rejected", () => {
+    expect(serializeWith({ anchors: ["src\\x.ts"] })).toThrow(NoteValidationError);
+  });
+
+  test("anchor with a backslash parent segment is rejected", () => {
+    expect(serializeWith({ anchors: ["..\\x"] })).toThrow(NoteValidationError);
   });
 
   test("commit shorter than 7 characters is rejected", () => {

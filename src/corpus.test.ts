@@ -54,6 +54,8 @@ describe("resolveCorpus first initialization", () => {
     expect(readFileSync(join(corpus.corpusDir, ".gitignore"), "utf8")).toBe(
       "index.db\nevents/\n",
     );
+
+    expect(corpus.indexPath).toBe(join(corpus.corpusDir, "index.db"));
   });
 
   test("is idempotent: a second call does not rewrite the manifest", async () => {
