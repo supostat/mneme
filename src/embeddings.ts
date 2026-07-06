@@ -5,6 +5,7 @@ export const EMBED_TIMEOUT_MS = 5000;
 export const EMBED_ATTEMPTS = 2;
 export const RECALL_EMBED_TIMEOUT_MS = 2000;
 export const RECALL_EMBED_ATTEMPTS = 1;
+export const EMBED_RETRY_BACKOFF_MS = 50;
 
 const EMBED_ENDPOINT = "/api/embed";
 
@@ -63,9 +64,16 @@ export class OllamaEmbeddingsClient implements EmbeddingsClient {
       if (embeddings !== undefined) {
         return { available: true, embeddings };
       }
+      if (attempt < attempts - 1) {
+        await delay(EMBED_RETRY_BACKOFF_MS);
+      }
     }
     return UNAVAILABLE;
   }
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 async function attemptEmbed(
