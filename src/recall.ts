@@ -32,23 +32,32 @@ export async function recall(deps: RecallDeps, query: string, budget: number): P
   });
   // D8: without stored vectors cosine fusion cannot run, so an available embedder alone is not enough.
   const degraded = !(embed.available && hasStoredVectors(deps.db));
-  let returnedIds: string[] = [];
-  if (terms.length > 0) {
-    const ftsRanks = rankFts(deps.db, buildMatch(terms));
-    const queryVector = embed.embeddings[0];
-    const cosineRanks =
-      embed.available && queryVector !== undefined
-        ? rankCosine(deps.db, queryVector)
-        : new Map<string, number>();
-    const fused = fuse(deps.db, ftsRanks, cosineRanks);
-    returnedIds = greedyFill(deps.db, fused, budget);
-  }
+  // The cosine channel runs independently of FTS terms: a query with no lexical tokens the index
+  // can match (e.g. a Cyrillic query against English notes) is still recalled semantically.
+  const ftsRanks =
+    terms.length > 0 ? rankFts(deps.db, buildMatch(terms)) : new Map<string, number>();
+  const queryVector = embed.embeddings[0];
+  const cosineRanks =
+    embed.available && queryVector !== undefined && hasSignal(queryVector)
+      ? rankCosine(deps.db, queryVector)
+      : new Map<string, number>();
+  const fused = fuse(deps.db, ftsRanks, cosineRanks);
+  const returnedIds = greedyFill(deps.db, fused, budget);
   deps.eventWriter.append({ type: "recall", query, budget, returned_ids: returnedIds, degraded });
   return { returnedIds, degraded };
 }
 
 function extractTerms(query: string): string[] {
-  return query.toLowerCase().match(/[a-z0-9]+/g) ?? [];
+  return query.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+}
+
+// A zero-norm query vector carries no semantic signal — cosine against it is undefined for every
+// note, so it is excluded from the cosine channel exactly as an empty term list excludes FTS.
+function hasSignal(vector: Float32Array): boolean {
+  for (let index = 0; index < vector.length; index++) {
+    if (vector[index] !== 0) return true;
+  }
+  return false;
 }
 
 function buildMatch(terms: string[]): string {

@@ -304,11 +304,12 @@ describe("recall dead-anchor sink", () => {
 });
 
 describe("recall empty query", () => {
-  test("a term-less query returns nothing yet appends an event reflecting availability (up)", async () => {
+  test("a query with neither FTS terms nor a vector signal returns nothing yet appends an event (up)", async () => {
     const specs: NoteSpec[] = [{ id: ulid(0), body: "payment refund ledger", anchor: "src/pay.ts" }];
     const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
     const deps = openRecall(indexPath, eventsDir, bagOfWordsClient());
 
+    // "%%% ---" yields no FTS terms and a zero-norm bag vector, so both channels stay empty.
     const result = await recall(deps, "%%% ---", 10000);
 
     expect(result.returnedIds).toEqual([]);
@@ -385,6 +386,39 @@ describe("recall malformed vector skip", () => {
     expect(result.returnedIds).toContain(ulid(0));
     expect(result.returnedIds).toContain(ulid(1));
     expect(result.returnedIds[0]).toBe(ulid(1));
+  });
+});
+
+describe("recall cross-lingual query", () => {
+  // A multilingual embedder maps a Cyrillic query to the same concept vector as an English note.
+  function crossLingualClient(translations: Map<string, string>): EmbeddingsClient {
+    return {
+      embed: async (inputs) => ({
+        available: true,
+        embeddings: inputs.map((input) => bagVector(translations.get(input) ?? input)),
+      }),
+    };
+  }
+
+  test("a Cyrillic query with no FTS-matchable tokens still recalls its nearest note via cosine", async () => {
+    const targetBody = "wal lock contention during concurrent rebuild";
+    const specs: NoteSpec[] = [
+      { id: ulid(0), body: targetBody, anchor: "src/wal.ts" },
+      { id: ulid(1), body: "caching guidance for read heavy endpoints", anchor: "src/cache.ts" },
+      { id: ulid(2), body: "structured logging conventions across services", anchor: "src/log.ts" },
+    ];
+    const cyrillicQuery = "блокировка при конкурентной перестройке индекса";
+    const translations = new Map([[cyrillicQuery, targetBody]]);
+    const { indexPath, eventsDir } = await setupIndex(specs, crossLingualClient(translations));
+
+    // Control: the FTS channel alone finds nothing, since the index holds only English tokens.
+    const ftsOnly = await recall(openRecall(indexPath, eventsDir, offlineClient()), cyrillicQuery, 100000);
+    expect(ftsOnly.returnedIds).toEqual([]);
+
+    const result = await recall(openRecall(indexPath, eventsDir, crossLingualClient(translations)), cyrillicQuery, 100000);
+
+    expect(result.degraded).toBe(false);
+    expect(result.returnedIds[0]).toBe(ulid(0));
   });
 });
 
