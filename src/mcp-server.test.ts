@@ -6,11 +6,12 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { runGit, initRepo } from "./git";
 import { resolveCorpus } from "./corpus";
-import { readEvents } from "./events";
+import { EventWriter, readEvents } from "./events";
 import type { EmbeddingsClient } from "./embeddings";
 import { EMBEDDING_DIMENSION } from "./embeddings";
-import { createServer } from "./mcp-server";
+import { createServer, createSessionEndHandler } from "./mcp-server";
 import type { CreateServerOptions } from "./mcp-server";
+import { eventSchema } from "./event-schema";
 
 const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
@@ -54,22 +55,22 @@ function bagVector(text: string): Float32Array {
 }
 
 function bagClient(): EmbeddingsClient {
-  return { embed: async (inputs) => ({ available: true, embeddings: inputs.map(bagVector) }) };
+  return { embed: async (inputs) => ({ available: true, embeddings: inputs.map(bagVector), retries: 0 }) };
 }
 
 function offlineClient(): EmbeddingsClient {
   return {
     embed: async (inputs) =>
       inputs.length === 0
-        ? { available: true, embeddings: [] }
-        : { available: false, embeddings: [] },
+        ? { available: true, embeddings: [], retries: 0 }
+        : { available: false, embeddings: [], retries: 0 },
   };
 }
 
 function keyedClient(byBody: Map<string, number[]>): EmbeddingsClient {
   return {
     embed: async (inputs) => {
-      if (inputs.length === 0) return { available: true, embeddings: [] };
+      if (inputs.length === 0) return { available: true, embeddings: [], retries: 0 };
       return {
         available: true,
         embeddings: inputs.map((body) => {
@@ -81,6 +82,7 @@ function keyedClient(byBody: Map<string, number[]>): EmbeddingsClient {
           });
           return vector;
         }),
+        retries: 0,
       };
     },
   };
@@ -243,7 +245,9 @@ describe("mcp-server supersede path", () => {
     expect(recalled).not.toContain(targetBody);
 
     const corpus = await resolveCorpus(projectRoot, { corpusHome });
-    const superseded = readEvents(corpus.eventsDir).filter((event) => event.type === "note_superseded");
+    const superseded = readEvents(corpus.eventsDir).filter(
+      (event) => event.type === "staging_resolve" && event.decision === "supersede",
+    );
     expect(superseded.length).toBe(1);
     expect(superseded[0]!.note_id).toBe(newId);
     expect(superseded[0]!.superseded_id).toBe(targetId);
@@ -347,5 +351,61 @@ describe("mcp-server error boundary", () => {
     const errors = readEvents(corpus.eventsDir).filter((event) => event.type === "tool_error");
     expect(errors.length).toBe(1);
     expect(errors[0]!.tool).toBe("staging_resolve");
+    // The message carries no path or secret, so the sanitizer is a no-op and the ULID survives intact.
+    expect(errors[0]!.message).toContain(ulid(7));
+  });
+});
+
+describe("mcp-server event schema conformance", () => {
+  test("every event emitted across a full cycle validates against the v2 schema", async () => {
+    const projectRoot = await buildProjectRepo();
+    const corpusHome = corpusHomeDir();
+    const client = await connect({
+      projectRoot,
+      corpusHome,
+      embeddings: bagClient(),
+      idFactory: sequentialIds(),
+      clock: fixedClock,
+    });
+    const firstId = ulid(1);
+    const secondId = ulid(2);
+    const thirdId = ulid(3);
+
+    await callText(client, "remember", { type: "pattern", body: "alpha widget contraption assembly", anchors: ["src/a.ts"] });
+    await callText(client, "remember", { type: "antipattern", body: "beta gadget lever hinge", anchors: ["src/a.ts"] });
+    await callText(client, "staging_list", {});
+    await callText(client, "staging_resolve", { id: firstId, decision: "accept" });
+    await callText(client, "staging_resolve", { id: secondId, decision: "reject" });
+    await callText(client, "remember", { type: "decision", body: "gamma sprocket flywheel gizmo", anchors: ["src/a.ts"] });
+    await callText(client, "staging_resolve", { id: thirdId, decision: "supersede", supersede_target: firstId });
+    await callText(client, "recall", { query: "alpha widget", budget: 2000 });
+    await callText(client, "stats", {});
+
+    const corpus = await resolveCorpus(projectRoot, { corpusHome });
+    const events = readEvents(corpus.eventsDir);
+    const types = new Set(events.map((event) => event.type));
+    for (const expected of ["remember", "staging_resolve", "staging_listed", "rebuild", "recall"]) {
+      expect(types).toContain(expected);
+    }
+    for (const event of events) {
+      const parsed = eventSchema.safeParse(event);
+      if (!parsed.success) {
+        throw new Error(`event ${String(event.type)} failed schema: ${JSON.stringify(parsed.error.issues)}`);
+      }
+    }
+  });
+});
+
+describe("mcp-server session lifecycle", () => {
+  test("the session-end handler appends exactly one session_end even when invoked twice", () => {
+    const eventsDir = mkdtempSync(join(tmpdir(), "mneme-mcp-life-"));
+    const eventWriter = new EventWriter(eventsDir, { sessionId: "s-life", mnemeVersion: "0.1.0", clock: fixedClock });
+    const endSession = createSessionEndHandler(eventWriter);
+
+    endSession();
+    endSession();
+
+    const ends = readEvents(eventsDir).filter((event) => event.type === "session_end");
+    expect(ends.length).toBe(1);
   });
 });

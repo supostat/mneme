@@ -7,7 +7,14 @@ import type { Note, NoteFrontmatter } from "./note";
 import { rebuild } from "./index-db";
 import { EMBEDDING_DIMENSION } from "./embeddings";
 import type { EmbeddingsClient } from "./embeddings";
+import { EventWriter } from "./events";
 import { classifyCandidate, DEDUP_SUPERSEDE_THRESHOLD, DEDUP_NOOP_THRESHOLD } from "./dedup";
+
+const fixedClock = () => new Date("2026-07-06T10:00:00.000Z");
+
+function buildEventWriter(eventsDir: string): EventWriter {
+  return new EventWriter(eventsDir, { sessionId: "s-dedup", mnemeVersion: "0.1.0", clock: fixedClock });
+}
 
 const EXISTING_BODY = "the existing note body";
 const CANDIDATE_BODY = "the candidate note body";
@@ -31,7 +38,7 @@ function vectorFrom(components: number[]): Float32Array {
 function keyedClient(byBody: Map<string, number[]>): EmbeddingsClient {
   return {
     embed: async (inputs) => {
-      if (inputs.length === 0) return { available: true, embeddings: [] };
+      if (inputs.length === 0) return { available: true, embeddings: [], retries: 0 };
       return {
         available: true,
         embeddings: inputs.map((body) => {
@@ -39,6 +46,7 @@ function keyedClient(byBody: Map<string, number[]>): EmbeddingsClient {
           if (components === undefined) throw new Error(`no vector for body: ${body}`);
           return vectorFrom(components);
         }),
+        retries: 0,
       };
     },
   };
@@ -48,8 +56,8 @@ function offlineClient(): EmbeddingsClient {
   return {
     embed: async (inputs) =>
       inputs.length === 0
-        ? { available: true, embeddings: [] }
-        : { available: false, embeddings: [] },
+        ? { available: true, embeddings: [], retries: 0 }
+        : { available: false, embeddings: [], retries: 0 },
   };
 }
 
@@ -58,8 +66,10 @@ function offlineClient(): EmbeddingsClient {
 async function indexWithExistingVector(components: number[]): Promise<string> {
   const corpusDir = mkdtempSync(join(tmpdir(), "mneme-dedup-"));
   const notesDir = join(corpusDir, "notes");
+  const eventsDir = join(corpusDir, "events");
   const projectRoot = mkdtempSync(join(tmpdir(), "mneme-dedup-proj-"));
   mkdirSync(notesDir);
+  mkdirSync(eventsDir);
   const note: Note = { frontmatter: baseFrontmatter, body: EXISTING_BODY };
   writeFileSync(join(notesDir, `${baseFrontmatter.id}.md`), serializeNote(note));
   const indexPath = join(corpusDir, "index.db");
@@ -68,6 +78,8 @@ async function indexWithExistingVector(components: number[]): Promise<string> {
     notesDir,
     projectRoot,
     embeddings: keyedClient(new Map([[EXISTING_BODY, components]])),
+    eventWriter: buildEventWriter(eventsDir),
+    clock: fixedClock,
   });
   return indexPath;
 }
@@ -77,10 +89,15 @@ function candidateClient(components: number[]): EmbeddingsClient {
 }
 
 describe("classifyCandidate bands", () => {
-  test("a similarity below the supersede threshold is a clean ADD", async () => {
+  test("a similarity below the supersede threshold is a clean ADD carrying the neighbor", async () => {
     const indexPath = await indexWithExistingVector([1, 0]);
     const result = await classifyCandidate(indexPath, candidateClient([45, 28]), CANDIDATE_BODY); // 45/53 = 0.849
-    expect(result).toEqual({ kind: "add", degraded: false });
+    expect(result.kind).toBe("add");
+    if (result.kind === "add") {
+      expect(result.degraded).toBe(false);
+      expect(result.neighborId).toBe(baseFrontmatter.id);
+      expect(result.similarity).toBeCloseTo(45 / 53, 10);
+    }
   });
 
   test("a similarity in the supersede band is a supersede offer carrying the neighbor", async () => {
@@ -134,13 +151,13 @@ describe("classifyCandidate degraded and empty", () => {
   test("an unavailable embedder degrades to a degraded ADD without consulting the index", async () => {
     const indexPath = await indexWithExistingVector([1, 0]);
     const result = await classifyCandidate(indexPath, offlineClient(), CANDIDATE_BODY);
-    expect(result).toEqual({ kind: "add", degraded: true });
+    expect(result).toEqual({ kind: "add", degraded: true, neighborId: null, similarity: null });
   });
 
   test("no stored neighbor yields a clean ADD", async () => {
     const corpusDir = mkdtempSync(join(tmpdir(), "mneme-dedup-empty-"));
     const indexPath = join(corpusDir, "index.db"); // never built -> nearestNeighbor undefined
     const result = await classifyCandidate(indexPath, candidateClient([1, 0]), CANDIDATE_BODY);
-    expect(result).toEqual({ kind: "add", degraded: false });
+    expect(result).toEqual({ kind: "add", degraded: false, neighborId: null, similarity: null });
   });
 });

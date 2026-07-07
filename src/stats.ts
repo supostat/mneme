@@ -1,4 +1,5 @@
 import type { StoredEvent } from "./events";
+import { isAcceptedEvent, isSupersedeEvent, isStagingEvent, isNoopEvent } from "./event-dialect";
 
 export interface RatioMetric {
   numerator: number;
@@ -64,11 +65,15 @@ export function computeStats(events: StoredEvent[]): StatsSummary {
   };
 }
 
+// Every collector unions the schema-v1 event names with their v2 successors (via ./event-dialect) so
+// a log mixing both dialects reproduces identical counts. The aggregator is never gated on
+// eventSchema — it stays tolerant and derives the dialect from the fields present.
+
 function collectAcceptedIds(events: StoredEvent[]): Set<string> {
   const acceptedIds = new Set<string>();
   for (const event of events) {
-    if (event.type !== "note_accepted") continue;
-    if (typeof event.note_id === "string") acceptedIds.add(event.note_id);
+    if (!isAcceptedEvent(event) || typeof event.note_id !== "string") continue;
+    acceptedIds.add(event.note_id);
   }
   return acceptedIds;
 }
@@ -76,8 +81,8 @@ function collectAcceptedIds(events: StoredEvent[]): Set<string> {
 function collectSupersededIds(events: StoredEvent[]): Set<string> {
   const supersededIds = new Set<string>();
   for (const event of events) {
-    if (event.type !== "note_superseded") continue;
-    if (typeof event.superseded_id === "string") supersededIds.add(event.superseded_id);
+    if (!isSupersedeEvent(event) || typeof event.superseded_id !== "string") continue;
+    supersededIds.add(event.superseded_id);
   }
   return supersededIds;
 }
@@ -85,7 +90,7 @@ function collectSupersededIds(events: StoredEvent[]): Set<string> {
 function collectStagingAnchors(events: StoredEvent[]): Map<string, StagingAnchor> {
   const anchors = new Map<string, StagingAnchor>();
   for (const event of events) {
-    if (event.type !== "note_staged") continue;
+    if (!isStagingEvent(event)) continue;
     const noteId = event.note_id;
     if (typeof noteId !== "string") continue;
     const incumbent = anchors.get(noteId);
@@ -99,7 +104,7 @@ function collectStagingAnchors(events: StoredEvent[]): Map<string, StagingAnchor
 function collectStagedTypes(events: StoredEvent[]): Map<string, string> {
   const stagedTypes = new Map<string, string>();
   for (const event of events) {
-    if (event.type !== "note_staged") continue;
+    if (!isStagingEvent(event)) continue;
     const noteId = event.note_id;
     const noteType = event.note_type;
     if (typeof noteId !== "string" || typeof noteType !== "string") continue;
@@ -210,11 +215,22 @@ function noopSummary(events: StoredEvent[]): NoopSummary {
   let count = 0;
   const distinctExistingIds = new Set<string>();
   for (const event of events) {
-    if (event.type !== "note_deduped") continue;
+    if (!isNoopEvent(event)) continue;
     count += 1;
-    if (typeof event.existing_id === "string") distinctExistingIds.add(event.existing_id);
+    const existingId = noopExistingId(event);
+    if (existingId !== undefined) distinctExistingIds.add(existingId);
   }
   return { count, distinctNoteCount: distinctExistingIds.size };
+}
+
+function noopExistingId(event: StoredEvent): string | undefined {
+  if (event.type === "note_deduped") {
+    return typeof event.existing_id === "string" ? event.existing_id : undefined;
+  }
+  const dedup = event.dedup;
+  if (typeof dedup !== "object" || dedup === null) return undefined;
+  const nearestId = (dedup as { nearest_id?: unknown }).nearest_id;
+  return typeof nearestId === "string" ? nearestId : undefined;
 }
 
 function isStrictlyEarlier(candidate: string | null, reference: string | null): boolean {

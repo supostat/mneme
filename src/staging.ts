@@ -7,13 +7,14 @@ import type { EmbeddingsClient } from "./embeddings";
 import type { EventWriter } from "./events";
 import { serializeNote, parseNote, isNoteId } from "./note";
 import type { NoteFrontmatter, NoteType } from "./note";
-import { classifyCandidate, DEDUP_SUPERSEDE_THRESHOLD, DEDUP_NOOP_THRESHOLD } from "./dedup";
+import { classifyCandidate } from "./dedup";
 import { rebuild } from "./index-db";
 import type { RebuildDeps } from "./index-db";
 import { resolveAnchorLiveness } from "./anchor-liveness";
 import type { StagedAnchor } from "./anchor-liveness";
 import { sidecarFor, writeSidecar, readSidecar, removeSidecar, dedupSummary } from "./dedup-sidecar";
 import type { StagedClassification, DedupSummary } from "./dedup-sidecar";
+import { emitRemember, dedupPayload, dedupFromClassification, appendStagingResolve } from "./staging-resolve";
 
 export class StagingError extends Error {}
 
@@ -30,6 +31,7 @@ export interface RememberInput {
   type: NoteType;
   body: string;
   anchors: string[];
+  source: string;
 }
 
 export interface StagedRemember {
@@ -76,7 +78,7 @@ export async function remember(deps: StagingDeps, input: RememberInput): Promise
   }
   const classification = await classifyCandidate(deps.corpus.indexPath, deps.embeddings, input.body);
   if (classification.kind === "noop") {
-    return dedupeNoop(deps, noteId, classification.neighborId, classification.similarity);
+    return dedupeNoop(deps, noteId, input, classification.neighborId, classification.similarity);
   }
   return stageNote(deps, noteId, commit, input, classification);
 }
@@ -89,15 +91,14 @@ async function resolveHead(projectRoot: string): Promise<string> {
   return result.stdout.trim();
 }
 
-function dedupeNoop(deps: StagingDeps, noteId: string, existingId: string, similarity: number): RememberResult {
-  deps.eventWriter.append({
-    type: "note_deduped",
-    note_id: noteId,
-    existing_id: existingId,
-    similarity,
-    supersede_threshold: DEDUP_SUPERSEDE_THRESHOLD,
-    noop_threshold: DEDUP_NOOP_THRESHOLD,
-  });
+function dedupeNoop(
+  deps: StagingDeps,
+  noteId: string,
+  input: RememberInput,
+  existingId: string,
+  similarity: number,
+): RememberResult {
+  emitRemember(deps, noteId, input, dedupPayload("noop", existingId, similarity, false));
   return { outcome: "noop", noteId, existingId, similarity };
 }
 
@@ -113,7 +114,7 @@ function stageNote(deps: StagingDeps, noteId: string, commit: string, input: Rem
   const sidecar = sidecarFor(classification);
   writeFileSync(notePath(deps.corpus.stagingDir, noteId), serialized);
   writeSidecar(deps.corpus, noteId, sidecar);
-  deps.eventWriter.append({ type: "note_staged", note_id: noteId, note_type: input.type });
+  emitRemember(deps, noteId, input, dedupFromClassification(classification));
   return {
     outcome: "staged",
     noteId,
@@ -174,7 +175,7 @@ export async function stagingResolve(deps: StagingDeps, id: string, decision: Re
 async function acceptNote(deps: StagingDeps, id: string): Promise<ResolveResult> {
   moveStagedToNotes(deps.corpus, id, (frontmatter) => frontmatter);
   const commit = await commitResolved(deps.corpus, notesRelPath(id), `Add note ${shortId(id)}`);
-  deps.eventWriter.append({ type: "note_accepted", note_id: id, commit });
+  appendStagingResolve(deps, id, "accept", { commit, superseded_id: null, suggested: null });
   removeSidecar(deps.corpus, id);
   await rebuild(rebuildDeps(deps));
   return { outcome: "accepted", noteId: id, commit };
@@ -185,8 +186,7 @@ async function supersedeNote(deps: StagingDeps, id: string, target: string): Pro
   const suggested = readSidecar(deps.corpus, id)?.nearest_id === target;
   moveStagedToNotes(deps.corpus, id, (frontmatter) => ({ ...frontmatter, supersedes: target }));
   const commit = await commitResolved(deps.corpus, notesRelPath(id), `Supersede ${shortId(target)} with ${shortId(id)}`);
-  deps.eventWriter.append({ type: "note_accepted", note_id: id, commit });
-  deps.eventWriter.append({ type: "note_superseded", note_id: id, superseded_id: target, commit, suggested });
+  appendStagingResolve(deps, id, "supersede", { commit, superseded_id: target, suggested });
   removeSidecar(deps.corpus, id);
   await rebuild(rebuildDeps(deps));
   return { outcome: "superseded", noteId: id, supersededId: target, commit, suggested };
@@ -215,7 +215,7 @@ function rejectNote(deps: StagingDeps, id: string): ResolveResult {
   }
   renameSync(stagingPath, notePath(deps.corpus.archiveDir, id));
   removeSidecar(deps.corpus, id);
-  deps.eventWriter.append({ type: "note_rejected", note_id: id });
+  appendStagingResolve(deps, id, "reject", { commit: null, superseded_id: null, suggested: null });
   return { outcome: "rejected", noteId: id };
 }
 
@@ -255,6 +255,8 @@ function rebuildDeps(deps: StagingDeps): RebuildDeps {
     notesDir: deps.corpus.notesDir,
     projectRoot: deps.projectRoot,
     embeddings: deps.embeddings,
+    eventWriter: deps.eventWriter,
+    clock: deps.clock,
   };
 }
 

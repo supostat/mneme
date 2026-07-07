@@ -55,7 +55,7 @@ function bagVector(text: string): Float32Array {
 
 function bagOfWordsClient(): EmbeddingsClient {
   return {
-    embed: async (inputs) => ({ available: true, embeddings: inputs.map(bagVector) }),
+    embed: async (inputs) => ({ available: true, embeddings: inputs.map(bagVector), retries: 0 }),
   };
 }
 
@@ -63,8 +63,8 @@ function offlineClient(): EmbeddingsClient {
   return {
     embed: async (inputs) =>
       inputs.length === 0
-        ? { available: true, embeddings: [] }
-        : { available: false, embeddings: [] },
+        ? { available: true, embeddings: [], retries: 0 }
+        : { available: false, embeddings: [], retries: 0 },
   };
 }
 
@@ -101,7 +101,15 @@ async function setupIndex(
     writeFileSync(join(notesDir, `${spec.id}.md`), serializeNote(note));
   }
   const indexPath = join(corpusDir, "index.db");
-  await rebuild({ indexPath, notesDir, projectRoot, embeddings });
+  // The rebuild event goes to a throwaway dir, keeping the returned eventsDir holding only the events
+  // the recall tests assert on.
+  const buildEventsDir = mkdtempSync(join(tmpdir(), "mneme-recall-build-events-"));
+  const eventWriter = new EventWriter(buildEventsDir, {
+    sessionId: "s-recall-build",
+    mnemeVersion: "0.1.0",
+    clock: () => new Date("2026-07-06T10:00:00.000Z"),
+  });
+  await rebuild({ indexPath, notesDir, projectRoot, embeddings, eventWriter, clock: () => new Date("2026-07-06T10:00:00.000Z") });
   return { indexPath, eventsDir };
 }
 
@@ -396,6 +404,7 @@ describe("recall cross-lingual and mixed queries", () => {
       embed: async (inputs) => ({
         available: true,
         embeddings: inputs.map((input) => bagVector(translations.get(input) ?? input)),
+        retries: 0,
       }),
     };
   }

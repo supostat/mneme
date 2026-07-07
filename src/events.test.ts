@@ -27,7 +27,7 @@ describe("EventWriter and readEvents", () => {
     expect(event.session_id).toBe("session-abc");
     expect(event.ts).toBe("2026-03-15T12:00:00.000Z");
     expect(event.mneme_version).toBe("0.1.0");
-    expect(event.schema_version).toBe(1);
+    expect(event.schema_version).toBe(2);
     expect(event.type).toBe("note_written");
     expect(event.note_id).toBe("01ARZ3NDEKTSV4RRFFQ69G5FAV");
   });
@@ -48,7 +48,7 @@ describe("EventWriter and readEvents", () => {
     expect(event.session_id).toBe("session-abc");
     expect(event.ts).toBe("2026-03-15T12:00:00.000Z");
     expect(event.mneme_version).toBe("0.1.0");
-    expect(event.schema_version).toBe(1);
+    expect(event.schema_version).toBe(2);
   });
 });
 
@@ -141,6 +141,28 @@ describe("readEvents tolerance and forward compatibility", () => {
     expect(event.session_id).toBeNull();
     expect(event.ts).toBeNull();
     expect(event.type).toBe("legacy_event");
+  });
+
+  test("reads pre-stamp schema-v1 legacy write-path lines as schema_version 0 without throwing", () => {
+    const eventsDir = tempEventsDir();
+    const legacyLines = [
+      { type: "note_staged", note_id: "n1", note_type: "pattern" },
+      { type: "note_accepted", note_id: "n1", commit: "abc1234" },
+      { type: "note_deduped", note_id: "n2", existing_id: "n1", similarity: 0.99 },
+    ];
+    for (const line of legacyLines) {
+      appendFileSync(join(eventsDir, "2020-03.jsonl"), JSON.stringify(line) + "\n");
+    }
+
+    const events = readEvents(eventsDir);
+
+    expect(events.map((event) => event.type)).toEqual(["note_staged", "note_accepted", "note_deduped"]);
+    for (const event of events) {
+      expect(event.schema_version).toBe(0);
+      expect(event.session_id).toBeNull();
+      expect(event.ts).toBeNull();
+      expect(event.mneme_version).toBeNull();
+    }
   });
 });
 

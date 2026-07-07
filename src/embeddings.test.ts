@@ -47,6 +47,7 @@ describe("OllamaEmbeddingsClient happy path", () => {
     expect(result.embeddings[0]).toBeInstanceOf(Float32Array);
     expect(result.embeddings[0]!.length).toBe(EMBEDDING_DIMENSION);
     expect(result.embeddings[1]!.length).toBe(EMBEDDING_DIMENSION);
+    expect(result.retries).toBe(0);
     expect(log.count).toBe(1);
   });
 
@@ -69,7 +70,7 @@ describe("OllamaEmbeddingsClient empty input", () => {
 
     const result = await client.embed([]);
 
-    expect(result).toEqual({ available: true, embeddings: [] });
+    expect(result).toEqual({ available: true, embeddings: [], retries: 0 });
     expect(log.count).toBe(0);
   });
 });
@@ -82,7 +83,7 @@ describe("OllamaEmbeddingsClient typed degradation", () => {
 
     const result = await client.embed(["alpha"]);
 
-    expect(result).toEqual({ available: false, embeddings: [] });
+    expect(result).toEqual({ available: false, embeddings: [], retries: 1 });
   });
 
   test("a non-ok response degrades", async () => {
@@ -93,7 +94,7 @@ describe("OllamaEmbeddingsClient typed degradation", () => {
 
     const result = await client.embed(["alpha"]);
 
-    expect(result).toEqual({ available: false, embeddings: [] });
+    expect(result).toEqual({ available: false, embeddings: [], retries: 1 });
   });
 
   test("a hanging server degrades within the timeout budget", async () => {
@@ -107,7 +108,7 @@ describe("OllamaEmbeddingsClient typed degradation", () => {
     const result = await client.embed(["alpha"], { timeoutMs: 60, attempts: 1 });
     const elapsed = Date.now() - start;
 
-    expect(result).toEqual({ available: false, embeddings: [] });
+    expect(result).toEqual({ available: false, embeddings: [], retries: 0 });
     expect(elapsed).toBeLessThan(1000);
   });
 
@@ -118,7 +119,7 @@ describe("OllamaEmbeddingsClient typed degradation", () => {
 
     const result = await client.embed(["alpha"]);
 
-    expect(result).toEqual({ available: false, embeddings: [] });
+    expect(result).toEqual({ available: false, embeddings: [], retries: 1 });
   });
 
   test("a non-finite float degrades", async () => {
@@ -128,7 +129,7 @@ describe("OllamaEmbeddingsClient typed degradation", () => {
 
     const result = await client.embed(["alpha"]);
 
-    expect(result).toEqual({ available: false, embeddings: [] });
+    expect(result).toEqual({ available: false, embeddings: [], retries: 1 });
   });
 
   test("a row-count mismatch degrades", async () => {
@@ -138,7 +139,7 @@ describe("OllamaEmbeddingsClient typed degradation", () => {
 
     const result = await client.embed(["alpha", "beta"]);
 
-    expect(result).toEqual({ available: false, embeddings: [] });
+    expect(result).toEqual({ available: false, embeddings: [], retries: 1 });
   });
 });
 
@@ -162,6 +163,7 @@ describe("OllamaEmbeddingsClient per-call retry and timeout overrides", () => {
     const result = await client.embed(["alpha"], { timeoutMs: 50, attempts: 1 });
 
     expect(result.available).toBe(false);
+    expect(result.retries).toBe(0);
     expect(counter.calls).toBe(1);
   });
 
@@ -172,6 +174,7 @@ describe("OllamaEmbeddingsClient per-call retry and timeout overrides", () => {
     const result = await client.embed(["alpha"], { timeoutMs: 50, attempts: 2 });
 
     expect(result.available).toBe(true);
+    expect(result.retries).toBe(1);
     expect(counter.calls).toBe(2);
   });
 

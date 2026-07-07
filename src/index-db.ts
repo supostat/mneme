@@ -4,9 +4,10 @@ import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { parseNote } from "./note";
 import type { Note } from "./note";
-import { stalenessBoost } from "./staleness";
+import { stalenessBoost, DEAD_ANCHOR_SINK } from "./staleness";
 import { EMBEDDING_MODEL, cosineSimilarity, floatsFromBlob } from "./embeddings";
 import type { EmbeddingsClient } from "./embeddings";
+import type { EventInput, EventWriter } from "./events";
 
 const SCHEMA_STATEMENTS = [
   "CREATE VIRTUAL TABLE fts USING fts5(id UNINDEXED, body, tokenize = 'porter unicode61')",
@@ -20,19 +21,48 @@ export interface RebuildDeps {
   notesDir: string;
   projectRoot: string;
   embeddings: EmbeddingsClient;
+  eventWriter: EventWriter;
+  clock: () => Date;
+}
+
+interface RebuildOutcome {
+  notesCount: number;
+  boosts: number[];
+  available: boolean;
+  retries: number;
+  embeddedCount: number;
 }
 
 export async function rebuild(deps: RebuildDeps): Promise<void> {
+  const startedAt = deps.clock().getTime();
+  const outcome = await buildFreshIndex(deps);
+  deps.eventWriter.append(rebuildEvent(startedAt, deps.clock().getTime(), outcome));
+}
+
+async function buildFreshIndex(deps: RebuildDeps): Promise<RebuildOutcome> {
   const cache = loadEmbeddingCache(deps.indexPath);
   rmSync(deps.indexPath, { force: true });
   const database = freshDatabase(deps.indexPath);
   try {
     const notes = readActiveNotes(deps.notesDir);
-    await insertFtsAndMeta(database, notes, deps.projectRoot);
-    await insertVectors(database, notes, cache, deps.embeddings);
+    const boosts = await insertFtsAndMeta(database, notes, deps.projectRoot);
+    const vectors = await insertVectors(database, notes, cache, deps.embeddings);
+    return { notesCount: notes.length, boosts, ...vectors };
   } finally {
     database.close();
   }
+}
+
+function rebuildEvent(startedAt: number, finishedAt: number, outcome: RebuildOutcome): EventInput {
+  return {
+    type: "rebuild",
+    duration_ms: finishedAt - startedAt,
+    notes_n: outcome.notesCount,
+    embedded_n: outcome.embeddedCount,
+    dead_anchors_n: outcome.boosts.filter((boost) => boost === DEAD_ANCHOR_SINK).length,
+    staleness: outcome.boosts,
+    ollama: { available: outcome.available, retries: outcome.retries },
+  };
 }
 
 function freshDatabase(indexPath: string): Database {
@@ -82,7 +112,7 @@ function readActiveNotes(notesDir: string): Note[] {
   return notes.filter((note) => !superseded.has(note.frontmatter.id));
 }
 
-async function insertFtsAndMeta(database: Database, notes: Note[], projectRoot: string): Promise<void> {
+async function insertFtsAndMeta(database: Database, notes: Note[], projectRoot: string): Promise<number[]> {
   const boosts = await Promise.all(
     notes.map((note) =>
       stalenessBoost(projectRoot, note.frontmatter.anchors, note.frontmatter.commit),
@@ -97,6 +127,13 @@ async function insertFtsAndMeta(database: Database, notes: Note[], projectRoot: 
     });
   });
   write();
+  return boosts;
+}
+
+interface VectorOutcome {
+  available: boolean;
+  retries: number;
+  embeddedCount: number;
 }
 
 async function insertVectors(
@@ -104,13 +141,14 @@ async function insertVectors(
   notes: Note[],
   cache: Map<string, Uint8Array>,
   embeddings: EmbeddingsClient,
-): Promise<void> {
+): Promise<VectorOutcome> {
   const bodies = [...new Set(notes.map((note) => note.body))];
   const hashByBody = new Map(bodies.map((body) => [body, sha256Hex(body)]));
   const toEmbed = bodies.filter((body) => !cache.has(hashByBody.get(body)!));
   const fresh = await embeddings.embed(toEmbed);
   const bytesByHash = resolveBytes(bodies, hashByBody, cache, toEmbed, fresh.available ? fresh.embeddings : []);
-  writeVectors(database, notes, hashByBody, bytesByHash);
+  const embeddedCount = writeVectors(database, notes, hashByBody, bytesByHash);
+  return { available: fresh.available, retries: fresh.retries, embeddedCount };
 }
 
 function resolveBytes(
@@ -137,20 +175,21 @@ function writeVectors(
   notes: Note[],
   hashByBody: Map<string, string>,
   bytesByHash: Map<string, Uint8Array>,
-): void {
+): number {
   const insertVec = database.query("INSERT INTO vec(id, content_hash, embedding) VALUES (?, ?, ?)");
-  let wrote = false;
+  let written = 0;
   const write = database.transaction(() => {
     for (const note of notes) {
       const hash = hashByBody.get(note.body)!;
       const bytes = bytesByHash.get(hash);
       if (bytes === undefined) continue;
       insertVec.run(note.frontmatter.id, hash, bytes);
-      wrote = true;
+      written += 1;
     }
   });
   write();
-  if (wrote) database.run("INSERT INTO index_config(embedding_model) VALUES (?)", [EMBEDDING_MODEL]);
+  if (written > 0) database.run("INSERT INTO index_config(embedding_model) VALUES (?)", [EMBEDDING_MODEL]);
+  return written;
 }
 
 function blobOf(vector: Float32Array): Uint8Array {

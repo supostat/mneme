@@ -32,6 +32,7 @@ export function floatsFromBlob(blob: Uint8Array): Float32Array | undefined {
 export interface EmbedResult {
   available: boolean;
   embeddings: Float32Array[];
+  retries: number;
 }
 
 export interface EmbedOptions {
@@ -60,8 +61,6 @@ export type FetchImplementation = (
   init: EmbeddingsHttpRequest,
 ) => Promise<EmbeddingsHttpResponse>;
 
-const UNAVAILABLE: EmbedResult = { available: false, embeddings: [] };
-
 export class OllamaEmbeddingsClient implements EmbeddingsClient {
   constructor(
     private readonly baseUrl: string = OLLAMA_BASE_URL,
@@ -70,7 +69,7 @@ export class OllamaEmbeddingsClient implements EmbeddingsClient {
 
   async embed(inputs: string[], options: EmbedOptions = {}): Promise<EmbedResult> {
     if (inputs.length === 0) {
-      return { available: true, embeddings: [] };
+      return { available: true, embeddings: [], retries: 0 };
     }
     const timeoutMs = options.timeoutMs ?? EMBED_TIMEOUT_MS;
     const attempts = options.attempts ?? EMBED_ATTEMPTS;
@@ -82,13 +81,13 @@ export class OllamaEmbeddingsClient implements EmbeddingsClient {
         timeoutMs,
       );
       if (embeddings !== undefined) {
-        return { available: true, embeddings };
+        return { available: true, embeddings, retries: attempt };
       }
       if (attempt < attempts - 1) {
         await delay(EMBED_RETRY_BACKOFF_MS);
       }
     }
-    return UNAVAILABLE;
+    return { available: false, embeddings: [], retries: attempts - 1 };
   }
 }
 

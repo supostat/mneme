@@ -1,7 +1,6 @@
 import { appendFileSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-
-const SCHEMA_VERSION = 1;
+import { SCHEMA_VERSION } from "./event-schema";
 
 const EVENT_FILE_EXTENSION = ".jsonl";
 const PRE_STAMP_SCHEMA_VERSION = 0;

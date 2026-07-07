@@ -55,6 +55,55 @@ function dedupedEvent(noteId: string, existingId: string): StoredEvent {
   return storedEvent({ type: "note_deduped", note_id: noteId, existing_id: existingId, similarity: 0.99 });
 }
 
+const V2_THRESHOLDS = { supersede_threshold: 0.85, noop_threshold: 0.97 };
+
+function rememberEvent(
+  noteId: string,
+  noteType: string,
+  sessionId: string | null = null,
+  ts: string | null = null,
+): StoredEvent {
+  return storedEvent({
+    type: "remember",
+    note_id: noteId,
+    note_type: noteType,
+    body_len: 12,
+    anchors_n: 1,
+    source: "mcp",
+    dedup: { outcome: "add", nearest_id: null, similarity: null, ...V2_THRESHOLDS, degraded: false },
+    session_id: sessionId,
+    ts,
+  });
+}
+
+function rememberNoopEvent(noteId: string, nearestId: string): StoredEvent {
+  return storedEvent({
+    type: "remember",
+    note_id: noteId,
+    note_type: "pattern",
+    body_len: 12,
+    anchors_n: 1,
+    source: "mcp",
+    dedup: { outcome: "noop", nearest_id: nearestId, similarity: 0.99, ...V2_THRESHOLDS, degraded: false },
+  });
+}
+
+function resolveEvent(
+  noteId: string,
+  decision: "accept" | "reject" | "supersede",
+  supersededId: string | null = null,
+): StoredEvent {
+  return storedEvent({
+    type: "staging_resolve",
+    note_id: noteId,
+    decision,
+    staged_to_resolved_ms: 0,
+    commit: decision === "reject" ? null : "abc1234",
+    superseded_id: supersededId,
+    suggested: decision === "supersede" ? false : null,
+  });
+}
+
 describe("computeStats accepted population is historical", () => {
   test("denominators are |accepted| and do NOT shrink when a note is superseded", () => {
     const summary = computeStats([
@@ -256,6 +305,54 @@ describe("formatStats renders degenerate ratios honestly", () => {
     );
 
     expect(rendered).toContain("Never retrieved: 1/1 (100.0%) (of which 1 superseded)");
+  });
+});
+
+describe("computeStats reads the v2 dialect", () => {
+  test("remember + staging_resolve reproduce accepted, live, cross-session and corpus-size counts", () => {
+    const summary = computeStats([
+      rememberEvent("n1", "pattern", "sessionA", "2026-07-06T09:59:00.000Z"),
+      resolveEvent("n1", "accept"),
+      rememberEvent("n2", "decision", "sessionA", "2026-07-06T09:59:30.000Z"),
+      resolveEvent("n2", "accept"),
+      resolveEvent("nX", "supersede", "n2"),
+      recallEvent("sessionB", "2026-07-06T11:00:00.000Z", ["n1"]),
+    ]);
+
+    expect(summary.acceptedNoteCount).toBe(3);
+    expect(summary.liveNoteCount).toBe(2);
+    expect(summary.crossSessionReuse.numerator).toBe(1);
+    expect(summary.crossSessionReuse.denominator).toBe(3);
+    expect(summary.corpusSizeByType.byType).toEqual({ pattern: 1 });
+    expect(summary.corpusSizeByType.untyped).toBe(1);
+  });
+
+  test("a v2 remember noop counts with its nearest_id as the re-confirmed note", () => {
+    const summary = computeStats([rememberNoopEvent("n1", "n0"), rememberNoopEvent("n2", "n0")]);
+
+    expect(summary.noopConfirmations).toBe(2);
+    expect(summary.noopDistinctNoteCount).toBe(1);
+  });
+});
+
+describe("computeStats reads a mixed v1-and-v2 log", () => {
+  test("both dialects contribute to accepted, cross-session, corpus-size and noop counts", () => {
+    const summary = computeStats([
+      stagedEvent("n1", "pattern", "sessionA", "2026-07-06T09:59:00.000Z"),
+      acceptedEvent("n1", "sessionA", "2026-07-06T10:00:00.000Z"),
+      rememberEvent("n2", "decision", "sessionA", "2026-07-06T09:59:30.000Z"),
+      resolveEvent("n2", "accept"),
+      dedupedEvent("n3", "n1"),
+      rememberNoopEvent("n4", "n2"),
+      recallEvent("sessionB", "2026-07-06T11:00:00.000Z", ["n1", "n2"]),
+    ]);
+
+    expect(summary.acceptedNoteCount).toBe(2);
+    expect(summary.crossSessionReuse.numerator).toBe(2);
+    expect(summary.crossSessionReuse.denominator).toBe(2);
+    expect(summary.corpusSizeByType.byType).toEqual({ pattern: 1, decision: 1 });
+    expect(summary.noopConfirmations).toBe(2);
+    expect(summary.noopDistinctNoteCount).toBe(2);
   });
 });
 
