@@ -2,7 +2,7 @@ import { appendFileSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { SCHEMA_VERSION } from "./event-schema";
 
-const EVENT_FILE_EXTENSION = ".jsonl";
+export const EVENT_FILE_EXTENSION = ".jsonl";
 const PRE_STAMP_SCHEMA_VERSION = 0;
 
 export type EventInput = { type: string } & Record<string, unknown>;

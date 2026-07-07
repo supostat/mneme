@@ -294,6 +294,10 @@ describe("mcp-server stats", () => {
     expect(stats).toContain("Accepted notes (historical): 0");
     expect(stats).toContain("Cross-session reuse: n/a (0 accepted notes)");
     expect(stats).toContain("Recall degradation: n/a (0 recall events)");
+    // The stats tool concatenates formatStats + formatFriction + formatFootprint; pin both extra
+    // sections so dropping either concatenation line fails here instead of staying green.
+    expect(stats).toContain("(d) Staged -> resolved latency:");
+    expect(stats).toContain("(g) Total size:");
   });
 
   test("a note staged and accepted in one session and recalled later in another reads as cross-session reuse", async () => {
@@ -357,7 +361,7 @@ describe("mcp-server error boundary", () => {
 });
 
 describe("mcp-server event schema conformance", () => {
-  test("every event emitted across a full cycle validates against the v2 schema", async () => {
+  test("every event emitted across a full cycle validates against the v3 schema", async () => {
     const projectRoot = await buildProjectRepo();
     const corpusHome = corpusHomeDir();
     const client = await connect({

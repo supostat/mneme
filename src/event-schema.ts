@@ -10,11 +10,16 @@ import { z } from "zod";
 //       source); note_accepted / note_rejected / note_superseded -> staging_resolve (one decision-
 //       tagged event); note_deduped -> remember{dedup.outcome:"noop"}; new rebuild, session_start,
 //       session_end and sanitized tool_error events.
-export const SCHEMA_VERSION = 2;
+//   3 — recall enriched: mode, corpus_size, timings{embed_ms, fts_ms, fusion_ms}, candidates[<=20,
+//       fused order, pre-budget-cutoff]{id, type, fts_rank, vector_rank, cosine, rrf, staleness_boost,
+//       token_est, in_budget}. Other events unchanged.
+export const SCHEMA_VERSION = 3;
 
 export const DEDUP_OUTCOMES = ["add", "supersede_suggest", "noop"] as const;
 export const RESOLVE_DECISIONS = ["accept", "reject", "supersede"] as const;
 export const ANCHOR_LIVENESS = ["tracked", "untracked-exists", "missing"] as const;
+export const RECALL_MODES = ["fused", "fts_only", "vector_only", "none"] as const;
+export const RECALL_CANDIDATE_WINDOW = 20;
 
 // The five schema-v1 event names and the enriched v2 event that now subsumes each. A replay or
 // backfill reads a legacy name through this map; the reader itself never rewrites the log.
@@ -47,6 +52,21 @@ const anchorLiveness = z.object({
   liveness: z.enum(ANCHOR_LIVENESS),
 });
 
+// One pre-budget-cutoff candidate in fused order. type/fts_rank/vector_rank/cosine/token_est are
+// nullable: a candidate reached by only one channel has no rank in the other, a body absent from the
+// index cannot be token-estimated, and a note may carry no type.
+const recallCandidate = z.object({
+  id: z.string(),
+  type: z.string().nullable(),
+  fts_rank: z.number().nullable(),
+  vector_rank: z.number().nullable(),
+  cosine: z.number().nullable(),
+  rrf: z.number(),
+  staleness_boost: z.number(),
+  token_est: z.number().nullable(),
+  in_budget: z.boolean(),
+});
+
 const recallEvent = z.object({
   type: z.literal("recall"),
   ...envelope,
@@ -54,6 +74,14 @@ const recallEvent = z.object({
   budget: z.number(),
   returned_ids: z.array(z.string()),
   degraded: z.boolean(),
+  mode: z.enum(RECALL_MODES),
+  corpus_size: z.number(),
+  timings: z.object({
+    embed_ms: z.number(),
+    fts_ms: z.number(),
+    fusion_ms: z.number(),
+  }),
+  candidates: z.array(recallCandidate).max(RECALL_CANDIDATE_WINDOW),
 });
 
 const rememberEvent = z.object({

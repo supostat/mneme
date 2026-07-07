@@ -12,6 +12,8 @@ import type { RecallDeps } from "./recall";
 import { EMBEDDING_DIMENSION } from "./embeddings";
 import type { EmbeddingsClient } from "./embeddings";
 import { EventWriter, readEvents } from "./events";
+import type { StoredEvent } from "./events";
+import { estimateTokens } from "./fusion";
 
 const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
@@ -113,6 +115,8 @@ async function setupIndex(
   return { indexPath, eventsDir };
 }
 
+const RECALL_CLOCK = (): Date => new Date("2026-07-06T10:00:00.000Z");
+
 function openRecall(
   indexPath: string,
   eventsDir: string,
@@ -122,9 +126,9 @@ function openRecall(
   const eventWriter = new EventWriter(eventsDir, {
     sessionId: "session-recall",
     mnemeVersion: "0.1.0",
-    clock: () => new Date("2026-07-06T10:00:00.000Z"),
+    clock: RECALL_CLOCK,
   });
-  return { db, embeddings, eventWriter };
+  return { db, embeddings, eventWriter, clock: RECALL_CLOCK };
 }
 
 function tokenEstimate(body: string): number {
@@ -465,5 +469,113 @@ describe("recall RRF determinism", () => {
 
     expect(first.returnedIds).toEqual([ulid(0), ulid(1)]);
     expect(second.returnedIds).toEqual(first.returnedIds);
+  });
+});
+
+// A client that returns a fixed non-zero vector for any non-empty input, so a query with no FTS
+// terms still carries a vector signal — the only way to reach the vector_only channel gate.
+function constantVectorClient(): EmbeddingsClient {
+  return {
+    embed: async (inputs) =>
+      inputs.length === 0
+        ? { available: true, embeddings: [], retries: 0 }
+        : {
+            available: true,
+            embeddings: inputs.map(() => {
+              const vector = new Float32Array(EMBEDDING_DIMENSION);
+              vector[0] = 1;
+              return vector;
+            }),
+            retries: 0,
+          },
+  };
+}
+
+function lastRecallEvent(eventsDir: string): StoredEvent {
+  const recalls = readEvents(eventsDir).filter((event) => event.type === "recall");
+  return recalls[recalls.length - 1]!;
+}
+
+function candidatesOf(event: StoredEvent): Array<Record<string, unknown>> {
+  return event.candidates as Array<Record<string, unknown>>;
+}
+
+describe("recall candidate logging", () => {
+  test("logs the top-20 candidate window and the full corpus size on a 21-note corpus", async () => {
+    const specs: NoteSpec[] = Array.from({ length: 21 }, (_, index) => ({
+      id: ulid(index),
+      body: `widget subject matter number ${index}`,
+      anchor: `src/w${index}.ts`,
+    }));
+    const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
+
+    await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "widget", 100000);
+
+    const event = lastRecallEvent(eventsDir);
+    expect(candidatesOf(event).length).toBe(20);
+    expect(event.corpus_size).toBe(21);
+  });
+
+  test("token_est on a candidate equals the body's four-byte estimate", async () => {
+    const body = "payment refund ledger reconciliation nightly job";
+    const specs: NoteSpec[] = [{ id: ulid(0), body, anchor: "src/pay.ts" }];
+    const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
+
+    await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "payment refund", 100000);
+
+    const candidate = candidatesOf(lastRecallEvent(eventsDir)).find((entry) => entry.id === ulid(0))!;
+    expect(candidate.token_est).toBe(estimateTokens(body));
+  });
+
+  test("timings carry three non-negative channel durations", async () => {
+    const specs: NoteSpec[] = [{ id: ulid(0), body: "payment refund ledger", anchor: "src/pay.ts" }];
+    const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
+
+    await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "payment refund", 100000);
+
+    const timings = lastRecallEvent(eventsDir).timings as Record<string, number>;
+    expect(Object.keys(timings).sort()).toEqual(["embed_ms", "fts_ms", "fusion_ms"]);
+    for (const value of Object.values(timings)) expect(value).toBeGreaterThanOrEqual(0);
+  });
+
+  test("RecallResult still exposes exactly returnedIds, notes and degraded", async () => {
+    const specs: NoteSpec[] = [{ id: ulid(0), body: "payment refund ledger", anchor: "src/pay.ts" }];
+    const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
+
+    const result = await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "payment refund", 100000);
+
+    expect(Object.keys(result).sort()).toEqual(["degraded", "notes", "returnedIds"]);
+  });
+});
+
+describe("recall mode derivation", () => {
+  const specs: NoteSpec[] = [
+    { id: ulid(0), body: "payment refund ledger reconciliation", anchor: "src/pay.ts" },
+    { id: ulid(1), body: "caching guidance for reads", anchor: "src/cache.ts" },
+  ];
+
+  test("both channels active is fused", async () => {
+    const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
+    await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "payment refund", 100000);
+    expect(lastRecallEvent(eventsDir).mode).toBe("fused");
+  });
+
+  test("terms with an unavailable embedder is fts_only", async () => {
+    const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
+    await recall(openRecall(indexPath, eventsDir, offlineClient()), "payment refund", 100000);
+    expect(lastRecallEvent(eventsDir).mode).toBe("fts_only");
+  });
+
+  test("a term-less query with a live vector signal is vector_only", async () => {
+    const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
+    // "%%% ---" yields no FTS terms; the constant client still returns a non-zero query vector.
+    await recall(openRecall(indexPath, eventsDir, constantVectorClient()), "%%% ---", 100000);
+    expect(lastRecallEvent(eventsDir).mode).toBe("vector_only");
+  });
+
+  test("neither channel active is none", async () => {
+    const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
+    await recall(openRecall(indexPath, eventsDir, offlineClient()), "%%% ---", 100000);
+    expect(lastRecallEvent(eventsDir).mode).toBe("none");
   });
 });

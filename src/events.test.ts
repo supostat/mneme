@@ -3,6 +3,7 @@ import { mkdtempSync, appendFileSync, writeFileSync, readdirSync } from "node:fs
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventWriter, readEvents } from "./events";
+import { SCHEMA_VERSION } from "./event-schema";
 
 function tempEventsDir(): string {
   return mkdtempSync(join(tmpdir(), "mneme-events-"));
@@ -27,7 +28,7 @@ describe("EventWriter and readEvents", () => {
     expect(event.session_id).toBe("session-abc");
     expect(event.ts).toBe("2026-03-15T12:00:00.000Z");
     expect(event.mneme_version).toBe("0.1.0");
-    expect(event.schema_version).toBe(2);
+    expect(event.schema_version).toBe(SCHEMA_VERSION);
     expect(event.type).toBe("note_written");
     expect(event.note_id).toBe("01ARZ3NDEKTSV4RRFFQ69G5FAV");
   });
@@ -48,7 +49,7 @@ describe("EventWriter and readEvents", () => {
     expect(event.session_id).toBe("session-abc");
     expect(event.ts).toBe("2026-03-15T12:00:00.000Z");
     expect(event.mneme_version).toBe("0.1.0");
-    expect(event.schema_version).toBe(2);
+    expect(event.schema_version).toBe(SCHEMA_VERSION);
   });
 });
 

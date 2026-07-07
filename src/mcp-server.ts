@@ -20,6 +20,8 @@ import { NOTE_TYPES } from "./note";
 import type { NoteType } from "./note";
 import { remember, stagingList, stagingResolve } from "./staging";
 import { computeStats, formatStats } from "./stats";
+import { computeFriction, formatFriction } from "./stats-friction";
+import { computeFootprint, formatFootprint } from "./stats-footprint";
 import type { StagingDeps, ResolveDecision } from "./staging";
 import { formatRemember, formatRecall, formatStagingList, formatResolve, textResult } from "./mcp-rendering";
 
@@ -41,8 +43,9 @@ const STAGING_RESOLVE_DESCRIPTION =
   "Only call this after the human has explicitly decided.";
 const STATS_DESCRIPTION =
   "Report proof metrics computed from the event log: cross-session reuse, never-retrieved fraction, " +
-  "recall degradation, live corpus size by type, and NOOP confirmations. Present the numbers to the " +
-  "human; the output contains no note bodies.";
+  "recall degradation, live corpus size by type, and NOOP confirmations; review friction (staged-to-" +
+  "resolved latency median/p90 and resolution batch sizes); tool errors by tool; and the log footprint " +
+  "(total bytes and events per type). Present the numbers to the human; the output contains no note bodies.";
 
 const REMEMBER_INPUT = { type: z.enum(NOTE_TYPES), body: z.string(), anchors: z.array(z.string()) };
 const RECALL_INPUT = { query: z.string(), budget: z.number().int().positive().optional() };
@@ -136,7 +139,14 @@ function registerTools(
 }
 
 function statsTool(context: ServerContext): CallToolResult {
-  return textResult(formatStats(computeStats(readEvents(context.corpus.eventsDir))));
+  const events = readEvents(context.corpus.eventsDir);
+  return textResult(
+    [
+      formatStats(computeStats(events)),
+      formatFriction(computeFriction(events)),
+      formatFootprint(computeFootprint(context.corpus.eventsDir, events)),
+    ].join("\n\n"),
+  );
 }
 
 async function dispatch(
@@ -178,7 +188,7 @@ async function recallTool(
   const db = new Database(indexPath, { readonly: true });
   try {
     const budget = args.budget ?? DEFAULT_RECALL_TOKEN_BUDGET;
-    const result = await recall({ db, embeddings, eventWriter: context.eventWriter }, args.query, budget);
+    const result = await recall({ db, embeddings, eventWriter: context.eventWriter, clock }, args.query, budget);
     return textResult(formatRecall(result.notes, result.degraded));
   } finally {
     db.close();

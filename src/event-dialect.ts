@@ -34,3 +34,13 @@ export function isNoopEvent(event: StoredEvent): boolean {
   if (event.type === "note_deduped") return true;
   return event.type === "remember" && dedupOutcomeOf(event) === "noop";
 }
+
+// Any resolution of a staged note: the three v1 decision names or a v2 staging_resolve of any
+// decision. Friction analysis clusters and times resolutions regardless of the accept/reject/
+// supersede outcome, so this predicate is decision-agnostic (unlike isAcceptedEvent).
+export function isResolveEvent(event: StoredEvent): boolean {
+  if (event.type === "note_accepted" || event.type === "note_rejected" || event.type === "note_superseded") {
+    return true;
+  }
+  return event.type === "staging_resolve";
+}
