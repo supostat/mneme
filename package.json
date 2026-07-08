@@ -9,7 +9,8 @@
   "scripts": {
     "start": "bun run src/mcp-server.ts",
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build-plugin": "bun run scripts/build-plugin.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",
