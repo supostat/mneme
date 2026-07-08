@@ -7,6 +7,8 @@
 # node / bun
 node_modules/
 *.tsbuildinfo
+# bun build --compile leaves temp files in cwd (repo root) when scripts/build-plugin.ts runs
+*.bun-build
 
 # dev-workflow (stack-detected)
 .DS_Store
