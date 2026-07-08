@@ -4,7 +4,7 @@ import { join } from "node:path";
 import packageJson from "../package.json";
 
 // Standalone bridge from this CODE repo into a mneme-plugin distribution repo: compile the MCP server
-// into <plugin>/bin/mneme and stamp this repo's package.json version into the plugin manifest. The
+// into <plugin>/plugin/bin/mneme and stamp this repo's package.json version into the plugin manifest. The
 // entry is absolute so the spawned compile resolves mcp-server.ts's `import "../package.json"` to the
 // SAME package.json imported here — the baked binary version equals the stamped version by construction.
 export const MNEME_PLUGIN_PATH_ENV = "MNEME_PLUGIN_PATH";
@@ -46,11 +46,11 @@ export function resolvePluginTargets(pluginPath: string): PluginTargets {
   if (!existsSync(pluginPath) || !statSync(pluginPath).isDirectory()) {
     throw new Error(`plugin path is not an existing directory: ${pluginPath}`);
   }
-  const manifestPath = join(pluginPath, ...MANIFEST_SEGMENTS);
+  const manifestPath = join(pluginPath, "plugin", ...MANIFEST_SEGMENTS);
   if (!existsSync(manifestPath)) {
     throw new Error(`plugin manifest not found: ${manifestPath}`);
   }
-  const binDir = join(pluginPath, "bin");
+  const binDir = join(pluginPath, "plugin", "bin");
   return { manifestPath, binDir, outfile: join(binDir, "mneme"), manifest: parseManifest(manifestPath) };
 }
 

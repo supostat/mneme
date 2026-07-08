@@ -35,9 +35,9 @@ MNEME_PLUGIN_PATH=/path/to/mneme-plugin bun scripts/build-plugin.ts
 
 ### What it does
 
-1. Compiles `src/mcp-server.ts` into `<plugin>/bin/mneme` — a self-contained binary of roughly 64 MB.
-   The plugin repo git-ignores `bin/`; the binary is reproducible from source and never committed.
-2. Stamps this repository's `package.json` version into `<plugin>/.claude-plugin/plugin.json`. The
+1. Compiles `src/mcp-server.ts` into `<plugin>/plugin/bin/mneme` — a self-contained binary of roughly 64 MB.
+   The plugin repo git-ignores `plugin/bin/`; the binary is reproducible from source and never committed.
+2. Stamps this repository's `package.json` version into `<plugin>/plugin/.claude-plugin/plugin.json`. The
    version baked into the binary and the version written to the manifest are the same by construction.
 3. Prints the output path, version, size (MiB and bytes), and build time.
 

@@ -24,13 +24,13 @@ function makeTemporaryDirectory(prefix: string): string {
 
 function createPluginFixture(manifestContent: string): string {
   const pluginPath = makeTemporaryDirectory("mneme-plugin-fixture-");
-  mkdirSync(join(pluginPath, ".claude-plugin"), { recursive: true });
-  writeFileSync(join(pluginPath, ".claude-plugin", "plugin.json"), manifestContent);
+  mkdirSync(join(pluginPath, "plugin", ".claude-plugin"), { recursive: true });
+  writeFileSync(join(pluginPath, "plugin", ".claude-plugin", "plugin.json"), manifestContent);
   return pluginPath;
 }
 
 function manifestPathOf(pluginPath: string): string {
-  return join(pluginPath, ".claude-plugin", "plugin.json");
+  return join(pluginPath, "plugin", ".claude-plugin", "plugin.json");
 }
 
 function readStampedVersion(pluginPath: string): unknown {
@@ -132,7 +132,7 @@ describe("buildPlugin stamps and reports", () => {
   });
 
   test("reports the produced binary's real size", () => {
-    expect(sharedReport.outfile).toBe(join(sharedPluginPath, "bin", "mneme"));
+    expect(sharedReport.outfile).toBe(join(sharedPluginPath, "plugin", "bin", "mneme"));
     expect(sharedReport.sizeBytes).toBeGreaterThan(0);
   });
 });
@@ -211,20 +211,20 @@ describe("bad input fails closed before any binary is written", () => {
     const bareDirectory = makeTemporaryDirectory("mneme-plugin-bare-");
 
     expect(await runMainSilently([bareDirectory], undefined)).toBe(1);
-    expect(existsSync(join(bareDirectory, "bin"))).toBe(false);
+    expect(existsSync(join(bareDirectory, "plugin", "bin"))).toBe(false);
   });
 
   test("an invalid-JSON manifest returns 1 and writes no binary", async () => {
     const pluginPath = createPluginFixture("{ not valid json");
 
     expect(await runMainSilently([pluginPath], undefined)).toBe(1);
-    expect(existsSync(join(pluginPath, "bin", "mneme"))).toBe(false);
+    expect(existsSync(join(pluginPath, "plugin", "bin", "mneme"))).toBe(false);
   });
 
   test("a JSON-array manifest fails the object guard and writes no binary", async () => {
     const pluginPath = createPluginFixture("[]\n");
 
     expect(await runMainSilently([pluginPath], undefined)).toBe(1);
-    expect(existsSync(join(pluginPath, "bin", "mneme"))).toBe(false);
+    expect(existsSync(join(pluginPath, "plugin", "bin", "mneme"))).toBe(false);
   });
 });
