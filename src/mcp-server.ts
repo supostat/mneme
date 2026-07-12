@@ -24,6 +24,14 @@ import { computeFriction, formatFriction } from "./stats-friction";
 import { computeFootprint, formatFootprint } from "./stats-footprint";
 import type { StagingDeps, ResolveDecision } from "./staging";
 import { formatRemember, formatRecall, formatStagingList, formatResolve, textResult } from "./mcp-rendering";
+import {
+  WORKFLOW_START_DESCRIPTION,
+  WORKFLOW_START_INPUT,
+  WORKFLOW_STEP_DESCRIPTION,
+  WORKFLOW_STEP_INPUT,
+  workflowStartTool,
+  workflowStepTool,
+} from "./workflow/mcp-tools";
 
 const MNEME_VERSION = packageJson.version;
 const REMEMBER_SOURCE = "mcp";
@@ -135,6 +143,12 @@ function registerTools(
   );
   server.registerTool("stats", { description: STATS_DESCRIPTION, inputSchema: {} }, () =>
     dispatch(context, "stats", (current) => statsTool(current)),
+  );
+  server.registerTool("workflow_start", { description: WORKFLOW_START_DESCRIPTION, inputSchema: WORKFLOW_START_INPUT }, (args) =>
+    dispatch(context, "workflow_start", (current) => workflowStartTool(buildStagingDeps(current), args)),
+  );
+  server.registerTool("workflow_step", { description: WORKFLOW_STEP_DESCRIPTION, inputSchema: WORKFLOW_STEP_INPUT }, (args) =>
+    dispatch(context, "workflow_step", (current) => workflowStepTool(buildStagingDeps(current), args)),
   );
 }
 

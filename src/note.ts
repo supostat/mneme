@@ -128,7 +128,7 @@ function validateAnchors(value: unknown): string[] {
   return value.map(validateAnchor);
 }
 
-function validateAnchor(value: unknown): string {
+export function validateAnchor(value: unknown): string {
   if (typeof value !== "string" || value.length === 0) {
     throw new NoteValidationError("anchor must be a non-empty string");
   }

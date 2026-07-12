@@ -119,7 +119,7 @@ function expectNonceFences(text: string): void {
 // createServer draws the session id from idFactory first, so the first staged note is ulid(1).
 
 describe("mcp-server tool surface", () => {
-  test("exposes exactly the five mneme tools", async () => {
+  test("exposes exactly the seven mneme tools", async () => {
     const client = await connect({
       projectRoot: await buildProjectRepo(),
       corpusHome: corpusHomeDir(),
@@ -136,6 +136,8 @@ describe("mcp-server tool surface", () => {
       "staging_list",
       "staging_resolve",
       "stats",
+      "workflow_start",
+      "workflow_step",
     ]);
   });
 });
@@ -361,7 +363,7 @@ describe("mcp-server error boundary", () => {
 });
 
 describe("mcp-server event schema conformance", () => {
-  test("every event emitted across a full cycle validates against the v3 schema", async () => {
+  test("every event emitted across a full cycle validates against the current producer schema", async () => {
     const projectRoot = await buildProjectRepo();
     const corpusHome = corpusHomeDir();
     const client = await connect({

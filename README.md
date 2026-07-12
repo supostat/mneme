@@ -1,11 +1,18 @@
 # mneme
 
-mneme is a local-first MCP memory server for Claude Code. It gives an agent two tools —
-`remember` and `recall` — over a personal, cross-project note corpus that lives on your machine.
-Every remembered note is **staged for human review** rather than saved silently: you accept, reject,
-or supersede staged notes yourself, so the corpus only ever grows with memory you approved. Recall
-fuses full-text and vector search under a token budget and logs its candidates so retrieval decisions
-can be replayed and audited offline.
+mneme is a local-first MCP memory server for Claude Code, over a personal, cross-project note corpus
+that lives on your machine. Every remembered note is **staged for human review** rather than saved
+silently: you accept, reject, or supersede staged notes yourself, so the corpus only ever grows with
+memory you approved. Recall fuses full-text and vector search under a token budget and logs its
+candidates so retrieval decisions can be replayed and audited offline.
+
+The binary exposes seven MCP tools over stdio. Five are the memory surface: `remember` (stage a note),
+`recall` (token-budgeted fused retrieval), `staging_list` and `staging_resolve` (review and
+accept/reject/supersede staged notes), and `stats` (reuse and footprint metrics from the event log).
+The other two drive the workflow engine: `workflow_start` opens a run anchored to the current project
+branch, and `workflow_step` is the live executor — it loops directives (recall at phase start, gated
+steps, harvest on close) decided by the reducer, resumes a branch's unfinished run from the event log
+after an interruption, and never silently resumes a run whose branch is gone.
 
 The server ships as a single self-contained compiled binary, distributed through the separate
 `mneme-plugin` repository. This repository is the source; the binary is built from it by the bridge

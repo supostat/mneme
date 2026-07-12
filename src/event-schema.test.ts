@@ -4,7 +4,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventWriter, readEvents } from "./events";
 import type { EventInput, StoredEvent } from "./events";
-import { eventSchema, SCHEMA_VERSION, BOOTSTRAP_TO_EXTENDED } from "./event-schema";
+import {
+  eventSchema,
+  SCHEMA_VERSION,
+  BOOTSTRAP_TO_EXTENDED,
+  EXECUTABLE_GATE_REASONS,
+  workflowRunMarkedStaleRestore,
+  workflowRunStartedRestore,
+  workflowStepAppliedRestore,
+} from "./event-schema";
+import type { ExecutableGateReason } from "./workflow/gate-runner";
 
 // Stamps a producer event through the real writer so the test validates exactly what lands on disk.
 function stamp(event: EventInput): StoredEvent {
@@ -38,6 +47,39 @@ const FULL_CANDIDATE = {
   in_budget: true,
 };
 
+const WORKFLOW_DEFINITION = {
+  phases: [
+    {
+      id: "phase-one",
+      deps: [],
+      agent_role: "coder",
+      description: "Implement the feature",
+      tasks: ["do the thing"],
+      done_when: [
+        { kind: "executable", description: "tests pass", command: "bun test" },
+        { kind: "agent-judged", description: "review approves", command: null },
+      ],
+    },
+  ],
+  steps: [
+    { id: "implement", max_attempts: 2, on_fail: { action: "skip", to: null } },
+    { id: "verify", max_attempts: 1, on_fail: { action: "rewind", to: "implement" } },
+  ],
+  max_iterations: 10,
+  recall_budget: 2000,
+  recall_anchors: { "phase-one": ["src/a.ts"] },
+};
+
+const GATE_REPORT_PAYLOAD = {
+  passed: true,
+  executable_n: 1,
+  agent_judged_n: 1,
+  criteria: [
+    { kind: "executable", description: "tests pass", passed: true, reason: "exit-zero" },
+    { kind: "agent-judged", description: "review approves", passed: true, reason: null },
+  ],
+};
+
 const LIVE_EVENTS: Record<string, EventInput> = {
   recall: {
     type: "recall",
@@ -59,6 +101,42 @@ const LIVE_EVENTS: Record<string, EventInput> = {
   session_start: { type: "session_start" },
   session_end: { type: "session_end" },
   tool_error: { type: "tool_error", tool: "recall", message: "boom" },
+  workflow_run_started: {
+    type: "workflow_run_started",
+    run_id: "r1",
+    branch: "main",
+    definition: WORKFLOW_DEFINITION,
+  },
+  workflow_step_applied_execute: {
+    type: "workflow_step_applied",
+    run_id: "r1",
+    branch: "main",
+    phase_id: "phase-one",
+    result_kind: "execute_step",
+    step_id: "verify",
+    outcome: "success",
+    attempt: 1,
+    gates: GATE_REPORT_PAYLOAD,
+    harvested_n: null,
+  },
+  workflow_step_applied_recall: {
+    type: "workflow_step_applied",
+    run_id: "r1",
+    branch: "main",
+    phase_id: "phase-one",
+    result_kind: "recall",
+    step_id: null,
+    outcome: null,
+    attempt: null,
+    gates: null,
+    harvested_n: null,
+  },
+  workflow_run_marked_stale: {
+    type: "workflow_run_marked_stale",
+    run_id: "r1",
+    branch: "feature",
+    reason: "branch_not_found",
+  },
 };
 
 describe("eventSchema validates the writer-stamped producer events", () => {
@@ -69,9 +147,26 @@ describe("eventSchema validates the writer-stamped producer events", () => {
   }
 });
 
+// Compile-time reverse pin: every gate-runner reason must appear as a key here, and no extra key is
+// accepted, so widening or shrinking ExecutableGateReason fails this file's type check.
+const GATE_REASON_MIRROR = {
+  "exit-zero": true,
+  "exit-nonzero": true,
+  timeout: true,
+  "spawn-error": true,
+  "malformed-command": true,
+} as const satisfies Record<ExecutableGateReason, true>;
+
 describe("event-schema constants", () => {
-  test("SCHEMA_VERSION is 3", () => {
-    expect(SCHEMA_VERSION).toBe(3);
+  test("SCHEMA_VERSION is 4", () => {
+    expect(SCHEMA_VERSION).toBe(4);
+  });
+
+  test("EXECUTABLE_GATE_REASONS mirrors gate-runner's ExecutableGateReason in both directions", () => {
+    // Compile-time forward pin: every listed reason must be a member of the gate-runner union.
+    const forward: readonly ExecutableGateReason[] = EXECUTABLE_GATE_REASONS;
+    const listedReasons: string[] = [...forward].sort();
+    expect(listedReasons).toEqual(Object.keys(GATE_REASON_MIRROR).sort());
   });
 
   test("BOOTSTRAP_TO_EXTENDED maps the five schema-v1 write-path names", () => {
@@ -100,6 +195,35 @@ describe("eventSchema rejects malformed producer events", () => {
     const event = stamp({ type: "rebuild", duration_ms: 0, notes_n: 1, embedded_n: 1, dead_anchors_n: 0, staleness: 3, ollama: { available: true, retries: 0 } });
     expect(eventSchema.safeParse(event).success).toBe(false);
   });
+
+  test("a workflow_step_applied with an unknown result_kind fails", () => {
+    const event = stamp({ ...LIVE_EVENTS["workflow_step_applied_recall"]!, result_kind: "frobnicate" });
+    expect(eventSchema.safeParse(event).success).toBe(false);
+  });
+
+  test("a workflow_run_started without a branch fails", () => {
+    const { branch: _omitted, ...withoutBranch } = LIVE_EVENTS["workflow_run_started"]!;
+    expect(eventSchema.safeParse(stamp(withoutBranch)).success).toBe(false);
+  });
+});
+
+describe("workflow restore variants tolerate future schema versions", () => {
+  const RESTORE_VARIANTS = [
+    ["workflow_run_started", workflowRunStartedRestore],
+    ["workflow_step_applied_execute", workflowStepAppliedRestore],
+    ["workflow_run_marked_stale", workflowRunMarkedStaleRestore],
+  ] as const;
+
+  for (const [name, restoreSchema] of RESTORE_VARIANTS) {
+    test(`${name} restores under schema_version ${SCHEMA_VERSION + 1} while the producer schema refuses it`, () => {
+      const stamped = stamp(LIVE_EVENTS[name]!);
+      const future = { ...stamped, schema_version: SCHEMA_VERSION + 1 };
+
+      expect(restoreSchema.safeParse(stamped).success).toBe(true);
+      expect(restoreSchema.safeParse(future).success).toBe(true);
+      expect(eventSchema.safeParse(future).success).toBe(false);
+    });
+  }
 });
 
 describe("eventSchema recall candidate window", () => {

@@ -13,13 +13,38 @@ import { z } from "zod";
 //   3 — recall enriched: mode, corpus_size, timings{embed_ms, fts_ms, fusion_ms}, candidates[<=20,
 //       fused order, pre-budget-cutoff]{id, type, fts_rank, vector_rank, cosine, rrf, staleness_boost,
 //       token_est, in_budget}. Other events unchanged.
-export const SCHEMA_VERSION = 3;
+//   4 — workflow surface: workflow_run_started (full run definition + retrieval config),
+//       workflow_step_applied (reducer fold step, optional gate report / harvest count) and
+//       workflow_run_marked_stale; every workflow payload names its branch. RESTORE-COMPATIBILITY
+//       RULE: run restore parses with the *Restore schema variants, whose envelope accepts any
+//       integer schema_version >= 4, so a future version bump never renders live runs unreadable —
+//       a bump may EXTEND the workflow payloads but must never repurpose an existing field.
+export const SCHEMA_VERSION = 4;
 
 export const DEDUP_OUTCOMES = ["add", "supersede_suggest", "noop"] as const;
 export const RESOLVE_DECISIONS = ["accept", "reject", "supersede"] as const;
 export const ANCHOR_LIVENESS = ["tracked", "untracked-exists", "missing"] as const;
 export const RECALL_MODES = ["fused", "fts_only", "vector_only", "none"] as const;
 export const RECALL_CANDIDATE_WINDOW = 20;
+
+export const WORKFLOW_RESULT_KINDS = ["recall", "execute_step", "harvest"] as const;
+export const WORKFLOW_STEP_OUTCOMES = ["success", "failure"] as const;
+export const WORKFLOW_ON_FAIL_ACTIONS = ["rewind", "skip", "escalate"] as const;
+export const WORKFLOW_STALE_REASONS = ["branch_not_found"] as const;
+export const DONE_WHEN_KINDS = ["executable", "agent-judged"] as const;
+// Mirrors gate-runner's ExecutableGateReason union; the bidirectional pin lives in event-schema.test.ts
+// so this registry never imports from src/workflow.
+export const EXECUTABLE_GATE_REASONS = [
+  "exit-zero",
+  "exit-nonzero",
+  "timeout",
+  "spawn-error",
+  "malformed-command",
+] as const;
+
+// The schema version that introduced the workflow events; the restore envelope floor is pinned to it
+// (NOT to SCHEMA_VERSION) so events stamped by any past-or-future >=4 producer stay restorable.
+const WORKFLOW_EVENTS_MIN_SCHEMA_VERSION = 4;
 
 // The five schema-v1 event names and the enriched v2 event that now subsumes each. A replay or
 // backfill reads a legacy name through this map; the reader itself never rewrites the log.
@@ -139,6 +164,121 @@ const toolErrorEvent = z.object({
   message: z.string(),
 });
 
+// The version-tolerant envelope for RESTORING workflow runs (see the v4 changelog rule). Producers
+// never use it: live writes validate against the strict envelope above.
+const restoreEnvelope = {
+  session_id: z.string(),
+  ts: z.string(),
+  mneme_version: z.string(),
+  schema_version: z.number().int().min(WORKFLOW_EVENTS_MIN_SCHEMA_VERSION),
+};
+
+// command is null for agent-judged criteria; both criterion kinds share one payload shape.
+const doneWhenCriterion = z.object({
+  kind: z.enum(DONE_WHEN_KINDS),
+  description: z.string(),
+  command: z.string().nullable(),
+});
+
+const runPhase = z.object({
+  id: z.string(),
+  deps: z.array(z.string()),
+  agent_role: z.string(),
+  description: z.string(),
+  tasks: z.array(z.string()),
+  done_when: z.array(doneWhenCriterion),
+});
+
+const runStep = z.object({
+  id: z.string(),
+  max_attempts: z.number().int(),
+  on_fail: z.object({ action: z.enum(WORKFLOW_ON_FAIL_ACTIONS), to: z.string().nullable() }),
+});
+
+const runDefinitionPayload = z.object({
+  phases: z.array(runPhase),
+  steps: z.array(runStep),
+  max_iterations: z.number().int(),
+  recall_budget: z.number().int(),
+  recall_anchors: z.record(z.string(), z.array(z.string())),
+});
+
+const gateCriterionPayload = z.object({
+  kind: z.enum(DONE_WHEN_KINDS),
+  description: z.string(),
+  passed: z.boolean(),
+  reason: z.enum(EXECUTABLE_GATE_REASONS).nullable(),
+});
+
+const workflowRunStartedPayload = {
+  run_id: z.string(),
+  branch: z.string(),
+  definition: runDefinitionPayload,
+};
+
+// step_id/outcome/attempt are null for recall and harvest applications; gates is non-null only for a
+// gated final-step application; harvested_n is non-null only for a harvest application.
+const workflowStepAppliedPayload = {
+  run_id: z.string(),
+  branch: z.string(),
+  phase_id: z.string(),
+  result_kind: z.enum(WORKFLOW_RESULT_KINDS),
+  step_id: z.string().nullable(),
+  outcome: z.enum(WORKFLOW_STEP_OUTCOMES).nullable(),
+  attempt: z.number().int().nullable(),
+  gates: z
+    .object({
+      passed: z.boolean(),
+      executable_n: z.number().int(),
+      agent_judged_n: z.number().int(),
+      criteria: z.array(gateCriterionPayload),
+    })
+    .nullable(),
+  harvested_n: z.number().int().nullable(),
+};
+
+const workflowRunMarkedStalePayload = {
+  run_id: z.string(),
+  branch: z.string(),
+  reason: z.enum(WORKFLOW_STALE_REASONS),
+};
+
+export const workflowRunStartedEvent = z.object({
+  type: z.literal("workflow_run_started"),
+  ...envelope,
+  ...workflowRunStartedPayload,
+});
+
+export const workflowStepAppliedEvent = z.object({
+  type: z.literal("workflow_step_applied"),
+  ...envelope,
+  ...workflowStepAppliedPayload,
+});
+
+export const workflowRunMarkedStaleEvent = z.object({
+  type: z.literal("workflow_run_marked_stale"),
+  ...envelope,
+  ...workflowRunMarkedStalePayload,
+});
+
+export const workflowRunStartedRestore = z.object({
+  type: z.literal("workflow_run_started"),
+  ...restoreEnvelope,
+  ...workflowRunStartedPayload,
+});
+
+export const workflowStepAppliedRestore = z.object({
+  type: z.literal("workflow_step_applied"),
+  ...restoreEnvelope,
+  ...workflowStepAppliedPayload,
+});
+
+export const workflowRunMarkedStaleRestore = z.object({
+  type: z.literal("workflow_run_marked_stale"),
+  ...restoreEnvelope,
+  ...workflowRunMarkedStalePayload,
+});
+
 export const eventSchema = z.discriminatedUnion("type", [
   recallEvent,
   rememberEvent,
@@ -148,4 +288,7 @@ export const eventSchema = z.discriminatedUnion("type", [
   sessionStartEvent,
   sessionEndEvent,
   toolErrorEvent,
+  workflowRunStartedEvent,
+  workflowStepAppliedEvent,
+  workflowRunMarkedStaleEvent,
 ]);

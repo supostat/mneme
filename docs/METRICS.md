@@ -262,6 +262,15 @@ cat "$EVENTS"/*.jsonl | jq -s 'group_by(.type) | map({type: .[0].type, count: le
 > decision (`fts_rank` / `vector_rank` / `cosine` / `token_est` / `type` are null when a channel did
 > not rank the note or its body was absent). All other events are unchanged from v2.
 
+> **Schema note (v4).** Three workflow-run event types are added — `workflow_run_started` (the run's
+> full phase-graph definition + branch anchor + recall config), `workflow_step_applied` (the fold
+> source for branch-scoped resume: `result_kind`, `step_id`, `outcome`, `attempt`, an optional `gates`
+> report, `harvested_n`), and `workflow_run_marked_stale` (an orphaned run whose branch is gone). All
+> carry the project `branch`. None feed the metrics above (the jq recipes filter by specific event
+> types); the log-footprint recipe counts them generically by `.type`. Every event now stamps
+> `schema_version` 4; the reader normalizes older events and `replay.ts` still refuses only a
+> `schema_version` **above** its own. All memory events are unchanged from v3.
+
 ## Offline replay
 
 The candidate list makes each recall decision **reproducible offline**. `scripts/replay.ts` rebuilds

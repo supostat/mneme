@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EMBEDDING_DIMENSION } from "../src/embeddings";
 import type { EmbeddingsClient } from "../src/embeddings";
+import { SCHEMA_VERSION } from "../src/event-schema";
 import { EVENT_FILE_EXTENSION, EventWriter, readEvents } from "../src/events";
 import type { StoredEvent } from "../src/events";
 import { recall } from "../src/recall";
@@ -229,10 +230,10 @@ describe("replayLog window limiting", () => {
 
 describe("replayLog schema handling", () => {
   test("a schema_version ahead of support anywhere refuses the whole log, naming both versions", () => {
-    const events = [recallEventFixture({ candidates: orderedCandidates(), budget: 100 }), bareEvent({ type: "rebuild", schema_version: 4 })];
+    const events = [recallEventFixture({ candidates: orderedCandidates(), budget: 100 }), bareEvent({ type: "rebuild", schema_version: SCHEMA_VERSION + 1 })];
 
-    expect(() => replayLog(events, {})).toThrow("schema_version 4");
-    expect(() => replayLog(events, {})).toThrow("version 3");
+    expect(() => replayLog(events, {})).toThrow(`schema_version ${SCHEMA_VERSION + 1}`);
+    expect(() => replayLog(events, {})).toThrow(`version ${SCHEMA_VERSION}`);
   });
 
   test("a pre-candidate recall event is skipped, not verified", () => {
