@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import packageJson from "../package.json";
 
@@ -69,21 +70,29 @@ function parseManifest(manifestPath: string): Record<string, unknown> {
 
 export async function compileServer(binDir: string, outfile: string): Promise<void> {
   mkdirSync(binDir, { recursive: true });
-  // stdout is ignored, not piped: the build writes the binary to --outfile and its diagnostics to
-  // stderr, so an unread stdout pipe would only risk the child blocking once it fills the OS buffer.
-  const subprocess = Bun.spawn({
-    cmd: ["bun", "build", "--compile", SERVER_ENTRY, "--outfile", outfile],
-    cwd: REPO_ROOT,
-    stdout: "ignore",
-    stderr: "pipe",
-    stdin: "ignore",
-  });
-  const [stderr, exitCode] = await Promise.all([
-    new Response(subprocess.stderr).text(),
-    subprocess.exited,
-  ]);
-  if (exitCode !== 0) {
-    throw new Error(`bun build --compile failed (exit ${exitCode}): ${stderr.trim()}`);
+  // bun build --compile drops .<hash>.bun-build temp files into its cwd and does not clean them up, so it
+  // runs in a throwaway dir removed afterward rather than the repo root (they accumulated to gigabytes
+  // otherwise). SERVER_ENTRY and outfile are absolute, so cwd affects only where those temp files land.
+  const buildDir = mkdtempSync(join(tmpdir(), "mneme-build-"));
+  try {
+    // stdout is ignored, not piped: the build writes the binary to --outfile and its diagnostics to
+    // stderr, so an unread stdout pipe would only risk the child blocking once it fills the OS buffer.
+    const subprocess = Bun.spawn({
+      cmd: ["bun", "build", "--compile", SERVER_ENTRY, "--outfile", outfile],
+      cwd: buildDir,
+      stdout: "ignore",
+      stderr: "pipe",
+      stdin: "ignore",
+    });
+    const [stderr, exitCode] = await Promise.all([
+      new Response(subprocess.stderr).text(),
+      subprocess.exited,
+    ]);
+    if (exitCode !== 0) {
+      throw new Error(`bun build --compile failed (exit ${exitCode}): ${stderr.trim()}`);
+    }
+  } finally {
+    rmSync(buildDir, { recursive: true, force: true });
   }
 }
 
