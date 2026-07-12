@@ -20,9 +20,13 @@ export interface RecallDeps {
   clock: () => Date;
 }
 
+// cosine is null in degraded mode or for a vector-less note; ftsRank is null when the note matched
+// no query term. Both feed the recall-bundle threshold cut downstream.
 export interface RecalledNote {
   id: string;
   body: string;
+  cosine: number | null;
+  ftsRank: number | null;
 }
 
 export interface RecallResult {
@@ -123,7 +127,7 @@ function runFusion(
     DEFAULT_FUSION_PARAMS,
     budget,
   );
-  const notes = collectNotes(decisions, bodyById);
+  const notes = collectNotes(decisions, bodyById, ftsRanks, cosineRanks);
   return { decisions, notes, cosineRanks, metaById, vectorAttempted, ms: deps.clock().getTime() - startedAt };
 }
 
@@ -148,10 +152,20 @@ function assembleInputs(
 
 // An in-budget decision was admitted by the fill, which requires a non-null token estimate, which in
 // turn required the note's body row — so the body lookup here cannot miss.
-function collectNotes(decisions: FusionDecision[], bodyById: Map<string, string>): RecalledNote[] {
+function collectNotes(
+  decisions: FusionDecision[],
+  bodyById: Map<string, string>,
+  ftsRanks: Map<string, number>,
+  cosineRanks: Map<string, CosineRank>,
+): RecalledNote[] {
   return decisions
     .filter((decision) => decision.inBudget)
-    .map((decision) => ({ id: decision.id, body: bodyById.get(decision.id)! }));
+    .map((decision) => ({
+      id: decision.id,
+      body: bodyById.get(decision.id)!,
+      cosine: cosineRanks.get(decision.id)?.cosine ?? null,
+      ftsRank: ftsRanks.get(decision.id) ?? null,
+    }));
 }
 
 function buildCandidates(

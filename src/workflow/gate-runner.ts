@@ -1,7 +1,7 @@
 import { evaluateConverge } from "./converge";
 import type { Vote } from "./converge";
 import type { DoneWhenCriterion, ExecutableCriterion } from "./phase-document";
-import type { StepResult } from "./reducer";
+import type { ExecuteStepResult } from "./reducer";
 
 // Gate evaluation runs BESIDE the reducer, never inside it: the caller reduces the final step, runs
 // runPhaseGates over the phase's done-when criteria, then maps the report with stepResultFromGateReport
@@ -97,8 +97,8 @@ export function stepResultFromGateReport(
   phaseId: string,
   stepId: string,
   report: GateReport,
-): StepResult {
-  return { phaseId, stepId, outcome: report.passed ? "success" : "failure" };
+): ExecuteStepResult {
+  return { kind: "execute_step", phaseId, stepId, outcome: report.passed ? "success" : "failure" };
 }
 
 export function formatGateReport(report: GateReport): string {

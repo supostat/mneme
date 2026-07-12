@@ -545,6 +545,38 @@ describe("recall candidate logging", () => {
     const result = await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "payment refund", 100000);
 
     expect(Object.keys(result).sort()).toEqual(["degraded", "notes", "returnedIds"]);
+    expect(result.notes.length).toBeGreaterThan(0);
+    for (const note of result.notes) {
+      expect(Object.keys(note).sort()).toEqual(["body", "cosine", "ftsRank", "id"]);
+    }
+  });
+
+  test("a fused note carries its cosine and fts rank; a degraded note carries a null cosine", async () => {
+    const specs: NoteSpec[] = [{ id: ulid(0), body: "payment refund ledger", anchor: "src/pay.ts" }];
+    const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
+
+    const fused = await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "payment refund", 100000);
+    expect(fused.notes[0]!.ftsRank).toBe(1);
+    expect(fused.notes[0]!.cosine).toBeGreaterThan(0);
+
+    const degraded = await recall(openRecall(indexPath, eventsDir, offlineClient()), "payment refund", 100000);
+    expect(degraded.degraded).toBe(true);
+    expect(degraded.notes[0]!.ftsRank).toBe(1);
+    expect(degraded.notes[0]!.cosine).toBeNull();
+  });
+
+  test("a cosine-only match with no shared terms carries a null fts rank and a numeric cosine", async () => {
+    const specs: NoteSpec[] = [
+      { id: ulid(0), body: "payment refund ledger reconciliation", anchor: "src/pay.ts" },
+      { id: ulid(1), body: "zebra quokka wombat burrow habitat", anchor: "src/zoo.ts" },
+    ];
+    const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
+
+    const result = await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "payment refund ledger", 100000);
+
+    const cosineOnly = result.notes.find((note) => note.id === ulid(1))!;
+    expect(cosineOnly.ftsRank).toBeNull();
+    expect(cosineOnly.cosine).toBe(0);
   });
 });
 

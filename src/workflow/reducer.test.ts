@@ -4,7 +4,7 @@ import type { PhaseGraph } from "./phase-graph";
 import { FailurePolicyValidationError } from "./failure-policy";
 import type { StepDefinition } from "./failure-policy";
 import { WorkflowStateError, applyStepResult, initialRun, reduce } from "./reducer";
-import type { ExecuteStepDirective, RunDefinition, StepResult, WorkflowRun } from "./reducer";
+import type { Directive, RunDefinition, StepResult, WorkflowRun } from "./reducer";
 import type { PhaseDocument } from "./phase-document";
 
 function phase(id: string, deps: string[] = [], agentRole = "coder"): PhaseDocument {
@@ -43,34 +43,61 @@ function soloDefinition(stepDefinitions: StepDefinition[], maxIterations = 100):
 }
 
 function success(phaseId: string, stepId: string): StepResult {
-  return { phaseId, stepId, outcome: "success" };
+  return { kind: "execute_step", phaseId, stepId, outcome: "success" };
 }
 
 function failure(phaseId: string, stepId: string): StepResult {
-  return { phaseId, stepId, outcome: "failure" };
+  return { kind: "execute_step", phaseId, stepId, outcome: "failure" };
 }
 
+function recallDone(phaseId: string): StepResult {
+  return { kind: "recall", phaseId };
+}
+
+function harvestDone(phaseId: string): StepResult {
+  return { kind: "harvest", phaseId };
+}
+
+// Auto-submits the recall/harvest completions the lifecycle dispenses around the queued
+// execute-step results, so specs read as sequences of agent outcomes.
 function drive(definition: RunDefinition, results: StepResult[]): WorkflowRun {
   let run = initialRun(definition);
   for (const result of results) {
+    run = flushLifecycleDirectives(run, definition);
     run = applyStepResult(run, definition, result);
+  }
+  return flushLifecycleDirectives(run, definition);
+}
+
+function flushLifecycleDirectives(run: WorkflowRun, definition: RunDefinition): WorkflowRun {
+  while (run.status === "running") {
+    const directive = reduce(run, definition);
+    if (directive.kind === "recall") {
+      run = applyStepResult(run, definition, recallDone(directive.phaseId));
+    } else if (directive.kind === "harvest") {
+      run = applyStepResult(run, definition, harvestDone(directive.phaseId));
+    } else {
+      return run;
+    }
   }
   return run;
 }
 
-function driveToEnd(definition: RunDefinition): {
-  directives: ExecuteStepDirective[];
-  run: WorkflowRun;
-} {
+function driveToEnd(definition: RunDefinition): { directives: Directive[]; run: WorkflowRun } {
   let run = initialRun(definition);
-  const directives: ExecuteStepDirective[] = [];
+  const directives: Directive[] = [];
   while (run.status === "running") {
     const directive = reduce(run, definition);
-    if (directive.kind !== "execute_step") {
-      throw new Error(`a running run must dispense execute_step, got ${directive.kind}`);
-    }
     directives.push(directive);
-    run = applyStepResult(run, definition, success(directive.phaseId, directive.stepId));
+    if (directive.kind === "recall") {
+      run = applyStepResult(run, definition, recallDone(directive.phaseId));
+    } else if (directive.kind === "harvest") {
+      run = applyStepResult(run, definition, harvestDone(directive.phaseId));
+    } else if (directive.kind === "execute_step") {
+      run = applyStepResult(run, definition, success(directive.phaseId, directive.stepId));
+    } else {
+      throw new Error(`a running run must dispense a work directive, got ${directive.kind}`);
+    }
   }
   return { directives, run };
 }
@@ -105,10 +132,14 @@ describe("linear run", () => {
     const definition = definitionOf(linearGraph(), steps("plan", "code"));
     const { directives, run } = driveToEnd(definition);
     expect(directives).toEqual([
+      { kind: "recall", phaseId: "alpha" },
       { kind: "execute_step", phaseId: "alpha", stepId: "plan", agentRole: "planner", attempt: 1 },
       { kind: "execute_step", phaseId: "alpha", stepId: "code", agentRole: "planner", attempt: 1 },
+      { kind: "harvest", phaseId: "alpha" },
+      { kind: "recall", phaseId: "beta" },
       { kind: "execute_step", phaseId: "beta", stepId: "plan", agentRole: "builder", attempt: 1 },
       { kind: "execute_step", phaseId: "beta", stepId: "code", agentRole: "builder", attempt: 1 },
+      { kind: "harvest", phaseId: "beta" },
     ]);
     expect(run.status).toBe("complete");
     expect(run.phaseStatuses).toEqual({ alpha: "closed", beta: "closed" });
@@ -120,7 +151,8 @@ describe("diamond run", () => {
   test("closes phases in ascending-id order between the branches", () => {
     const definition = definitionOf(diamondGraph(), steps("work"));
     const { directives, run } = driveToEnd(definition);
-    expect(directives.map((directive) => directive.phaseId)).toEqual(["a", "b", "c", "d"]);
+    const executed = directives.filter((directive) => directive.kind === "execute_step");
+    expect(executed.map((directive) => directive.phaseId)).toEqual(["a", "b", "c", "d"]);
     expect(run.status).toBe("complete");
   });
 
@@ -129,8 +161,16 @@ describe("diamond run", () => {
     let run = initialRun(definition);
     while (run.status === "running") {
       const directive = reduce(run, definition);
+      if (directive.kind === "recall") {
+        run = applyStepResult(run, definition, recallDone(directive.phaseId));
+        continue;
+      }
+      if (directive.kind === "harvest") {
+        run = applyStepResult(run, definition, harvestDone(directive.phaseId));
+        continue;
+      }
       if (directive.kind !== "execute_step") {
-        throw new Error(`a running run must dispense execute_step, got ${directive.kind}`);
+        throw new Error(`a running run must dispense a work directive, got ${directive.kind}`);
       }
       const dispensedPhase = definition.graph.phases[directive.phaseId];
       if (dispensedPhase === undefined) {
@@ -145,10 +185,76 @@ describe("diamond run", () => {
   });
 });
 
+describe("memory lifecycle", () => {
+  test("recall is dispensed before any execute_step", () => {
+    const definition = definitionOf(linearGraph(), steps("plan", "code"));
+    expect(reduce(initialRun(definition), definition)).toEqual({ kind: "recall", phaseId: "alpha" });
+  });
+
+  test("an execute_step result while recall is expected is rejected", () => {
+    const definition = definitionOf(linearGraph(), steps("plan", "code"));
+    expect(() => applyStepResult(initialRun(definition), definition, success("alpha", "plan"))).toThrow(
+      WorkflowStateError,
+    );
+  });
+
+  test("a recall completion for the wrong phase is rejected", () => {
+    const definition = definitionOf(linearGraph(), steps("plan", "code"));
+    expect(() => applyStepResult(initialRun(definition), definition, recallDone("beta"))).toThrow(
+      WorkflowStateError,
+    );
+  });
+
+  test("a recall completion opens the phase without consuming an iteration", () => {
+    const definition = definitionOf(linearGraph(), steps("plan", "code"));
+    const run = applyStepResult(initialRun(definition), definition, recallDone("alpha"));
+    expect(run.activePhaseId).toBe("alpha");
+    expect(run.iterationsUsed).toBe(0);
+    expect(reduce(run, definition)).toEqual({
+      kind: "execute_step",
+      phaseId: "alpha",
+      stepId: "plan",
+      agentRole: "planner",
+      attempt: 1,
+    });
+  });
+
+  test("harvest is dispensed only after final-step success and consumes no iteration", () => {
+    const definition = soloDefinition(steps("plan", "code"));
+    let run = applyStepResult(initialRun(definition), definition, recallDone("solo"));
+    run = applyStepResult(run, definition, success("solo", "plan"));
+    expect(reduce(run, definition).kind).toBe("execute_step");
+    run = applyStepResult(run, definition, success("solo", "code"));
+    expect(run.phaseStatuses["solo"]).toBe("pending");
+    expect(reduce(run, definition)).toEqual({ kind: "harvest", phaseId: "solo" });
+    run = applyStepResult(run, definition, harvestDone("solo"));
+    expect(run.status).toBe("complete");
+    expect(run.iterationsUsed).toBe(2);
+  });
+
+  test("a harvest result while an execute_step is expected is rejected", () => {
+    const definition = soloDefinition(steps("code"));
+    const run = applyStepResult(initialRun(definition), definition, recallDone("solo"));
+    expect(() => applyStepResult(run, definition, harvestDone("solo"))).toThrow(WorkflowStateError);
+  });
+
+  test("exhaustion with a pending harvest still accepts the harvest, then fails before the next phase", () => {
+    const definition = definitionOf(linearGraph(), steps("code"), 1);
+    let run = applyStepResult(initialRun(definition), definition, recallDone("alpha"));
+    run = applyStepResult(run, definition, success("alpha", "code"));
+    expect(run.status).toBe("running");
+    expect(reduce(run, definition)).toEqual({ kind: "harvest", phaseId: "alpha" });
+    run = applyStepResult(run, definition, harvestDone("alpha"));
+    expect(run.status).toBe("failed");
+    expect(run.failureReason).toBe("max_iterations_exhausted");
+    expect(run.phaseStatuses["alpha"]).toBe("closed");
+  });
+});
+
 describe("failure handling", () => {
   test("a failure under the attempt budget re-dispenses the same step as attempt 2", () => {
     const definition = soloDefinition([{ id: "code", maxAttempts: 2, onFail: { action: "escalate" } }]);
-    let run = initialRun(definition);
+    let run = applyStepResult(initialRun(definition), definition, recallDone("solo"));
     run = applyStepResult(run, definition, failure("solo", "code"));
     expect(run.status).toBe("running");
     expect(reduce(run, definition)).toEqual({
@@ -159,6 +265,7 @@ describe("failure handling", () => {
       attempt: 2,
     });
     run = applyStepResult(run, definition, success("solo", "code"));
+    run = applyStepResult(run, definition, harvestDone("solo"));
     expect(run.status).toBe("complete");
   });
 
@@ -234,9 +341,10 @@ describe("failure handling", () => {
     });
   });
 
-  test("a skip on the last step closes the phase and completes the run", () => {
+  test("a skip on the last step closes the phase without dispensing harvest", () => {
     const definition = soloDefinition([{ id: "code", maxAttempts: 1, onFail: { action: "skip" } }]);
-    const run = drive(definition, [failure("solo", "code")]);
+    let run = applyStepResult(initialRun(definition), definition, recallDone("solo"));
+    run = applyStepResult(run, definition, failure("solo", "code"));
     expect(run.status).toBe("complete");
     expect(run.phaseStatuses).toEqual({ solo: "closed" });
     expect(reduce(run, definition)).toEqual({ kind: "run_complete" });
@@ -291,7 +399,7 @@ describe("escalation", () => {
 describe("result validation", () => {
   test("a result for the wrong phase is rejected", () => {
     const definition = definitionOf(linearGraph(), steps("plan", "code"));
-    const run = initialRun(definition);
+    const run = applyStepResult(initialRun(definition), definition, recallDone("alpha"));
     expect(() => applyStepResult(run, definition, success("beta", "plan"))).toThrow(
       WorkflowStateError,
     );
@@ -299,7 +407,7 @@ describe("result validation", () => {
 
   test("a result for the wrong step is rejected", () => {
     const definition = definitionOf(linearGraph(), steps("plan", "code"));
-    const run = initialRun(definition);
+    const run = applyStepResult(initialRun(definition), definition, recallDone("alpha"));
     expect(() => applyStepResult(run, definition, success("alpha", "code"))).toThrow(
       WorkflowStateError,
     );

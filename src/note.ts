@@ -26,7 +26,7 @@ export function isNoteId(value: string): boolean {
 const COMMIT_REGEX = /^[0-9a-f]{7,40}$/;
 const CREATED_REGEX = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
 const CONTROL_CHARACTERS_REGEX = /[\0\r\n]/;
-const MAX_BODY_CODE_POINTS = 1500;
+export const MAX_BODY_CODE_POINTS = 1500;
 
 const FRONTMATTER_FENCE = "---\n";
 const FRONTMATTER_CLOSING = "\n---\n";

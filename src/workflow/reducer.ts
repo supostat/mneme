@@ -1,54 +1,40 @@
-import type { PhaseGraph, PhaseStatus } from "./phase-graph";
 import { selectNextReadyPhase } from "./phase-graph";
+import type { PhaseStatus } from "./phase-graph";
 import type { StepDefinition } from "./failure-policy";
 import { resolveFailure, validateRunPolicy } from "./failure-policy";
+import type {
+  Directive,
+  ExecuteStepResult,
+  RunDefinition,
+  RunEscalation,
+  StepResult,
+  WorkflowRun,
+} from "./run-state";
+
+export type {
+  Directive,
+  ExecuteStepDirective,
+  ExecuteStepResult,
+  HarvestDirective,
+  HarvestStepResult,
+  RecallDirective,
+  RecallStepResult,
+  RunDefinition,
+  RunEscalation,
+  RunStatus,
+  StepResult,
+  WorkflowRun,
+} from "./run-state";
+
+// Recall opens a phase and harvest closes it as the engine's own lifecycle steps: a phase is entered
+// through a recall directive and, after its final step succeeds, left through a harvest directive — a
+// failure path never dispenses harvest. Their completions carry no outcome and no retry budget:
+// recall never fails hard (the degradation convention) and a green phase's closure must not be gated
+// on memory bookkeeping; executor-side errors are the caller's policy. They also consume no
+// iterations — the budget bounds agent-step executions, while lifecycle steps are structurally
+// bounded by phase count.
 
 export class WorkflowStateError extends Error {}
-
-export interface RunDefinition {
-  graph: PhaseGraph;
-  steps: StepDefinition[];
-  maxIterations: number;
-}
-
-export type RunStatus = "running" | "complete" | "failed" | "escalated";
-
-export interface RunEscalation {
-  phaseId: string;
-  stepId: string;
-  reason: string;
-}
-
-export interface WorkflowRun {
-  status: RunStatus;
-  phaseStatuses: Record<string, PhaseStatus>;
-  activePhaseId: string | null;
-  stepIndex: number;
-  stepAttempts: number[];
-  iterationsUsed: number;
-  failureReason: string | null;
-  escalation: RunEscalation | null;
-}
-
-export interface ExecuteStepDirective {
-  kind: "execute_step";
-  phaseId: string;
-  stepId: string;
-  agentRole: string;
-  attempt: number;
-}
-
-export type Directive =
-  | ExecuteStepDirective
-  | { kind: "run_complete" }
-  | { kind: "run_failed"; reason: string }
-  | { kind: "escalate"; phaseId: string; stepId: string; reason: string };
-
-export interface StepResult {
-  phaseId: string;
-  stepId: string;
-  outcome: "success" | "failure";
-}
 
 const MAX_ITERATIONS_EXHAUSTED = "max_iterations_exhausted";
 const RETRY_BUDGET_EXHAUSTED = "retry_budget_exhausted";
@@ -72,6 +58,30 @@ export function initialRun(definition: RunDefinition): WorkflowRun {
 }
 
 export function reduce(run: WorkflowRun, definition: RunDefinition): Directive {
+  const terminal = terminalDirective(run);
+  if (terminal !== null) {
+    return terminal;
+  }
+  if (run.activePhaseId === null) {
+    const phaseId = selectNextReadyPhase(definition.graph, run.phaseStatuses);
+    if (phaseId === null) {
+      throw new Error("running workflow has no ready phase: dependency graph invariant violated");
+    }
+    return { kind: "recall", phaseId };
+  }
+  if (harvestPending(run, definition)) {
+    return { kind: "harvest", phaseId: run.activePhaseId };
+  }
+  return {
+    kind: "execute_step",
+    phaseId: run.activePhaseId,
+    stepId: stepAt(definition, run.stepIndex).id,
+    agentRole: agentRoleOf(definition, run.activePhaseId),
+    attempt: attemptsAt(run, run.stepIndex) + 1,
+  };
+}
+
+function terminalDirective(run: WorkflowRun): Directive | null {
   if (run.status === "complete") {
     return { kind: "run_complete" };
   }
@@ -87,17 +97,7 @@ export function reduce(run: WorkflowRun, definition: RunDefinition): Directive {
       reason: escalation.reason,
     };
   }
-  const phaseId = run.activePhaseId ?? selectNextReadyPhase(definition.graph, run.phaseStatuses);
-  if (phaseId === null) {
-    throw new Error("running workflow has no ready phase: dependency graph invariant violated");
-  }
-  return {
-    kind: "execute_step",
-    phaseId,
-    stepId: stepAt(definition, run.stepIndex).id,
-    agentRole: agentRoleOf(definition, phaseId),
-    attempt: attemptsAt(run, run.stepIndex) + 1,
-  };
+  return null;
 }
 
 export function applyStepResult(
@@ -105,50 +105,72 @@ export function applyStepResult(
   definition: RunDefinition,
   result: StepResult,
 ): WorkflowRun {
-  const expected = requireExpectedStep(run, definition, result);
+  requireMatchingDirective(run, reduce(run, definition), result);
   const next: WorkflowRun = {
     ...run,
     phaseStatuses: { ...run.phaseStatuses },
     stepAttempts: [...run.stepAttempts],
-    iterationsUsed: run.iterationsUsed + 1,
-    activePhaseId: expected.phaseId,
   };
-  if (result.outcome === "success") {
-    advanceStep(next, definition);
-  } else {
-    applyFailure(next, definition, expected);
+  if (result.kind === "recall") {
+    next.activePhaseId = result.phaseId;
+    return next;
   }
-  if (next.status === "running" && next.iterationsUsed >= definition.maxIterations) {
-    next.status = "failed";
-    next.failureReason = MAX_ITERATIONS_EXHAUSTED;
+  if (result.kind === "harvest") {
+    closeActivePhase(next);
+    failWhenExhausted(next, definition);
+    return next;
   }
+  applyExecuteStepResult(next, definition, result);
   return next;
 }
 
-function requireExpectedStep(
-  run: WorkflowRun,
+function applyExecuteStepResult(
+  next: WorkflowRun,
   definition: RunDefinition,
-  result: StepResult,
-): ExecuteStepDirective {
-  const expected = reduce(run, definition);
-  if (expected.kind !== "execute_step") {
+  result: ExecuteStepResult,
+): void {
+  next.iterationsUsed += 1;
+  if (result.outcome === "success") {
+    next.stepIndex += 1;
+  } else {
+    applyFailure(next, definition, result);
+  }
+  if (!harvestPending(next, definition)) {
+    failWhenExhausted(next, definition);
+  }
+}
+
+function harvestPending(run: WorkflowRun, definition: RunDefinition): boolean {
+  return run.activePhaseId !== null && run.stepIndex === definition.steps.length;
+}
+
+function requireMatchingDirective(run: WorkflowRun, expected: Directive, result: StepResult): void {
+  if (expected.kind !== "execute_step" && expected.kind !== "recall" && expected.kind !== "harvest") {
     throw new WorkflowStateError(`cannot apply a step result to a ${run.status} run`);
   }
-  if (expected.phaseId !== result.phaseId || expected.stepId !== result.stepId) {
+  if (expected.kind !== result.kind) {
+    throw new WorkflowStateError(
+      `expected a ${expected.kind} completion, received ${result.kind}`,
+    );
+  }
+  if (expected.phaseId !== result.phaseId) {
+    throw new WorkflowStateError(
+      `expected a result for phase ${expected.phaseId}, received ${result.phaseId}`,
+    );
+  }
+  if (expected.kind === "execute_step" && result.kind === "execute_step" && expected.stepId !== result.stepId) {
     throw new WorkflowStateError(
       `expected a result for ${expected.phaseId}/${expected.stepId}, ` +
         `received ${result.phaseId}/${result.stepId}`,
     );
   }
-  return expected;
 }
 
-function advanceStep(next: WorkflowRun, definition: RunDefinition): void {
-  if (next.stepIndex + 1 < definition.steps.length) {
-    next.stepIndex += 1;
-    return;
+function failWhenExhausted(next: WorkflowRun, definition: RunDefinition): void {
+  if (next.status === "running" && next.iterationsUsed >= definition.maxIterations) {
+    next.status = "failed";
+    next.failureReason = MAX_ITERATIONS_EXHAUSTED;
   }
-  closeActivePhase(next);
 }
 
 function closeActivePhase(next: WorkflowRun): void {
@@ -168,7 +190,7 @@ function closeActivePhase(next: WorkflowRun): void {
 function applyFailure(
   next: WorkflowRun,
   definition: RunDefinition,
-  expected: ExecuteStepDirective,
+  result: ExecuteStepResult,
 ): void {
   const step = stepAt(definition, next.stepIndex);
   const failedAttempt = attemptsAt(next, next.stepIndex) + 1;
@@ -182,15 +204,25 @@ function applyFailure(
     return;
   }
   if (resolution.action === "skip") {
-    advanceStep(next, definition);
+    skipStep(next, definition);
     return;
   }
   next.status = "escalated";
   next.escalation = {
-    phaseId: expected.phaseId,
-    stepId: expected.stepId,
+    phaseId: result.phaseId,
+    stepId: result.stepId,
     reason: RETRY_BUDGET_EXHAUSTED,
   };
+}
+
+// A skipped FINAL step closes the phase directly, never leaving a harvest pending: harvest is
+// dispensed on success paths only.
+function skipStep(next: WorkflowRun, definition: RunDefinition): void {
+  if (next.stepIndex + 1 < definition.steps.length) {
+    next.stepIndex += 1;
+    return;
+  }
+  closeActivePhase(next);
 }
 
 function rewindTo(next: WorkflowRun, definition: RunDefinition, targetStepId: string): void {

@@ -322,6 +322,7 @@ describe("stepResultFromGateReport", () => {
 
   test("a passing report maps to a success step result", () => {
     expect(stepResultFromGateReport("solo", "verify", passingReport)).toEqual({
+      kind: "execute_step",
       phaseId: "solo",
       stepId: "verify",
       outcome: "success",
@@ -330,6 +331,7 @@ describe("stepResultFromGateReport", () => {
 
   test("a failing report maps to a failure step result", () => {
     expect(stepResultFromGateReport("solo", "verify", { ...passingReport, passed: false })).toEqual({
+      kind: "execute_step",
       phaseId: "solo",
       stepId: "verify",
       outcome: "failure",
@@ -355,6 +357,7 @@ function soloDefinition(doneWhen: DoneWhenCriterion[]): RunDefinition {
 
 // The COMPOSITION RULE made concrete: a caller runs gates ONLY when the step's own work succeeded; a
 // failed step submits "failure" without touching runPhaseGates, so gates can never rescue a failure.
+// The phase opens through a recall completion before its first step is dispensed.
 async function submitFinalStep(
   run: WorkflowRun,
   definition: RunDefinition,
@@ -362,12 +365,14 @@ async function submitFinalStep(
   options: GateRunOptions,
   agentOutcome: "success" | "failure",
 ): Promise<WorkflowRun> {
+  run = applyStepResult(run, definition, { kind: "recall", phaseId: "solo" });
   const directive = reduce(run, definition);
   if (directive.kind !== "execute_step") {
     throw new Error(`expected an execute_step directive, received ${directive.kind}`);
   }
   if (agentOutcome === "failure") {
     return applyStepResult(run, definition, {
+      kind: "execute_step",
       phaseId: directive.phaseId,
       stepId: directive.stepId,
       outcome: "failure",
@@ -382,16 +387,19 @@ async function submitFinalStep(
 }
 
 describe("reducer integration through the gate seam", () => {
-  test("a green gate closes the phase and completes the run", async () => {
+  test("a green gate leaves harvest pending; the harvest completion closes the phase", async () => {
     const doneWhen = [executable("command succeeds", "bun exit-zero.ts")];
     const definition = soloDefinition(doneWhen);
-    const run = await submitFinalStep(
+    let run = await submitFinalStep(
       initialRun(definition),
       definition,
       doneWhen,
       optionsFor(sharedProjectRoot),
       "success",
     );
+    expect(run.status).toBe("running");
+    expect(reduce(run, definition)).toEqual({ kind: "harvest", phaseId: "solo" });
+    run = applyStepResult(run, definition, { kind: "harvest", phaseId: "solo" });
     expect(run.status).toBe("complete");
     expect(run.phaseStatuses["solo"]).toBe("closed");
   }, 15_000);
