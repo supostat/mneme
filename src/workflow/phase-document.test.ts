@@ -4,7 +4,7 @@ import {
   parsePhaseDocument,
   serializePhaseDocument,
 } from "./phase-document";
-import type { PhaseDocument } from "./phase-document";
+import type { DoneWhenCriterion, PhaseDocument } from "./phase-document";
 
 const baseDocument: PhaseDocument = {
   id: "phase-seven",
@@ -12,7 +12,7 @@ const baseDocument: PhaseDocument = {
   agentRole: "coder",
   description: "Build the reducer core.",
   tasks: ["Implement the parser"],
-  doneWhen: [{ description: "tests pass", command: "bun test" }],
+  doneWhen: [{ kind: "executable", description: "tests pass", command: "bun test" }],
 };
 
 function document(overrides: Partial<PhaseDocument>): PhaseDocument {
@@ -39,6 +39,27 @@ const canonicalText = [
   "```",
   "bun test",
   "```",
+  "",
+].join("\n");
+
+const canonicalTextWithAgentJudged = [
+  "---",
+  'id: "phase-seven"',
+  'deps: ["phase-six"]',
+  'agent-role: "coder"',
+  "---",
+  "Build the reducer core.",
+  "",
+  "## Tasks",
+  "- Implement the parser",
+  "",
+  "## Done-when",
+  "- tests pass",
+  "```",
+  "bun test",
+  "```",
+  "- reviewer approves",
+  "agent-judged: true",
   "",
 ].join("\n");
 
@@ -82,8 +103,8 @@ describe("phase document round-trip", () => {
     const original = document({
       tasks: ["Write the parser", "Write the serializer", "Wire validation"],
       doneWhen: [
-        { description: "tests pass", command: "bun test" },
-        { description: "types check", command: "bunx tsc --noEmit" },
+        { kind: "executable", description: "tests pass", command: "bun test" },
+        { kind: "executable", description: "types check", command: "bunx tsc --noEmit" },
       ],
     });
     expect(parsePhaseDocument(serializePhaseDocument(original))).toEqual(original);
@@ -109,6 +130,126 @@ describe("phase document round-trip", () => {
   });
 });
 
+describe("phase document agent-judged grammar", () => {
+  test("serialize then parse preserves an agent-judged criterion", () => {
+    const original = document({
+      doneWhen: [{ kind: "agent-judged", description: "reviewer approves" }],
+    });
+    expect(parsePhaseDocument(serializePhaseDocument(original))).toEqual(original);
+  });
+
+  test("serialize then parse preserves a document mixing both criterion kinds", () => {
+    const original = document({
+      doneWhen: [
+        { kind: "executable", description: "tests pass", command: "bun test" },
+        { kind: "agent-judged", description: "reviewer approves" },
+      ],
+    });
+    expect(parsePhaseDocument(serializePhaseDocument(original))).toEqual(original);
+  });
+
+  test("canonical text with an agent-judged criterion is byte-stable", () => {
+    expect(serializePhaseDocument(parsePhaseDocument(canonicalTextWithAgentJudged))).toBe(
+      canonicalTextWithAgentJudged,
+    );
+  });
+
+  test("a marker on the line after the bullet parses as agent-judged", () => {
+    const parsed = parsePhaseDocument(
+      phaseText(frontmatterLines, [
+        "## Tasks",
+        "- Implement the parser",
+        "",
+        "## Done-when",
+        "- reviewer approves",
+        "agent-judged: true",
+      ]),
+    );
+    expect(parsed.doneWhen).toEqual([{ kind: "agent-judged", description: "reviewer approves" }]);
+  });
+
+  test("an agent-judged: false line is rejected as a missing fence", () => {
+    expect(
+      parseOf(
+        phaseText(frontmatterLines, [
+          "## Tasks",
+          "- Implement the parser",
+          "",
+          "## Done-when",
+          "- reviewer approves",
+          "agent-judged: false",
+        ]),
+      ),
+    ).toThrow(PhaseDocumentValidationError);
+  });
+
+  test("a marker without a preceding bullet is rejected", () => {
+    expect(
+      parseOf(
+        phaseText(frontmatterLines, [
+          "## Tasks",
+          "- Implement the parser",
+          "",
+          "## Done-when",
+          "agent-judged: true",
+        ]),
+      ),
+    ).toThrow(PhaseDocumentValidationError);
+  });
+
+  test("a marker followed by a stray fence is rejected", () => {
+    expect(
+      parseOf(
+        phaseText(frontmatterLines, [
+          "## Tasks",
+          "- Implement the parser",
+          "",
+          "## Done-when",
+          "- reviewer approves",
+          "agent-judged: true",
+          "```",
+          "bun test",
+          "```",
+        ]),
+      ),
+    ).toThrow(PhaseDocumentValidationError);
+  });
+
+  test("a blank line between the bullet and the marker is rejected", () => {
+    expect(
+      parseOf(
+        phaseText(frontmatterLines, [
+          "## Tasks",
+          "- Implement the parser",
+          "",
+          "## Done-when",
+          "- reviewer approves",
+          "",
+          "agent-judged: true",
+        ]),
+      ),
+    ).toThrow(PhaseDocumentValidationError);
+  });
+
+  test("a forbidden character in an agent-judged description is rejected", () => {
+    expect(
+      serializeWith({
+        doneWhen: [
+          { kind: "agent-judged", description: `reviewer${String.fromCharCode(0x00)}approves` },
+        ],
+      }),
+    ).toThrow(PhaseDocumentValidationError);
+  });
+
+  test("a criterion with an unknown kind is rejected", () => {
+    const criterion = {
+      kind: "mystery",
+      description: "reviewer approves",
+    } as unknown as DoneWhenCriterion;
+    expect(serializeWith({ doneWhen: [criterion] })).toThrow(PhaseDocumentValidationError);
+  });
+});
+
 describe("phase document parse tolerance", () => {
   test("language-tagged fence is accepted and the tag is discarded", () => {
     const parsed = parsePhaseDocument(
@@ -123,7 +264,7 @@ describe("phase document parse tolerance", () => {
         "```",
       ]),
     );
-    expect(parsed.doneWhen).toEqual([{ description: "tests pass", command: "bun test" }]);
+    expect(parsed.doneWhen).toEqual([{ kind: "executable", description: "tests pass", command: "bun test" }]);
   });
 
   test("extra blank lines between sections, bullets and criteria are tolerated", () => {
@@ -153,8 +294,8 @@ describe("phase document parse tolerance", () => {
     );
     expect(parsed.tasks).toEqual(["First task", "Second task"]);
     expect(parsed.doneWhen).toEqual([
-      { description: "tests pass", command: "bun test" },
-      { description: "types check", command: "bunx tsc --noEmit" },
+      { kind: "executable", description: "tests pass", command: "bun test" },
+      { kind: "executable", description: "types check", command: "bunx tsc --noEmit" },
     ]);
   });
 });
@@ -653,26 +794,32 @@ describe("phase document serialize rejection", () => {
   });
 
   test("blank criterion description is rejected", () => {
-    expect(serializeWith({ doneWhen: [{ description: "", command: "bun test" }] })).toThrow(
+    expect(
+      serializeWith({ doneWhen: [{ kind: "executable", description: "", command: "bun test" }] }),
+    ).toThrow(
       PhaseDocumentValidationError,
     );
   });
 
   test("blank command is rejected", () => {
-    expect(serializeWith({ doneWhen: [{ description: "tests pass", command: " " }] })).toThrow(
-      PhaseDocumentValidationError,
-    );
+    expect(
+      serializeWith({ doneWhen: [{ kind: "executable", description: "tests pass", command: " " }] }),
+    ).toThrow(PhaseDocumentValidationError);
   });
 
   test("multi-line command is rejected", () => {
     expect(
-      serializeWith({ doneWhen: [{ description: "tests pass", command: "bun\ntest" }] }),
+      serializeWith({
+        doneWhen: [{ kind: "executable", description: "tests pass", command: "bun\ntest" }],
+      }),
     ).toThrow(PhaseDocumentValidationError);
   });
 
   test("command starting with a fence is rejected", () => {
     expect(
-      serializeWith({ doneWhen: [{ description: "tests pass", command: "```bun test" }] }),
+      serializeWith({
+        doneWhen: [{ kind: "executable", description: "tests pass", command: "```bun test" }],
+      }),
     ).toThrow(PhaseDocumentValidationError);
   });
 
@@ -734,13 +881,21 @@ describe("forbidden control character rejection", () => {
 
     test(`criterion description with ${characterName} is rejected`, () => {
       expect(
-        serializeWith({ doneWhen: [{ description: `tests${character}pass`, command: "bun test" }] }),
+        serializeWith({
+          doneWhen: [
+            { kind: "executable", description: `tests${character}pass`, command: "bun test" },
+          ],
+        }),
       ).toThrow(PhaseDocumentValidationError);
     });
 
     test(`done-when command with ${characterName} is rejected`, () => {
       expect(
-        serializeWith({ doneWhen: [{ description: "tests pass", command: `bun${character}test` }] }),
+        serializeWith({
+          doneWhen: [
+            { kind: "executable", description: "tests pass", command: `bun${character}test` },
+          ],
+        }),
       ).toThrow(PhaseDocumentValidationError);
     });
 

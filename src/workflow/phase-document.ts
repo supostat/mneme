@@ -1,4 +1,5 @@
 import {
+  AGENT_JUDGED_MARKER,
   BULLET_PREFIX,
   COMMAND_FENCE,
   DONE_WHEN_HEADER,
@@ -15,7 +16,11 @@ export {
   PhaseDocumentValidationError,
   isPhaseId,
 } from "./phase-document-schema";
-export type { DoneWhenCriterion, PhaseDocument } from "./phase-document-schema";
+export type {
+  DoneWhenCriterion,
+  ExecutableCriterion,
+  PhaseDocument,
+} from "./phase-document-schema";
 
 const FRONTMATTER_FENCE = "---\n";
 const FRONTMATTER_CLOSING = "\n---\n";
@@ -41,12 +46,16 @@ export function serializePhaseDocument(document: PhaseDocument): string {
   }
   lines.push("", DONE_WHEN_HEADER);
   for (const criterion of validated.doneWhen) {
-    lines.push(
-      `${BULLET_PREFIX}${criterion.description}`,
-      COMMAND_FENCE,
-      criterion.command,
-      COMMAND_FENCE,
-    );
+    if (criterion.kind === "agent-judged") {
+      lines.push(`${BULLET_PREFIX}${criterion.description}`, AGENT_JUDGED_MARKER);
+    } else {
+      lines.push(
+        `${BULLET_PREFIX}${criterion.description}`,
+        COMMAND_FENCE,
+        criterion.command,
+        COMMAND_FENCE,
+      );
+    }
   }
   return `${lines.join("\n")}\n`;
 }
@@ -184,11 +193,13 @@ function parseCriterion(
       `done-when section line must be a "- " bullet: ${bulletLine}`,
     );
   }
+  const description = bulletLine.slice(BULLET_PREFIX.length);
+  if (lines[bulletIndex + 1] === AGENT_JUDGED_MARKER) {
+    doneWhen.push({ kind: "agent-judged", description });
+    return bulletIndex + 2;
+  }
   const fencedCommand = readFencedCommand(lines, bulletIndex + 1);
-  doneWhen.push({
-    description: bulletLine.slice(BULLET_PREFIX.length),
-    command: fencedCommand.command,
-  });
+  doneWhen.push({ kind: "executable", description, command: fencedCommand.command });
   return fencedCommand.nextIndex;
 }
 
@@ -200,7 +211,7 @@ interface FencedCommand {
 function readFencedCommand(lines: string[], openingIndex: number): FencedCommand {
   if (openingIndex >= lines.length || !isFenceOpening(lineAt(lines, openingIndex))) {
     throw new PhaseDocumentValidationError(
-      "criterion bullet must be immediately followed by a fenced command block",
+      `criterion bullet must be immediately followed by a fenced command block or the "${AGENT_JUDGED_MARKER}" marker`,
     );
   }
   let closingIndex = openingIndex + 1;

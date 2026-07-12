@@ -1,9 +1,19 @@
 export class PhaseDocumentValidationError extends Error {}
 
-export interface DoneWhenCriterion {
+export interface ExecutableCriterion {
+  kind: "executable";
   description: string;
   command: string;
 }
+
+export interface AgentJudgedCriterion {
+  kind: "agent-judged";
+  description: string;
+}
+
+export type DoneWhenCriterion = ExecutableCriterion | AgentJudgedCriterion;
+
+export const AGENT_JUDGED_MARKER = "agent-judged: true";
 
 export interface PhaseDocument {
   id: string;
@@ -180,14 +190,25 @@ function validateDoneWhen(doneWhen: DoneWhenCriterion[]): DoneWhenCriterion[] {
 }
 
 function validateCriterion(criterion: DoneWhenCriterion): DoneWhenCriterion {
-  const description = validateSingleLine(criterion.description, "criterion description");
-  const command = validateSingleLine(criterion.command, "done-when command");
-  if (command.startsWith(COMMAND_FENCE)) {
-    throw new PhaseDocumentValidationError(
-      `done-when command must not start with a fence: ${command}`,
-    );
+  if (criterion.kind === "agent-judged") {
+    return {
+      kind: "agent-judged",
+      description: validateSingleLine(criterion.description, "criterion description"),
+    };
   }
-  return { description, command };
+  if (criterion.kind === "executable") {
+    const description = validateSingleLine(criterion.description, "criterion description");
+    const command = validateSingleLine(criterion.command, "done-when command");
+    if (command.startsWith(COMMAND_FENCE)) {
+      throw new PhaseDocumentValidationError(
+        `done-when command must not start with a fence: ${command}`,
+      );
+    }
+    return { kind: "executable", description, command };
+  }
+  throw new PhaseDocumentValidationError(
+    `done-when criterion has an unknown kind: ${String((criterion as { kind?: unknown }).kind)}`,
+  );
 }
 
 function validateSingleLine(value: string, label: string): string {
