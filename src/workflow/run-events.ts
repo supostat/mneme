@@ -4,7 +4,7 @@ import type { StoredEvent } from "../events";
 import { isNoteId } from "../note";
 import type { StepDefinition, OnFailDirective } from "./failure-policy";
 import type { DoneWhenCriterion, PhaseDocument } from "./phase-document";
-import { validatePhaseDocument } from "./phase-document-schema";
+import { validatePhaseDocument } from "./phase-document";
 import { buildPhaseGraph } from "./phase-graph";
 import { applyStepResult, initialRun, reduce } from "./reducer";
 import type { Directive, RunDefinition, StepResult, WorkflowRun } from "./reducer";

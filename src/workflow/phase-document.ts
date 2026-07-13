@@ -16,6 +16,7 @@ export {
   PhaseDocumentValidationError,
   containsForbiddenCharacter,
   isPhaseId,
+  validatePhaseDocument,
 } from "./phase-document-schema";
 export type {
   DoneWhenCriterion,
