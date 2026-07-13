@@ -103,9 +103,41 @@ describe("applyMigration", () => {
   });
 });
 
+const EM_DASH = String.fromCharCode(0x2014);
+
+// A synthetic multi-phase spec built at runtime for the migrate end-to-end test only. It is
+// deliberately unrelated to the project's gitignored docs/V2-SPEC.md so the test runs on a clean
+// clone (CI, dogfood in a bare environment) -- reading the live spec made this test pass only on
+// machines that happen to carry docs/. The from-spec test was cut over for the same reason; this
+// mirrors it. Kept inline per the repo convention that fixtures are built at runtime, never read
+// from the tree; the em-dash is composed via EM_DASH so this source file stays pure ASCII.
+const MIGRATION_SAMPLE_SPEC = [
+  "# Gameplan",
+  "",
+  "A sequential build plan that exists only for the migrate end-to-end test.",
+  "",
+  `### Phase 1: ingest source ${EM_DASH} read the raw input`,
+  "",
+  "- [ ] open the input",
+  "",
+  "**Done when:** the raw input parses.",
+  "",
+  `### Phase 2: normalize records ${EM_DASH} canonical form`,
+  "",
+  "- [ ] map the fields",
+  "",
+  "**Done when:** records reach canonical form.",
+  "",
+  `### Phase 3: index store ${EM_DASH} build the searchable index`,
+  "",
+  "- [ ] write the index",
+  "",
+  "**Done when:** the index round-trips.",
+  "",
+].join("\n");
+
 describe("scripts/migrate.ts end-to-end", () => {
   const scriptPath = join(import.meta.dir, "..", "..", "scripts", "migrate.ts");
-  const specPath = join(import.meta.dir, "..", "..", "docs", "V2-SPEC.md");
 
   async function runMigrate(
     args: string[],
@@ -131,6 +163,8 @@ describe("scripts/migrate.ts end-to-end", () => {
   test("dry-run writes nothing, --apply lands phase files, and a re-run is idempotent", async () => {
     const tempHome = tempDir("mneme-mig-home-");
     const projectCwd = tempDir("mneme-mig-cwd-");
+    const specPath = join(tempDir("mneme-mig-spec-"), "sample-spec.md");
+    writeFileSync(specPath, MIGRATION_SAMPLE_SPEC);
     const workflowDir = join(tempHome, ".mneme", mungePath(canonicalize(projectCwd)), WORKFLOW_PHASE_DIR);
 
     const dry = await runMigrate([specPath], tempHome, projectCwd);
