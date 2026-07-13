@@ -83,6 +83,10 @@ function renderExecuteStepDirective(active: ReadableRun, directive: ExecuteStepD
     `attempt: ${directive.attempt}`,
     `agent-role: ${directive.agentRole}`,
   ];
+  if (directive.description !== "") {
+    lines.push("intent:", directive.description);
+  }
+  lines.push("tasks:", ...directive.tasks.map((task) => `- ${task}`));
   if (isFinalStep(active.definition, active.run)) {
     lines.push(...finalStepSection(phaseOf(active.definition, directive.phaseId)));
   }

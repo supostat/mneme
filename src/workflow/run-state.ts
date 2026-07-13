@@ -35,6 +35,8 @@ export interface ExecuteStepDirective {
   phaseId: string;
   stepId: string;
   agentRole: string;
+  description: string;
+  tasks: string[];
   attempt: number;
 }
 

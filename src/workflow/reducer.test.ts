@@ -5,6 +5,7 @@ import { FailurePolicyValidationError } from "./failure-policy";
 import type { StepDefinition } from "./failure-policy";
 import { WorkflowStateError, applyStepResult, initialRun, reduce } from "./reducer";
 import type { Directive, RunDefinition, StepResult, WorkflowRun } from "./reducer";
+import { parsePhaseDocument } from "./phase-document";
 import type { PhaseDocument } from "./phase-document";
 
 function phase(id: string, deps: string[] = [], agentRole = "coder"): PhaseDocument {
@@ -17,6 +18,41 @@ function phase(id: string, deps: string[] = [], agentRole = "coder"): PhaseDocum
     doneWhen: [{ kind: "executable", description: "work is verified", command: "bun test" }],
   };
 }
+
+// The default synthetic phase() carries an empty description and a single task bullet, so an
+// execute_step directive derived from it mirrors those. The self-sufficiency specs below instead
+// parse a REAL serialized phase document (non-empty description + multiple task bullets) so the
+// "directive carries the work" invariant cannot pass vacuously on empty content.
+function executeStep(phaseId: string, stepId: string, agentRole: string, attempt: number): Directive {
+  return { kind: "execute_step", phaseId, stepId, agentRole, description: "", tasks: ["do the work"], attempt };
+}
+
+const REAL_PHASE_TEXT = [
+  "---",
+  'id: "wf-migration"',
+  "deps: []",
+  'agent-role: "coder"',
+  "---",
+  "Dogfood mneme onto its own workflow engine.",
+  "",
+  "## Tasks",
+  "- Persist phase files into the project",
+  "- Apply the knowledge routing to CLAUDE.md and docs",
+  "- Run the dogfood loop end to end",
+  "",
+  "## Done-when",
+  "- the phase verification suite passes",
+  "```",
+  "bun test",
+  "```",
+  "",
+].join("\n");
+
+const REAL_PHASE_TASKS = [
+  "Persist phase files into the project",
+  "Apply the knowledge routing to CLAUDE.md and docs",
+  "Run the dogfood loop end to end",
+];
 
 function linearGraph(): PhaseGraph {
   return buildPhaseGraph([phase("alpha", [], "planner"), phase("beta", ["alpha"], "builder")]);
@@ -133,12 +169,12 @@ describe("linear run", () => {
     const { directives, run } = driveToEnd(definition);
     expect(directives).toEqual([
       { kind: "recall", phaseId: "alpha" },
-      { kind: "execute_step", phaseId: "alpha", stepId: "plan", agentRole: "planner", attempt: 1 },
-      { kind: "execute_step", phaseId: "alpha", stepId: "code", agentRole: "planner", attempt: 1 },
+      executeStep("alpha", "plan", "planner", 1),
+      executeStep("alpha", "code", "planner", 1),
       { kind: "harvest", phaseId: "alpha" },
       { kind: "recall", phaseId: "beta" },
-      { kind: "execute_step", phaseId: "beta", stepId: "plan", agentRole: "builder", attempt: 1 },
-      { kind: "execute_step", phaseId: "beta", stepId: "code", agentRole: "builder", attempt: 1 },
+      executeStep("beta", "plan", "builder", 1),
+      executeStep("beta", "code", "builder", 1),
       { kind: "harvest", phaseId: "beta" },
     ]);
     expect(run.status).toBe("complete");
@@ -210,13 +246,7 @@ describe("memory lifecycle", () => {
     const run = applyStepResult(initialRun(definition), definition, recallDone("alpha"));
     expect(run.activePhaseId).toBe("alpha");
     expect(run.iterationsUsed).toBe(0);
-    expect(reduce(run, definition)).toEqual({
-      kind: "execute_step",
-      phaseId: "alpha",
-      stepId: "plan",
-      agentRole: "planner",
-      attempt: 1,
-    });
+    expect(reduce(run, definition)).toEqual(executeStep("alpha", "plan", "planner", 1));
   });
 
   test("harvest is dispensed only after final-step success and consumes no iteration", () => {
@@ -251,19 +281,52 @@ describe("memory lifecycle", () => {
   });
 });
 
+describe("execute_step self-sufficiency", () => {
+  test("carries the phase intent and enumerated tasks from a real phase document", () => {
+    const definition = definitionOf(
+      buildPhaseGraph([parsePhaseDocument(REAL_PHASE_TEXT)]),
+      steps("implement"),
+    );
+    const opened = applyStepResult(initialRun(definition), definition, recallDone("wf-migration"));
+    expect(reduce(opened, definition)).toEqual({
+      kind: "execute_step",
+      phaseId: "wf-migration",
+      stepId: "implement",
+      agentRole: "coder",
+      description: "Dogfood mneme onto its own workflow engine.",
+      tasks: REAL_PHASE_TASKS,
+      attempt: 1,
+    });
+  });
+
+  test("a run restored by folding results (no re-supplied phase document) still carries the tasks", () => {
+    const definition = definitionOf(
+      buildPhaseGraph([parsePhaseDocument(REAL_PHASE_TEXT)]),
+      steps("implement"),
+    );
+    // Resume without re-calling workflow_start: rebuild the run purely by folding the logged
+    // StepResults through applyStepResult (the documented restore), then reduce. The directive's
+    // work must come from the (log-derived) definition, never from session-held phase text.
+    const restored = [recallDone("wf-migration")].reduce(
+      (run, result) => applyStepResult(run, definition, result),
+      initialRun(definition),
+    );
+    const directive = reduce(restored, definition);
+    if (directive.kind !== "execute_step") {
+      throw new Error(`expected execute_step after resume, got ${directive.kind}`);
+    }
+    expect(directive.tasks).toEqual(REAL_PHASE_TASKS);
+    expect(directive.tasks.length).toBeGreaterThan(0);
+  });
+});
+
 describe("failure handling", () => {
   test("a failure under the attempt budget re-dispenses the same step as attempt 2", () => {
     const definition = soloDefinition([{ id: "code", maxAttempts: 2, onFail: { action: "escalate" } }]);
     let run = applyStepResult(initialRun(definition), definition, recallDone("solo"));
     run = applyStepResult(run, definition, failure("solo", "code"));
     expect(run.status).toBe("running");
-    expect(reduce(run, definition)).toEqual({
-      kind: "execute_step",
-      phaseId: "solo",
-      stepId: "code",
-      agentRole: "coder",
-      attempt: 2,
-    });
+    expect(reduce(run, definition)).toEqual(executeStep("solo", "code", "coder", 2));
     run = applyStepResult(run, definition, success("solo", "code"));
     run = applyStepResult(run, definition, harvestDone("solo"));
     expect(run.status).toBe("complete");
@@ -282,13 +345,7 @@ describe("failure handling", () => {
     expect(run.status).toBe("running");
     expect(run.stepIndex).toBe(0);
     expect(run.stepAttempts).toEqual([0, 0]);
-    expect(reduce(run, definition)).toEqual({
-      kind: "execute_step",
-      phaseId: "solo",
-      stepId: "code",
-      agentRole: "coder",
-      attempt: 1,
-    });
+    expect(reduce(run, definition)).toEqual(executeStep("solo", "code", "coder", 1));
   });
 
   test("a rewind preserves attempts before the target and resets from the target onward", () => {
@@ -332,13 +389,7 @@ describe("failure handling", () => {
     ]);
     const run = drive(definition, [failure("alpha", "code"), success("alpha", "code")]);
     expect(run.status).toBe("running");
-    expect(reduce(run, definition)).toEqual({
-      kind: "execute_step",
-      phaseId: "beta",
-      stepId: "code",
-      agentRole: "builder",
-      attempt: 1,
-    });
+    expect(reduce(run, definition)).toEqual(executeStep("beta", "code", "builder", 1));
   });
 
   test("a skip on the last step closes the phase without dispensing harvest", () => {
@@ -357,13 +408,7 @@ describe("failure handling", () => {
     ]);
     const run = drive(definition, [failure("solo", "code")]);
     expect(run.status).toBe("running");
-    expect(reduce(run, definition)).toEqual({
-      kind: "execute_step",
-      phaseId: "solo",
-      stepId: "review",
-      agentRole: "coder",
-      attempt: 1,
-    });
+    expect(reduce(run, definition)).toEqual(executeStep("solo", "review", "coder", 1));
   });
 });
 

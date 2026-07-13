@@ -262,6 +262,23 @@ describe("workflow interrupt and resume", () => {
     expect(recalls.length).toBe(1);
   });
 
+  test("a resumed session carries the phase intent and tasks without re-supplying the phase document", async () => {
+    const bench = await makeWorkbench();
+    // The first session supplies the phase document to workflow_start; the resuming session never
+    // does. The interrupted work must survive purely through the event log — otherwise the resumed
+    // agent would have to re-read the phase file, the session-state dependency this field removes.
+    await startRun(bench.client, startArgs([phaseText("phase-one")]));
+    await callText(bench.client, "workflow_step", {});
+
+    const resumed = await callText(await reconnect(bench), "workflow_step", {});
+
+    expect(resumed).toContain("DIRECTIVE: execute_step");
+    expect(resumed).toContain("intent:");
+    expect(resumed).toContain("Work on phase-one");
+    expect(resumed).toContain("tasks:");
+    expect(resumed).toContain("- do the work");
+  });
+
   test("a multi-phase run resumes into phase two after phase one closes", async () => {
     const bench = await makeWorkbench();
     const runId = await startRun(

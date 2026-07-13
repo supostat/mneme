@@ -137,11 +137,16 @@ describe("restoreRuns folds a genuine log", () => {
     expect(run.run.status).toBe("running");
     expect(run.run.activePhaseId).toBe("phase-one");
     expect(run.run.stepIndex).toBe(1);
+    // Restored from the log alone (no live workflow_start), the directive still carries the phase
+    // intent and enumerated tasks — the self-sufficiency that lets a resumed session act without
+    // re-reading the phase file.
     expect(pendingDirectiveOf(run)).toEqual({
       kind: "execute_step",
       phaseId: "phase-one",
       stepId: "verify",
       agentRole: "coder",
+      description: "Work on phase-one",
+      tasks: ["do the work"],
       attempt: 1,
     });
     expect(unfinishedRunsOf([run], new Set())).toEqual([run]);

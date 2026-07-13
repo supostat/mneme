@@ -1,5 +1,6 @@
 import { selectNextReadyPhase } from "./phase-graph";
 import type { PhaseStatus } from "./phase-graph";
+import type { PhaseDocument } from "./phase-document";
 import type { StepDefinition } from "./failure-policy";
 import { resolveFailure, validateRunPolicy } from "./failure-policy";
 import type {
@@ -72,11 +73,14 @@ export function reduce(run: WorkflowRun, definition: RunDefinition): Directive {
   if (harvestPending(run, definition)) {
     return { kind: "harvest", phaseId: run.activePhaseId };
   }
+  const activePhase = phaseOf(definition, run.activePhaseId);
   return {
     kind: "execute_step",
     phaseId: run.activePhaseId,
     stepId: stepAt(definition, run.stepIndex).id,
-    agentRole: agentRoleOf(definition, run.activePhaseId),
+    agentRole: activePhase.agentRole,
+    description: activePhase.description,
+    tasks: [...activePhase.tasks],
     attempt: attemptsAt(run, run.stepIndex) + 1,
   };
 }
@@ -244,12 +248,12 @@ function stepAt(definition: RunDefinition, stepIndex: number): StepDefinition {
   return step;
 }
 
-function agentRoleOf(definition: RunDefinition, phaseId: string): string {
+function phaseOf(definition: RunDefinition, phaseId: string): PhaseDocument {
   const phase = definition.graph.phases[phaseId];
   if (phase === undefined) {
     throw new Error(`phase "${phaseId}" is not in the validated graph`);
   }
-  return phase.agentRole;
+  return phase;
 }
 
 function attemptsAt(run: WorkflowRun, stepIndex: number): number {
