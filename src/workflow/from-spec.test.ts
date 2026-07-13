@@ -1,6 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { phaseDocumentsFromSpec } from "./from-spec";
 import { PhaseGenerationError } from "./phase-generation";
 import { PhaseGraphValidationError, buildPhaseGraph } from "./phase-graph";
@@ -73,26 +71,82 @@ describe("phaseDocumentsFromSpec happy path", () => {
   });
 });
 
-describe("phaseDocumentsFromSpec against the real V2 spec", () => {
-  test("derives the six workflow phases as a sequential chain", () => {
-    const specText = readFileSync(join(import.meta.dir, "..", "..", "docs", "V2-SPEC.md"), "utf8");
-    const documents = phaseDocumentsFromSpec(specText);
+// A dedicated, synthetic sample spec that exists ONLY for this test. It is deliberately
+// unrelated to the project's evolving docs/V2-SPEC.md, so edits to the real spec can never
+// break this test -- only a regression in from-spec can. Kept inline (no pre-baked fixture
+// file) per the repo convention that test fixtures are built at runtime; the em-dash is
+// composed via EM_DASH so this source file stays pure ASCII.
+const SAMPLE_GAMEPLAN_SPEC = [
+  "# Overview",
+  "",
+  "Prose above the gameplan that the parser must ignore.",
+  "",
+  "# Gameplan",
+  "",
+  "A sequential build plan that exists only for from-spec's test.",
+  "",
+  `### Phase 1: ingest source ${EM_DASH} read the raw input`,
+  "",
+  "- [ ] open the input",
+  "- [ ] validate the header",
+  "",
+  "**Done when:** the raw input parses.",
+  "",
+  `### Phase 2: normalize records ${EM_DASH} canonical form`,
+  "",
+  "- [ ] map the fields",
+  "",
+  "**Done when:** records reach canonical form.",
+  "",
+  `### Phase 3: index store ${EM_DASH} build the searchable index`,
+  "",
+  "- [ ] write the index",
+  "",
+  "**Done when:** the index round-trips.",
+  "",
+  `### Phase 4: query surface ${EM_DASH} expose retrieval`,
+  "",
+  "- [ ] wire the endpoint",
+  "",
+  "**Done when:** a query returns results.",
+  "",
+  "# Appendix",
+  "",
+  `### Phase 9: ignored ${EM_DASH} sits outside the gameplan`,
+  "",
+  "- [ ] must never appear",
+  "",
+].join("\n");
+
+describe("phaseDocumentsFromSpec against a dedicated sample spec", () => {
+  test("derives a sequential phase chain from the sample gameplan", () => {
+    const documents = phaseDocumentsFromSpec(SAMPLE_GAMEPLAN_SPEC);
     expect(documents.map((document) => document.id)).toEqual([
-      "reducer-core",
-      "gate-runner",
-      "memory-as-steps",
-      "surface-resume",
-      "from-spec-converter",
-      "migration",
+      "ingest-source",
+      "normalize-records",
+      "index-store",
+      "query-surface",
     ]);
     expect(documents.map((document) => document.deps)).toEqual([
       [],
-      ["reducer-core"],
-      ["gate-runner"],
-      ["memory-as-steps"],
-      ["surface-resume"],
-      ["from-spec-converter"],
+      ["ingest-source"],
+      ["normalize-records"],
+      ["index-store"],
     ]);
+  });
+
+  test("ignores phase headings outside the # Gameplan section", () => {
+    const documents = phaseDocumentsFromSpec(SAMPLE_GAMEPLAN_SPEC);
+    expect(documents.map((document) => document.id)).not.toContain("ignored");
+  });
+
+  test("emits an executable done-when for every phase and builds a valid graph", () => {
+    const documents = phaseDocumentsFromSpec(SAMPLE_GAMEPLAN_SPEC);
+    for (const document of documents) {
+      expect(document.doneWhen.length).toBeGreaterThan(0);
+      expect(document.doneWhen.every((criterion) => criterion.kind === "executable")).toBe(true);
+    }
+    expect(() => buildPhaseGraph(documents)).not.toThrow();
   });
 });
 
