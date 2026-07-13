@@ -14,6 +14,7 @@ export {
   MAX_PHASE_ID_LENGTH,
   PHASE_ID_REGEX,
   PhaseDocumentValidationError,
+  containsForbiddenCharacter,
   isPhaseId,
 } from "./phase-document-schema";
 export type {

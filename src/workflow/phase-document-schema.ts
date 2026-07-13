@@ -85,6 +85,10 @@ const DESCRIPTION_FORBIDDEN_REGEX = forbiddenCharacterRegex([
   ...INVISIBLE_BEYOND_C0_RANGES,
 ]);
 
+export function containsForbiddenCharacter(text: string): boolean {
+  return DESCRIPTION_FORBIDDEN_REGEX.test(text);
+}
+
 export interface PhaseDocumentCandidate {
   id: unknown;
   deps: unknown;
