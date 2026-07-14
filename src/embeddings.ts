@@ -8,7 +8,7 @@ export const RECALL_EMBED_ATTEMPTS = 1;
 export const EMBED_RETRY_BACKOFF_MS = 50;
 
 const EMBED_ENDPOINT = "/api/embed";
-const FLOAT_BYTES = 4;
+export const FLOAT_BYTES = 4;
 export const EMBEDDING_BLOB_BYTES = EMBEDDING_DIMENSION * FLOAT_BYTES;
 
 export function cosineSimilarity(left: Float32Array, right: Float32Array): number {

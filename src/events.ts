@@ -65,6 +65,32 @@ export function readEvents(eventsDir: string): StoredEvent[] {
   return events;
 }
 
+export interface EventLogScan {
+  fileCount: number;
+  eventCount: number;
+  corruptLineCount: number;
+}
+
+// Diagnostic sibling of readEvents: the tolerant reader silently drops unparseable lines, so the
+// doctor needs a pass that COUNTS them instead of hiding them. It reuses tryParseLine so "corrupt"
+// means exactly what readEvents skips — same fault definition, no drift.
+export function scanEventLog(eventsDir: string): EventLogScan {
+  const files = readdirSync(eventsDir)
+    .filter((name) => name.endsWith(EVENT_FILE_EXTENSION))
+    .sort();
+  let eventCount = 0;
+  let corruptLineCount = 0;
+  for (const file of files) {
+    const content = readFileSync(join(eventsDir, file), "utf8");
+    for (const line of content.split("\n")) {
+      if (line === "") continue;
+      if (tryParseLine(line) === undefined) corruptLineCount += 1;
+      else eventCount += 1;
+    }
+  }
+  return { fileCount: files.length, eventCount, corruptLineCount };
+}
+
 function tryParseLine(line: string): Record<string, unknown> | undefined {
   try {
     const parsed: unknown = JSON.parse(line);

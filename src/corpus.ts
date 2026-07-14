@@ -18,15 +18,24 @@ export interface CorpusManifest {
   format_version: number;
 }
 
-export interface Corpus {
+export interface CorpusPaths {
   corpusDir: string;
-  canonicalRoot: string;
   manifestPath: string;
   notesDir: string;
   stagingDir: string;
   archiveDir: string;
   eventsDir: string;
   indexPath: string;
+}
+
+export interface Corpus extends CorpusPaths {
+  canonicalRoot: string;
+}
+
+export interface CorpusLocation {
+  corpusHome: string;
+  canonicalRoot: string;
+  corpusDir: string;
 }
 
 export interface ResolveCorpusOptions {
@@ -51,36 +60,50 @@ export function mungePath(canonicalRoot: string): string {
   return canonicalRoot.replaceAll("/", "-");
 }
 
-export async function resolveCorpus(
-  projectRoot: string,
-  options: ResolveCorpusOptions = {},
-): Promise<Corpus> {
-  const corpusHome = options.corpusHome ?? join(homedir(), DEFAULT_CORPUS_DIRECTORY_NAME);
-  const clock = options.clock ?? (() => new Date());
+export function defaultCorpusHome(): string {
+  return join(homedir(), DEFAULT_CORPUS_DIRECTORY_NAME);
+}
+
+// The pure, side-effect-free derivation of where a project's corpus lives. resolveCorpus builds on
+// this and then creates/heals; a read-only caller (the doctor) uses it to locate the corpus WITHOUT
+// creating anything, so a missing corpus is diagnosed rather than silently materialized.
+export function corpusDirFor(projectRoot: string, corpusHome?: string): CorpusLocation {
+  const home = corpusHome ?? defaultCorpusHome();
   const canonicalRoot = canonicalize(projectRoot);
-  const corpusDir = join(corpusHome, mungePath(canonicalRoot));
-  const manifestPath = join(corpusDir, MANIFEST_FILENAME);
-  const existedBefore = existsSync(corpusDir);
+  return { corpusHome: home, canonicalRoot, corpusDir: join(home, mungePath(canonicalRoot)) };
+}
 
-  makeDirectory(corpusHome);
-  makeDirectory(corpusDir);
-  ensureManifest(manifestPath, canonicalRoot, existedBefore, clock);
-  for (const name of SUBDIRECTORIES) {
-    makeDirectory(join(corpusDir, name));
-  }
-  await ensureGitRepository(corpusDir);
-  ensureGitignore(corpusDir);
-
+export function corpusPaths(corpusDir: string): CorpusPaths {
   return {
     corpusDir,
-    canonicalRoot,
-    manifestPath,
+    manifestPath: join(corpusDir, MANIFEST_FILENAME),
     notesDir: join(corpusDir, "notes"),
     stagingDir: join(corpusDir, "staging"),
     archiveDir: join(corpusDir, "archive"),
     eventsDir: join(corpusDir, "events"),
     indexPath: join(corpusDir, "index.db"),
   };
+}
+
+export async function resolveCorpus(
+  projectRoot: string,
+  options: ResolveCorpusOptions = {},
+): Promise<Corpus> {
+  const clock = options.clock ?? (() => new Date());
+  const { corpusHome, canonicalRoot, corpusDir } = corpusDirFor(projectRoot, options.corpusHome);
+  const paths = corpusPaths(corpusDir);
+  const existedBefore = existsSync(corpusDir);
+
+  makeDirectory(corpusHome);
+  makeDirectory(corpusDir);
+  ensureManifest(paths.manifestPath, canonicalRoot, existedBefore, clock);
+  for (const name of SUBDIRECTORIES) {
+    makeDirectory(join(corpusDir, name));
+  }
+  await ensureGitRepository(corpusDir);
+  ensureGitignore(corpusDir);
+
+  return { canonicalRoot, ...paths };
 }
 
 function makeDirectory(path: string): void {
