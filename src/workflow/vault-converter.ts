@@ -132,6 +132,7 @@ function buildPhasesFromFiles(
     description: buildPhaseDescription(phaseFile.heading.title, phaseFile.acceptanceProse),
     tasks: phaseFile.tasks,
     doneWhen: [...DEFAULT_DONE_WHEN],
+    knowledge: [],
   }));
 }
 

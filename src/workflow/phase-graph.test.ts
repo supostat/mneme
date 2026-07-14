@@ -16,6 +16,7 @@ function phase(id: string, deps: string[] = []): PhaseDocument {
     description: "",
     tasks: ["do the work"],
     doneWhen: [{ kind: "executable", description: "work is verified", command: "bun test" }],
+    knowledge: [],
   };
 }
 

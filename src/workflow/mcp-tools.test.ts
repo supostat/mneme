@@ -142,6 +142,7 @@ function phaseText(id: string, options: { deps?: string[]; doneWhen?: DoneWhenCr
     description: `Work on ${id}`,
     tasks: ["do the work"],
     doneWhen: options.doneWhen ?? GREEN_GATE,
+    knowledge: [],
   });
 }
 

@@ -3,6 +3,7 @@ import {
   BULLET_PREFIX,
   COMMAND_FENCE,
   DONE_WHEN_HEADER,
+  KNOWLEDGE_HEADER,
   PhaseDocumentValidationError,
   SECTION_HEADER_PREFIX,
   TASKS_HEADER,
@@ -11,6 +12,7 @@ import {
 import type { DoneWhenCriterion, PhaseDocument } from "./phase-document-schema";
 
 export {
+  BULLET_PREFIX,
   COMMAND_FENCE,
   MAX_PHASE_ID_LENGTH,
   PHASE_ID_REGEX,
@@ -60,6 +62,12 @@ export function serializePhaseDocument(document: PhaseDocument): string {
       );
     }
   }
+  if (validated.knowledge.length > 0) {
+    lines.push("", KNOWLEDGE_HEADER);
+    for (const bullet of validated.knowledge) {
+      lines.push(`${BULLET_PREFIX}${bullet}`);
+    }
+  }
   return `${lines.join("\n")}\n`;
 }
 
@@ -83,6 +91,7 @@ export function parsePhaseDocument(text: string): PhaseDocument {
     description: body.description,
     tasks: body.tasks,
     doneWhen: body.doneWhen,
+    knowledge: body.knowledge,
   });
 }
 
@@ -122,36 +131,36 @@ interface PhaseBody {
   description: string;
   tasks: string[];
   doneWhen: DoneWhenCriterion[];
+  knowledge: string[];
 }
 
-type BodySection = "description" | "tasks" | "done-when";
+type BodySection = "description" | "tasks" | "done-when" | "knowledge";
 
 function parseBody(body: string): PhaseBody {
   const lines = body.split("\n");
   const descriptionLines: string[] = [];
   const tasks: string[] = [];
   const doneWhen: DoneWhenCriterion[] = [];
+  const knowledge: string[] = [];
   let section: BodySection = "description";
   let index = 0;
   while (index < lines.length) {
     const line = lineAt(lines, index);
+    if (section === "done-when" && !line.startsWith(SECTION_HEADER_PREFIX) && line.trim() !== "") {
+      index = parseCriterion(lines, index, doneWhen);
+      continue;
+    }
     if (line.startsWith(SECTION_HEADER_PREFIX)) {
       section = enterSection(line, section);
-      index += 1;
     } else if (section === "description") {
       descriptionLines.push(line);
-      index += 1;
-    } else if (line.trim() === "") {
-      index += 1;
-    } else if (section === "tasks") {
-      tasks.push(parseTaskLine(line));
-      index += 1;
-    } else {
-      index = parseCriterion(lines, index, doneWhen);
+    } else if (line.trim() !== "") {
+      (section === "tasks" ? tasks : knowledge).push(parseBulletLine(line, section));
     }
+    index += 1;
   }
   requireBothSections(section);
-  return { description: joinDescription(descriptionLines), tasks, doneWhen };
+  return { description: joinDescription(descriptionLines), tasks, doneWhen, knowledge };
 }
 
 function enterSection(headerLine: string, currentSection: BodySection): BodySection {
@@ -162,20 +171,31 @@ function enterSection(headerLine: string, currentSection: BodySection): BodySect
     return "tasks";
   }
   if (headerLine === DONE_WHEN_HEADER) {
-    if (currentSection === "description") {
-      throw new PhaseDocumentValidationError(`${DONE_WHEN_HEADER} must come after ${TASKS_HEADER}`);
-    }
     if (currentSection === "done-when") {
       throw new PhaseDocumentValidationError(`duplicate section: ${DONE_WHEN_HEADER}`);
     }
+    if (currentSection !== "tasks") {
+      throw new PhaseDocumentValidationError(`${DONE_WHEN_HEADER} must come after ${TASKS_HEADER}`);
+    }
     return "done-when";
+  }
+  if (headerLine === KNOWLEDGE_HEADER) {
+    if (currentSection === "knowledge") {
+      throw new PhaseDocumentValidationError(`duplicate section: ${KNOWLEDGE_HEADER}`);
+    }
+    if (currentSection !== "done-when") {
+      throw new PhaseDocumentValidationError(
+        `${KNOWLEDGE_HEADER} must come after ${DONE_WHEN_HEADER}`,
+      );
+    }
+    return "knowledge";
   }
   throw new PhaseDocumentValidationError(`unknown section header: ${headerLine}`);
 }
 
-function parseTaskLine(line: string): string {
+function parseBulletLine(line: string, label: string): string {
   if (!line.startsWith(BULLET_PREFIX)) {
-    throw new PhaseDocumentValidationError(`tasks section line must be a "- " bullet: ${line}`);
+    throw new PhaseDocumentValidationError(`${label} section line must be a "- " bullet: ${line}`);
   }
   return line.slice(BULLET_PREFIX.length);
 }

@@ -6,10 +6,11 @@ import {
   validateGeneratedGraph,
 } from "./phase-generation";
 import type { PhaseHeading } from "./phase-generation";
-import { COMMAND_FENCE, isFenceOpening } from "./phase-document";
+import { BULLET_PREFIX, COMMAND_FENCE, isFenceOpening } from "./phase-document";
 import type { ExecutableCriterion, PhaseDocument } from "./phase-document";
 
 const GAMEPLAN_HEADING = "# Gameplan";
+const KNOWLEDGE_HEADING = "# Knowledge";
 const LEVEL_ONE_HEADING_PREFIX = "# ";
 const DONE_WHEN_PREFIX = "**Done when:**";
 const EXECUTABLE_DONE_WHEN_MARKER = "**Done when (EXECUTABLE):**";
@@ -27,10 +28,11 @@ export function phaseDocumentsFromSpec(specText: string): PhaseDocument[] {
   if (specPhases.length === 0) {
     throw new PhaseGenerationError("the # Gameplan section contains no phase headings");
   }
+  const knowledge = extractKnowledgeSection(specText);
   const documents: PhaseDocument[] = [];
   let previousId: string | null = null;
   for (const specPhase of specPhases) {
-    const document = documentFromSpecPhase(specPhase, previousId);
+    const document = documentFromSpecPhase(specPhase, previousId, knowledge);
     documents.push(document);
     previousId = document.id;
   }
@@ -53,6 +55,25 @@ function extractGameplanSection(specText: string): string {
     sectionLines.push(line);
   }
   return sectionLines.join("\n");
+}
+
+function extractKnowledgeSection(specText: string): string[] {
+  const lines = specText.split("\n");
+  const startIndex = lines.indexOf(KNOWLEDGE_HEADING);
+  if (startIndex === -1) {
+    return [];
+  }
+  const bullets: string[] = [];
+  for (let index = startIndex + 1; index < lines.length; index += 1) {
+    const line = lineAt(lines, index);
+    if (line.startsWith(LEVEL_ONE_HEADING_PREFIX)) {
+      break;
+    }
+    if (line.startsWith(BULLET_PREFIX)) {
+      bullets.push(line.slice(BULLET_PREFIX.length));
+    }
+  }
+  return bullets;
 }
 
 function parseSpecPhases(gameplanText: string): SpecPhase[] {
@@ -180,7 +201,11 @@ function isProseContinuation(line: string): boolean {
   return line.trim() !== "" && parsePhaseHeading(line) === null && !isFenceOpening(line);
 }
 
-function documentFromSpecPhase(specPhase: SpecPhase, previousId: string | null): PhaseDocument {
+function documentFromSpecPhase(
+  specPhase: SpecPhase,
+  previousId: string | null,
+  knowledge: string[],
+): PhaseDocument {
   if (specPhase.tasks.length === 0) {
     throw new PhaseGenerationError(`phase "${specPhase.heading.id}" has no task bullets`);
   }
@@ -192,6 +217,7 @@ function documentFromSpecPhase(specPhase: SpecPhase, previousId: string | null):
     description: buildPhaseDescription(specPhase.heading.title, specPhase.acceptanceProse),
     tasks: specPhase.tasks,
     doneWhen: [...specPhase.criteria],
+    knowledge: [...knowledge],
   };
 }
 

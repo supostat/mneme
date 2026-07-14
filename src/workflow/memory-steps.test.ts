@@ -220,6 +220,7 @@ describe("reducer lifecycle integration through the memory-steps seam", () => {
       description: "",
       tasks: ["do the work"],
       doneWhen: [{ kind: "executable", description: "work is verified", command: "bun test" }],
+      knowledge: [],
     };
     return {
       graph: buildPhaseGraph([phase]),

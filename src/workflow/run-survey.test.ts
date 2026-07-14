@@ -23,6 +23,7 @@ function makeDefinition(): RunDefinition {
     description: "Work on phase-one",
     tasks: ["do the work"],
     doneWhen: [{ kind: "executable", description: "tests pass", command: "true" }],
+    knowledge: [],
   };
   return {
     graph: buildPhaseGraph([phase]),

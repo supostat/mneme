@@ -36,6 +36,7 @@ function phaseDocument(id: string, deps: string[] = []): PhaseDocument {
     description: `Work on ${id}`,
     tasks: ["do the work"],
     doneWhen: [{ kind: "executable", description: "tests pass", command: "true" }],
+    knowledge: [],
   };
 }
 

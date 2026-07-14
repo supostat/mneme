@@ -20,6 +20,7 @@ function validDocument(overrides: Partial<PhaseDocument>): PhaseDocument {
     description: "desc",
     tasks: ["do it"],
     doneWhen: [{ kind: "executable", description: "pass", command: "bun test" }],
+    knowledge: [],
     ...overrides,
   };
 }

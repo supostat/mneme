@@ -420,6 +420,56 @@ describe("phaseDocumentsFromSpec structural rejections", () => {
   });
 });
 
+describe("phaseDocumentsFromSpec knowledge extraction", () => {
+  const knowledgeBullets = ["anchors bind notes to commits", "staleness is deterministic"];
+  const specWithKnowledge = [
+    "# Knowledge",
+    "",
+    ...knowledgeBullets.map((bullet) => `- ${bullet}`),
+    "",
+    gameplanSpec(
+      phaseBlock(
+        `### Phase 1: alpha ${EM_DASH} one`,
+        ["a"],
+        executableBlock("bun test src/a.test.ts", "alpha done."),
+      ),
+      phaseBlock(
+        `### Phase 2: beta ${EM_DASH} two`,
+        ["b"],
+        executableBlock("bun test src/b.test.ts", "beta done."),
+      ),
+    ),
+  ].join("\n");
+
+  test("carries the whole # Knowledge section into every generated phase", () => {
+    const documents = phaseDocumentsFromSpec(specWithKnowledge);
+    expect(documents).toHaveLength(2);
+    for (const document of documents) {
+      expect(document.knowledge).toEqual(knowledgeBullets);
+    }
+  });
+
+  test("a knowledge-bearing phase round-trips through the serializer", () => {
+    for (const document of phaseDocumentsFromSpec(specWithKnowledge)) {
+      expect(parsePhaseDocument(serializePhaseDocument(document))).toEqual(document);
+    }
+  });
+
+  test("a spec without a # Knowledge section leaves every phase knowledge empty and section-less", () => {
+    const specWithoutKnowledge = gameplanSpec(
+      phaseBlock(
+        `### Phase 1: alpha ${EM_DASH} one`,
+        ["a"],
+        executableBlock("bun test src/a.test.ts", "alpha done."),
+      ),
+    );
+    for (const document of phaseDocumentsFromSpec(specWithoutKnowledge)) {
+      expect(document.knowledge).toEqual([]);
+      expect(serializePhaseDocument(document)).not.toContain("## Knowledge");
+    }
+  });
+});
+
 describe("phaseDocumentsFromSpec rejections", () => {
   test("throws when there is no # Gameplan section", () => {
     expect(() => phaseDocumentsFromSpec("# Overview\n\nno gameplan here")).toThrow(

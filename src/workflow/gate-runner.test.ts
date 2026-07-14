@@ -347,6 +347,7 @@ function soloDefinition(doneWhen: DoneWhenCriterion[]): RunDefinition {
     description: "",
     tasks: ["do the work"],
     doneWhen,
+    knowledge: [],
   };
   return {
     graph: buildPhaseGraph([phase]),

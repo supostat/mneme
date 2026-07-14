@@ -13,6 +13,7 @@ const baseDocument: PhaseDocument = {
   description: "Build the reducer core.",
   tasks: ["Implement the parser"],
   doneWhen: [{ kind: "executable", description: "tests pass", command: "bun test" }],
+  knowledge: [],
 };
 
 function document(overrides: Partial<PhaseDocument>): PhaseDocument {
@@ -127,6 +128,147 @@ describe("phase document round-trip", () => {
   test("re-serialization is stable", () => {
     const text = serializePhaseDocument(document({}));
     expect(serializePhaseDocument(parsePhaseDocument(text))).toBe(text);
+  });
+});
+
+describe("phase document knowledge section", () => {
+  test("serialize then parse preserves a document with knowledge bullets", () => {
+    const original = document({ knowledge: ["prefer git anchors", "cosine dedup only"] });
+    expect(parsePhaseDocument(serializePhaseDocument(original))).toEqual(original);
+  });
+
+  test("a knowledge-bearing document serializes a ## Knowledge section with its bullets", () => {
+    const text = serializePhaseDocument(document({ knowledge: ["first note", "second note"] }));
+    expect(text).toContain("## Knowledge");
+    expect(text).toContain("- first note");
+    expect(text).toContain("- second note");
+  });
+
+  test("an empty knowledge list emits no ## Knowledge section and parses back to []", () => {
+    const text = serializePhaseDocument(document({ knowledge: [] }));
+    expect(text).not.toContain("## Knowledge");
+    expect(parsePhaseDocument(text).knowledge).toEqual([]);
+  });
+
+  test("a serialized document without a ## Knowledge section parses with knowledge === []", () => {
+    expect(parsePhaseDocument(canonicalText).knowledge).toEqual([]);
+  });
+
+  test("a ## Knowledge section is parsed into the knowledge bullets", () => {
+    const parsed = parsePhaseDocument(
+      phaseText(frontmatterLines, [
+        "## Tasks",
+        "- Implement the parser",
+        "",
+        "## Done-when",
+        "- tests pass",
+        "```",
+        "bun test",
+        "```",
+        "",
+        "## Knowledge",
+        "- anchor notes to commits",
+        "- staleness is deterministic",
+      ]),
+    );
+    expect(parsed.knowledge).toEqual(["anchor notes to commits", "staleness is deterministic"]);
+  });
+
+  test("a ## Knowledge section before ## Done-when is rejected", () => {
+    expect(
+      parseOf(
+        phaseText(frontmatterLines, [
+          "## Tasks",
+          "- Implement the parser",
+          "",
+          "## Knowledge",
+          "- too early",
+          "",
+          "## Done-when",
+          "- tests pass",
+          "```",
+          "bun test",
+          "```",
+        ]),
+      ),
+    ).toThrow(PhaseDocumentValidationError);
+  });
+
+  test("a duplicate ## Knowledge section is rejected", () => {
+    expect(
+      parseOf(
+        phaseText(frontmatterLines, [
+          "## Tasks",
+          "- Implement the parser",
+          "",
+          "## Done-when",
+          "- tests pass",
+          "```",
+          "bun test",
+          "```",
+          "",
+          "## Knowledge",
+          "- first",
+          "",
+          "## Knowledge",
+          "- again",
+        ]),
+      ),
+    ).toThrow(PhaseDocumentValidationError);
+  });
+
+  test("a forbidden character in a knowledge bullet is rejected", () => {
+    expect(serializeWith({ knowledge: [`safe${String.fromCharCode(0x00)}bullet`] })).toThrow(
+      PhaseDocumentValidationError,
+    );
+  });
+
+  test("a newline in a knowledge bullet is rejected", () => {
+    expect(serializeWith({ knowledge: ["first\nsecond"] })).toThrow(PhaseDocumentValidationError);
+  });
+
+  test("a blank knowledge bullet is rejected, matching task and criterion validation", () => {
+    expect(serializeWith({ knowledge: ["   "] })).toThrow(PhaseDocumentValidationError);
+  });
+
+  test("a bare '- ' knowledge bullet is rejected on parse", () => {
+    expect(
+      parseOf(
+        phaseText(frontmatterLines, [
+          "## Tasks",
+          "- Implement the parser",
+          "",
+          "## Done-when",
+          "- tests pass",
+          "```",
+          "bun test",
+          "```",
+          "",
+          "## Knowledge",
+          "- ",
+        ]),
+      ),
+    ).toThrow(PhaseDocumentValidationError);
+  });
+
+  test("a non-bullet line inside a ## Knowledge section is rejected", () => {
+    expect(
+      parseOf(
+        phaseText(frontmatterLines, [
+          "## Tasks",
+          "- Implement the parser",
+          "",
+          "## Done-when",
+          "- tests pass",
+          "```",
+          "bun test",
+          "```",
+          "",
+          "## Knowledge",
+          "stray prose",
+        ]),
+      ),
+    ).toThrow(PhaseDocumentValidationError);
   });
 });
 

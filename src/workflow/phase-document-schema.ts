@@ -22,6 +22,7 @@ export interface PhaseDocument {
   description: string;
   tasks: string[];
   doneWhen: DoneWhenCriterion[];
+  knowledge: string[];
 }
 
 export const PHASE_ID_REGEX = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
@@ -33,6 +34,7 @@ export function isPhaseId(value: string): boolean {
 
 export const TASKS_HEADER = "## Tasks";
 export const DONE_WHEN_HEADER = "## Done-when";
+export const KNOWLEDGE_HEADER = "## Knowledge";
 export const SECTION_HEADER_PREFIX = "## ";
 export const BULLET_PREFIX = "- ";
 export const COMMAND_FENCE = "```";
@@ -96,6 +98,7 @@ export interface PhaseDocumentCandidate {
   description: string;
   tasks: string[];
   doneWhen: DoneWhenCriterion[];
+  knowledge?: unknown;
 }
 
 export function validatePhaseDocument(candidate: PhaseDocumentCandidate): PhaseDocument {
@@ -107,7 +110,25 @@ export function validatePhaseDocument(candidate: PhaseDocumentCandidate): PhaseD
     description: validateDescription(candidate.description),
     tasks: validateTasks(candidate.tasks),
     doneWhen: validateDoneWhen(candidate.doneWhen),
+    knowledge: validateKnowledge(candidate.knowledge),
   };
+}
+
+function validateKnowledge(value: unknown): string[] {
+  if (value === undefined) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    throw new PhaseDocumentValidationError("knowledge must be an array of bullet lines");
+  }
+  return value.map(validateKnowledgeBullet);
+}
+
+function validateKnowledgeBullet(value: unknown): string {
+  if (typeof value !== "string") {
+    throw new PhaseDocumentValidationError("each knowledge bullet must be a string");
+  }
+  return validateSingleLine(value, "knowledge bullet");
 }
 
 function validateId(value: unknown): string {
