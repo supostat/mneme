@@ -11,6 +11,7 @@ import {
 import type { DoneWhenCriterion, PhaseDocument } from "./phase-document-schema";
 
 export {
+  COMMAND_FENCE,
   MAX_PHASE_ID_LENGTH,
   PHASE_ID_REGEX,
   PhaseDocumentValidationError,
@@ -229,7 +230,7 @@ function readFencedCommand(lines: string[], openingIndex: number): FencedCommand
   return { command: lineAt(lines, openingIndex + 1), nextIndex: closingIndex + 1 };
 }
 
-function isFenceOpening(line: string): boolean {
+export function isFenceOpening(line: string): boolean {
   if (!line.startsWith(COMMAND_FENCE)) {
     return false;
   }

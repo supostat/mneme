@@ -1,32 +1,28 @@
 import {
   DEFAULT_AGENT_ROLE,
-  DEFAULT_DONE_WHEN,
   PhaseGenerationError,
   buildPhaseDescription,
   parsePhaseHeading,
   validateGeneratedGraph,
 } from "./phase-generation";
 import type { PhaseHeading } from "./phase-generation";
+import { COMMAND_FENCE, isFenceOpening } from "./phase-document";
 import type { ExecutableCriterion, PhaseDocument } from "./phase-document";
 
 const GAMEPLAN_HEADING = "# Gameplan";
 const LEVEL_ONE_HEADING_PREFIX = "# ";
 const DONE_WHEN_PREFIX = "**Done when:**";
+const EXECUTABLE_DONE_WHEN_MARKER = "**Done when (EXECUTABLE):**";
 const TASK_BULLET_REGEX = /^- \[[ xX]\]\s+(.+)$/;
 
 interface SpecPhase {
   heading: PhaseHeading;
   tasks: string[];
   acceptanceProse: string;
+  criteria: ExecutableCriterion[];
 }
 
-export function phaseDocumentsFromSpec(
-  specText: string,
-  doneWhen: readonly ExecutableCriterion[] = DEFAULT_DONE_WHEN,
-): PhaseDocument[] {
-  if (doneWhen.length === 0) {
-    throw new PhaseGenerationError("from-spec requires at least one executable done-when criterion");
-  }
+export function phaseDocumentsFromSpec(specText: string): PhaseDocument[] {
   const specPhases = parseSpecPhases(extractGameplanSection(specText));
   if (specPhases.length === 0) {
     throw new PhaseGenerationError("the # Gameplan section contains no phase headings");
@@ -34,7 +30,7 @@ export function phaseDocumentsFromSpec(
   const documents: PhaseDocument[] = [];
   let previousId: string | null = null;
   for (const specPhase of specPhases) {
-    const document = documentFromSpecPhase(specPhase, previousId, doneWhen);
+    const document = documentFromSpecPhase(specPhase, previousId);
     documents.push(document);
     previousId = document.id;
   }
@@ -50,10 +46,7 @@ function extractGameplanSection(specText: string): string {
   }
   const sectionLines: string[] = [];
   for (let index = startIndex + 1; index < lines.length; index += 1) {
-    const line = lines[index];
-    if (line === undefined) {
-      throw new PhaseGenerationError("spec line vanished during gameplan extraction");
-    }
+    const line = lineAt(lines, index);
     if (line.startsWith(LEVEL_ONE_HEADING_PREFIX)) {
       break;
     }
@@ -63,22 +56,29 @@ function extractGameplanSection(specText: string): string {
 }
 
 function parseSpecPhases(gameplanText: string): SpecPhase[] {
+  const lines = gameplanText.split("\n");
   const specPhases: SpecPhase[] = [];
-  for (const line of gameplanText.split("\n")) {
+  let index = 0;
+  while (index < lines.length) {
+    const line = lineAt(lines, index);
     const heading = parsePhaseHeading(line);
     if (heading !== null) {
-      specPhases.push({ heading, tasks: [], acceptanceProse: "" });
+      specPhases.push({ heading, tasks: [], acceptanceProse: "", criteria: [] });
+      index += 1;
       continue;
     }
     const current = specPhases[specPhases.length - 1];
-    if (current !== undefined) {
-      appendPhaseDetail(current, line);
+    if (current === undefined) {
+      index += 1;
+      continue;
     }
+    index = consumePhaseDetail(current, lines, index);
   }
   return specPhases;
 }
 
-function appendPhaseDetail(specPhase: SpecPhase, line: string): void {
+function consumePhaseDetail(specPhase: SpecPhase, lines: string[], index: number): number {
+  const line = lineAt(lines, index);
   const taskMatch = TASK_BULLET_REGEX.exec(line);
   if (taskMatch !== null) {
     const taskText = taskMatch[1];
@@ -86,27 +86,127 @@ function appendPhaseDetail(specPhase: SpecPhase, line: string): void {
       throw new PhaseGenerationError(`task bullet matched without its capture group: ${line}`);
     }
     specPhase.tasks.push(taskText);
-    return;
+    return index + 1;
+  }
+  if (line === EXECUTABLE_DONE_WHEN_MARKER) {
+    return parseCriteriaBlock(lines, index + 1, specPhase.criteria);
+  }
+  if (isFenceOpening(line)) {
+    throw new PhaseGenerationError(
+      "a fenced done-when command must sit directly inside an executable done-when block, with no blank line separating adjacent criteria",
+    );
   }
   if (line.startsWith(DONE_WHEN_PREFIX)) {
     specPhase.acceptanceProse = line.slice(DONE_WHEN_PREFIX.length).trim();
   }
+  return index + 1;
 }
 
-function documentFromSpecPhase(
-  specPhase: SpecPhase,
-  previousId: string | null,
-  doneWhen: readonly ExecutableCriterion[],
-): PhaseDocument {
+function parseCriteriaBlock(
+  lines: string[],
+  startIndex: number,
+  criteria: ExecutableCriterion[],
+): number {
+  const countBeforeBlock = criteria.length;
+  let index = startIndex;
+  while (index < lines.length && isFenceOpening(lineAt(lines, index))) {
+    index = parseFenceFirstCriterion(lines, index, criteria);
+  }
+  if (criteria.length === countBeforeBlock) {
+    throw new PhaseGenerationError(
+      "an executable done-when block must contain at least one fenced criterion",
+    );
+  }
+  return index;
+}
+
+function parseFenceFirstCriterion(
+  lines: string[],
+  fenceIndex: number,
+  criteria: ExecutableCriterion[],
+): number {
+  const fencedCommand = readFencedSpecCommand(lines, fenceIndex);
+  const trailingProse = readTrailingProse(lines, fencedCommand.nextIndex);
+  criteria.push({
+    kind: "executable",
+    description: trailingProse.description,
+    command: fencedCommand.command,
+  });
+  return trailingProse.nextIndex;
+}
+
+interface FencedSpecCommand {
+  command: string;
+  nextIndex: number;
+}
+
+function readFencedSpecCommand(lines: string[], openingIndex: number): FencedSpecCommand {
+  let closingIndex = openingIndex + 1;
+  while (closingIndex < lines.length && lineAt(lines, closingIndex) !== COMMAND_FENCE) {
+    closingIndex += 1;
+  }
+  if (closingIndex >= lines.length) {
+    throw new PhaseGenerationError("unclosed fenced command block in an executable done-when");
+  }
+  if (closingIndex !== openingIndex + 2) {
+    throw new PhaseGenerationError(
+      "a fenced executable done-when command must contain exactly one line",
+    );
+  }
+  return { command: lineAt(lines, openingIndex + 1), nextIndex: closingIndex + 1 };
+}
+
+interface TrailingProse {
+  description: string;
+  nextIndex: number;
+}
+
+function readTrailingProse(lines: string[], startIndex: number): TrailingProse {
+  const proseLines: string[] = [];
+  let index = startIndex;
+  while (index < lines.length && isProseContinuation(lineAt(lines, index))) {
+    proseLines.push(lineAt(lines, index).trim());
+    index += 1;
+  }
+  if (proseLines.length === 0) {
+    throw new PhaseGenerationError(
+      "a fenced executable done-when criterion must be followed by a prose description",
+    );
+  }
+  return { description: proseLines.join(" "), nextIndex: index };
+}
+
+function isProseContinuation(line: string): boolean {
+  return line.trim() !== "" && parsePhaseHeading(line) === null && !isFenceOpening(line);
+}
+
+function documentFromSpecPhase(specPhase: SpecPhase, previousId: string | null): PhaseDocument {
   if (specPhase.tasks.length === 0) {
     throw new PhaseGenerationError(`phase "${specPhase.heading.id}" has no task bullets`);
   }
+  requireExecutableCriterion(specPhase);
   return {
     id: specPhase.heading.id,
     deps: previousId === null ? [] : [previousId],
     agentRole: DEFAULT_AGENT_ROLE,
     description: buildPhaseDescription(specPhase.heading.title, specPhase.acceptanceProse),
     tasks: specPhase.tasks,
-    doneWhen: [...doneWhen],
+    doneWhen: [...specPhase.criteria],
   };
+}
+
+function requireExecutableCriterion(specPhase: SpecPhase): void {
+  if (specPhase.criteria.length === 0) {
+    throw new PhaseGenerationError(
+      `phase "${specPhase.heading.id}" has no executable done-when criterion`,
+    );
+  }
+}
+
+function lineAt(lines: string[], index: number): string {
+  const line = lines[index];
+  if (line === undefined) {
+    throw new PhaseGenerationError(`spec line index ${index} is out of bounds`);
+  }
+  return line;
 }

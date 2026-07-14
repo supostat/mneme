@@ -3,25 +3,43 @@ import { phaseDocumentsFromSpec } from "./from-spec";
 import { PhaseGenerationError } from "./phase-generation";
 import { PhaseGraphValidationError, buildPhaseGraph } from "./phase-graph";
 import { parsePhaseDocument, serializePhaseDocument } from "./phase-document";
-import type { ExecutableCriterion } from "./phase-document";
 
 const EM_DASH = String.fromCharCode(0x2014);
+const EXECUTABLE_MARKER = "**Done when (EXECUTABLE):**";
+
+function executableBlock(command: string, description: string): string {
+  return [EXECUTABLE_MARKER, "```", command, "```", description].join("\n");
+}
 
 function gameplanSpec(...phaseBlocks: string[]): string {
   return ["# Gameplan", "", ...phaseBlocks].join("\n");
 }
 
-function phaseBlock(heading: string, tasks: string[], doneWhen: string): string {
-  return [heading, "", ...tasks.map((task) => `- [ ] ${task}`), "", `**Done when:** ${doneWhen}`, ""].join(
-    "\n",
-  );
+function phaseBlock(heading: string, tasks: string[], doneWhenBlock: string): string {
+  return [heading, "", ...tasks.map((task) => `- [ ] ${task}`), "", doneWhenBlock, ""].join("\n");
 }
 
 describe("phaseDocumentsFromSpec happy path", () => {
   const specText = gameplanSpec(
-    phaseBlock(`### Phase 1: alpha core ${EM_DASH} first title`, ["do first", "do second"], "alpha is green."),
-    phaseBlock(`### Phase 2: beta engine ${EM_DASH} second title`, ["build beta"], "beta is green."),
-    phaseBlock(`### Phase 3: gamma surface ${EM_DASH} third title`, ["ship gamma"], "gamma is green."),
+    phaseBlock(
+      `### Phase 1: alpha core ${EM_DASH} first title`,
+      ["do first", "do second"],
+      [
+        "**Done when:** alpha is green.",
+        "",
+        executableBlock("bun test src/alpha.test.ts", "alpha suite is green."),
+      ].join("\n"),
+    ),
+    phaseBlock(
+      `### Phase 2: beta engine ${EM_DASH} second title`,
+      ["build beta"],
+      executableBlock("bun test src/beta.test.ts", "beta suite is green."),
+    ),
+    phaseBlock(
+      `### Phase 3: gamma surface ${EM_DASH} third title`,
+      ["ship gamma"],
+      executableBlock("bun test src/gamma.test.ts", "gamma suite is green."),
+    ),
   );
 
   test("produces one slugified document per phase", () => {
@@ -40,17 +58,25 @@ describe("phaseDocumentsFromSpec happy path", () => {
     expect(documents[1]?.tasks).toEqual(["build beta"]);
   });
 
-  test("emits only executable done-when criteria", () => {
+  test("extracts the executable done-when of each phase", () => {
     const documents = phaseDocumentsFromSpec(specText);
-    for (const document of documents) {
-      expect(document.doneWhen.every((criterion) => criterion.kind === "executable")).toBe(true);
-    }
+    expect(documents[0]?.doneWhen).toEqual([
+      { kind: "executable", description: "alpha suite is green.", command: "bun test src/alpha.test.ts" },
+    ]);
+    expect(documents[1]?.doneWhen).toEqual([
+      { kind: "executable", description: "beta suite is green.", command: "bun test src/beta.test.ts" },
+    ]);
   });
 
   test("carries the phase title and acceptance prose into the description", () => {
     const [firstDocument] = phaseDocumentsFromSpec(specText);
     expect(firstDocument?.description).toContain("first title");
     expect(firstDocument?.description).toContain("alpha is green.");
+  });
+
+  test("keeps the phase description free of the criterion prose", () => {
+    const [firstDocument] = phaseDocumentsFromSpec(specText);
+    expect(firstDocument?.description).not.toContain("alpha suite is green.");
   });
 
   test("builds a valid phase graph and round-trips through the serializer", () => {
@@ -92,11 +118,23 @@ const SAMPLE_GAMEPLAN_SPEC = [
   "",
   "**Done when:** the raw input parses.",
   "",
+  EXECUTABLE_MARKER,
+  "```",
+  "bun test src/ingest.test.ts",
+  "```",
+  "the ingest suite is green.",
+  "",
   `### Phase 2: normalize records ${EM_DASH} canonical form`,
   "",
   "- [ ] map the fields",
   "",
   "**Done when:** records reach canonical form.",
+  "",
+  EXECUTABLE_MARKER,
+  "```",
+  "bun test src/normalize.test.ts",
+  "```",
+  "the normalize suite is green.",
   "",
   `### Phase 3: index store ${EM_DASH} build the searchable index`,
   "",
@@ -104,11 +142,23 @@ const SAMPLE_GAMEPLAN_SPEC = [
   "",
   "**Done when:** the index round-trips.",
   "",
+  EXECUTABLE_MARKER,
+  "```",
+  "bun test src/index-store.test.ts",
+  "```",
+  "the index suite is green.",
+  "",
   `### Phase 4: query surface ${EM_DASH} expose retrieval`,
   "",
   "- [ ] wire the endpoint",
   "",
   "**Done when:** a query returns results.",
+  "",
+  EXECUTABLE_MARKER,
+  "```",
+  "bun test src/query.test.ts",
+  "```",
+  "the query suite is green.",
   "",
   "# Appendix",
   "",
@@ -150,19 +200,223 @@ describe("phaseDocumentsFromSpec against a dedicated sample spec", () => {
   });
 });
 
-describe("phaseDocumentsFromSpec injected done-when", () => {
-  test("applies a caller-supplied executable command to every phase", () => {
-    const doneWhen: ExecutableCriterion[] = [
-      { kind: "executable", description: "types check", command: "bunx tsc --noEmit" },
-    ];
+describe("phaseDocumentsFromSpec executable extraction", () => {
+  test("reads the fenced command and prose, not the default suite", () => {
     const specText = gameplanSpec(
-      phaseBlock(`### Phase 1: alpha ${EM_DASH} one`, ["a"], "a green."),
-      phaseBlock(`### Phase 2: beta ${EM_DASH} two`, ["b"], "b green."),
+      phaseBlock(
+        `### Phase 1: alpha ${EM_DASH} one`,
+        ["a"],
+        executableBlock("bun test src/example.test.ts", "example suite is green."),
+      ),
     );
-    const documents = phaseDocumentsFromSpec(specText, doneWhen);
+    const [document] = phaseDocumentsFromSpec(specText);
+    expect(document?.doneWhen).toEqual([
+      {
+        kind: "executable",
+        description: "example suite is green.",
+        command: "bun test src/example.test.ts",
+      },
+    ]);
+    const [criterion] = document?.doneWhen ?? [];
+    expect(criterion?.kind === "executable" ? criterion.command : "").not.toBe("bun test");
+  });
+});
+
+describe("phaseDocumentsFromSpec multiple criteria", () => {
+  const specText = gameplanSpec(
+    phaseBlock(
+      `### Phase 1: alpha ${EM_DASH} one`,
+      ["a"],
+      [
+        EXECUTABLE_MARKER,
+        "```",
+        "bun test src/one.test.ts",
+        "```",
+        "first check passes.",
+        "```",
+        "bun test src/two.test.ts",
+        "```",
+        "second check passes.",
+      ].join("\n"),
+    ),
+  );
+
+  test("collects every adjacent fence-first record in order", () => {
+    const [document] = phaseDocumentsFromSpec(specText);
+    expect(document?.doneWhen).toEqual([
+      { kind: "executable", description: "first check passes.", command: "bun test src/one.test.ts" },
+      { kind: "executable", description: "second check passes.", command: "bun test src/two.test.ts" },
+    ]);
+  });
+
+  test("stops criterion prose at the next phase heading without swallowing it", () => {
+    const specWithAdjacentPhases = [
+      "# Gameplan",
+      "",
+      `### Phase 1: alpha ${EM_DASH} one`,
+      "",
+      "- [ ] a",
+      "",
+      EXECUTABLE_MARKER,
+      "```",
+      "bun test src/a.test.ts",
+      "```",
+      "alpha done.",
+      `### Phase 2: beta ${EM_DASH} two`,
+      "",
+      "- [ ] b",
+      "",
+      executableBlock("bun test src/b.test.ts", "beta done."),
+      "",
+    ].join("\n");
+    const documents = phaseDocumentsFromSpec(specWithAdjacentPhases);
+    expect(documents.map((document) => document.id)).toEqual(["alpha", "beta"]);
+    expect(documents[0]?.doneWhen).toEqual([
+      { kind: "executable", description: "alpha done.", command: "bun test src/a.test.ts" },
+    ]);
+  });
+
+  test("joins a multi-line criterion prose into a single-line description", () => {
+    const specText = gameplanSpec(
+      phaseBlock(
+        `### Phase 1: alpha ${EM_DASH} one`,
+        ["a"],
+        [EXECUTABLE_MARKER, "```", "bun test src/a.test.ts", "```", "first line", "second line"].join("\n"),
+      ),
+    );
+    const [document] = phaseDocumentsFromSpec(specText);
+    expect(document?.doneWhen).toEqual([
+      { kind: "executable", description: "first line second line", command: "bun test src/a.test.ts" },
+    ]);
+  });
+});
+
+describe("phaseDocumentsFromSpec policy A", () => {
+  test("throws when a phase has no done-when at all", () => {
+    const specText = gameplanSpec(
+      [`### Phase 1: alpha ${EM_DASH} one`, "", "- [ ] a", ""].join("\n"),
+    );
+    expect(() => phaseDocumentsFromSpec(specText)).toThrow(PhaseGenerationError);
+  });
+
+  test("throws when a phase carries only the prose done-when line", () => {
+    const specText = gameplanSpec(
+      phaseBlock(`### Phase 1: alpha ${EM_DASH} one`, ["a"], "**Done when:** alpha is green."),
+    );
+    expect(() => phaseDocumentsFromSpec(specText)).toThrow(PhaseGenerationError);
+  });
+
+  test("round-trips a multi-criteria document through the serializer", () => {
+    const specText = gameplanSpec(
+      phaseBlock(
+        `### Phase 1: alpha ${EM_DASH} one`,
+        ["a"],
+        [
+          EXECUTABLE_MARKER,
+          "```",
+          "bun test src/one.test.ts",
+          "```",
+          "first check passes.",
+          "```",
+          "bun test src/two.test.ts",
+          "```",
+          "second check passes.",
+        ].join("\n"),
+      ),
+    );
+    const documents = phaseDocumentsFromSpec(specText);
+    expect(documents[0]?.doneWhen).toHaveLength(2);
     for (const document of documents) {
-      expect(document.doneWhen).toEqual(doneWhen);
+      expect(parsePhaseDocument(serializePhaseDocument(document))).toEqual(document);
     }
+  });
+});
+
+describe("phaseDocumentsFromSpec structural rejections", () => {
+  test("throws on an unclosed fenced command", () => {
+    const specText = gameplanSpec(
+      [
+        `### Phase 1: alpha ${EM_DASH} one`,
+        "",
+        "- [ ] a",
+        "",
+        EXECUTABLE_MARKER,
+        "```",
+        "bun test src/a.test.ts",
+        "some prose.",
+      ].join("\n"),
+    );
+    expect(() => phaseDocumentsFromSpec(specText)).toThrow(PhaseGenerationError);
+  });
+
+  test("throws on a two-line fenced command", () => {
+    const specText = gameplanSpec(
+      [
+        `### Phase 1: alpha ${EM_DASH} one`,
+        "",
+        "- [ ] a",
+        "",
+        EXECUTABLE_MARKER,
+        "```",
+        "bun test src/a.test.ts",
+        "bun test src/b.test.ts",
+        "```",
+        "some prose.",
+        "",
+      ].join("\n"),
+    );
+    expect(() => phaseDocumentsFromSpec(specText)).toThrow(PhaseGenerationError);
+  });
+
+  test("throws on a fence-first record with no trailing prose", () => {
+    const specText = gameplanSpec(
+      phaseBlock(
+        `### Phase 1: alpha ${EM_DASH} one`,
+        ["a"],
+        [EXECUTABLE_MARKER, "```", "bun test src/a.test.ts", "```"].join("\n"),
+      ),
+    );
+    expect(() => phaseDocumentsFromSpec(specText)).toThrow(PhaseGenerationError);
+  });
+
+  test("throws when the executable marker is not immediately followed by a fence", () => {
+    const specText = gameplanSpec(
+      [
+        `### Phase 1: alpha ${EM_DASH} one`,
+        "",
+        "- [ ] a",
+        "",
+        EXECUTABLE_MARKER,
+        "",
+        "```",
+        "bun test src/a.test.ts",
+        "```",
+        "some prose.",
+      ].join("\n"),
+    );
+    expect(() => phaseDocumentsFromSpec(specText)).toThrow(PhaseGenerationError);
+  });
+
+  test("throws when a blank line separates two criteria rather than dropping the second", () => {
+    const specText = gameplanSpec(
+      [
+        `### Phase 1: alpha ${EM_DASH} one`,
+        "",
+        "- [ ] a",
+        "",
+        EXECUTABLE_MARKER,
+        "```",
+        "bun test src/one.test.ts",
+        "```",
+        "first check passes.",
+        "",
+        "```",
+        "bun test src/two.test.ts",
+        "```",
+        "second check passes.",
+      ].join("\n"),
+    );
+    expect(() => phaseDocumentsFromSpec(specText)).toThrow(PhaseGenerationError);
   });
 });
 
@@ -181,26 +435,43 @@ describe("phaseDocumentsFromSpec rejections", () => {
 
   test("throws when a phase heading has no task bullets", () => {
     const specText = gameplanSpec(
-      [`### Phase 1: alpha ${EM_DASH} one`, "", "**Done when:** green.", ""].join("\n"),
+      phaseBlock(
+        `### Phase 1: alpha ${EM_DASH} one`,
+        [],
+        executableBlock("bun test src/a.test.ts", "alpha suite is green."),
+      ),
     );
     expect(() => phaseDocumentsFromSpec(specText)).toThrow(PhaseGenerationError);
   });
 
   test("throws when a phase label cannot be slugified", () => {
-    const specText = gameplanSpec(phaseBlock(`### Phase 1: !!! ${EM_DASH} title`, ["a"], "green."));
+    const specText = gameplanSpec(
+      phaseBlock(
+        `### Phase 1: !!! ${EM_DASH} title`,
+        ["a"],
+        executableBlock("bun test src/a.test.ts", "alpha suite is green."),
+      ),
+    );
     expect(() => phaseDocumentsFromSpec(specText)).toThrow(PhaseGenerationError);
-  });
-
-  test("throws when the injected done-when list is empty", () => {
-    const specText = gameplanSpec(phaseBlock(`### Phase 1: alpha ${EM_DASH} one`, ["a"], "green."));
-    expect(() => phaseDocumentsFromSpec(specText, [])).toThrow(PhaseGenerationError);
   });
 
   test("propagates a duplicate-id graph error from non-adjacent duplicate labels", () => {
     const specText = gameplanSpec(
-      phaseBlock(`### Phase 1: alpha ${EM_DASH} one`, ["a"], "green."),
-      phaseBlock(`### Phase 2: beta ${EM_DASH} two`, ["b"], "green."),
-      phaseBlock(`### Phase 3: alpha ${EM_DASH} three`, ["c"], "green."),
+      phaseBlock(
+        `### Phase 1: alpha ${EM_DASH} one`,
+        ["a"],
+        executableBlock("bun test src/one.test.ts", "one suite is green."),
+      ),
+      phaseBlock(
+        `### Phase 2: beta ${EM_DASH} two`,
+        ["b"],
+        executableBlock("bun test src/two.test.ts", "two suite is green."),
+      ),
+      phaseBlock(
+        `### Phase 3: alpha ${EM_DASH} three`,
+        ["c"],
+        executableBlock("bun test src/three.test.ts", "three suite is green."),
+      ),
     );
     expect(() => phaseDocumentsFromSpec(specText)).toThrow(PhaseGraphValidationError);
   });

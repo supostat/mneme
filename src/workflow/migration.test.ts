@@ -109,8 +109,11 @@ const EM_DASH = String.fromCharCode(0x2014);
 // deliberately unrelated to the project's gitignored docs/V2-SPEC.md so the test runs on a clean
 // clone (CI, dogfood in a bare environment) -- reading the live spec made this test pass only on
 // machines that happen to carry docs/. The from-spec test was cut over for the same reason; this
-// mirrors it. Kept inline per the repo convention that fixtures are built at runtime, never read
-// from the tree; the em-dash is composed via EM_DASH so this source file stays pure ASCII.
+// mirrors it. Every phase carries an executable done-when block (Policy A: from-spec requires an
+// explicit fenced "**Done when (EXECUTABLE):**" criterion per phase) alongside its prose done-when
+// line, which remains the phase-description source. Kept inline per the repo convention that
+// fixtures are built at runtime, never read from the tree; the em-dash is composed via EM_DASH so
+// this source file stays pure ASCII.
 const MIGRATION_SAMPLE_SPEC = [
   "# Gameplan",
   "",
@@ -122,17 +125,35 @@ const MIGRATION_SAMPLE_SPEC = [
   "",
   "**Done when:** the raw input parses.",
   "",
+  "**Done when (EXECUTABLE):**",
+  "```",
+  "bun test src/ingest.test.ts",
+  "```",
+  "the ingest suite is green.",
+  "",
   `### Phase 2: normalize records ${EM_DASH} canonical form`,
   "",
   "- [ ] map the fields",
   "",
   "**Done when:** records reach canonical form.",
   "",
+  "**Done when (EXECUTABLE):**",
+  "```",
+  "bun test src/normalize.test.ts",
+  "```",
+  "the normalize suite is green.",
+  "",
   `### Phase 3: index store ${EM_DASH} build the searchable index`,
   "",
   "- [ ] write the index",
   "",
   "**Done when:** the index round-trips.",
+  "",
+  "**Done when (EXECUTABLE):**",
+  "```",
+  "bun test src/index-store.test.ts",
+  "```",
+  "the index suite is green.",
   "",
 ].join("\n");
 
