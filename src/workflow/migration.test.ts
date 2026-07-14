@@ -191,11 +191,16 @@ describe("scripts/migrate.ts end-to-end", () => {
     const dry = await runMigrate([specPath], tempHome, projectCwd);
     expect(dry.code).toBe(0);
     expect(existsSync(workflowDir)).toBe(false);
+    // Dry-run prints the full absolute destination path so it is copy-pasteable before any write.
+    expect(dry.stdout).toContain(join(workflowDir, "phase-ingest-source.md"));
 
     const applied = await runMigrate([specPath, "--apply"], tempHome, projectCwd);
     expect(applied.code).toBe(0);
     const written = readdirSync(workflowDir).filter((name) => name.endsWith(".md"));
     expect(written.length).toBeGreaterThan(0);
+    // --apply prints each created file's absolute path plus a ready /mneme:dev launch command.
+    expect(applied.stdout).toContain(join(workflowDir, "phase-ingest-source.md"));
+    expect(applied.stdout).toContain("/mneme:dev ");
 
     const reapplied = await runMigrate([specPath, "--apply"], tempHome, projectCwd);
     expect(reapplied.code).toBe(0);
