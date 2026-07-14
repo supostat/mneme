@@ -19,13 +19,27 @@ import { z } from "zod";
 //       RULE: run restore parses with the *Restore schema variants, whose envelope accepts any
 //       integer schema_version >= 4, so a future version bump never renders live runs unreadable —
 //       a bump may EXTEND the workflow payloads but must never repurpose an existing field.
-export const SCHEMA_VERSION = 4;
+//   5 — recall origin: the recall event names WHO issued it — workflow-step (the engine's memory
+//       step) vs tool-call (a manual recall through MCP). Older recall events carry no origin; a
+//       reader treats its absence as "unknown" (the same backfill discipline as the v0 pre-stamp
+//       envelope), never a hard failure.
+export const SCHEMA_VERSION = 5;
 
 export const DEDUP_OUTCOMES = ["add", "supersede_suggest", "noop"] as const;
 export const RESOLVE_DECISIONS = ["accept", "reject", "supersede"] as const;
 export const ANCHOR_LIVENESS = ["tracked", "untracked-exists", "missing"] as const;
 export const RECALL_MODES = ["fused", "fts_only", "vector_only", "none"] as const;
 export const RECALL_CANDIDATE_WINDOW = 20;
+
+// Who issued a recall: the engine's memory step or a manual tool call. recall() takes this as a
+// required argument, so the compiler forces every caller to name its origin — a third caller cannot
+// be added without extending this enum. There are exactly two callers today (verified by grep).
+export const RECALL_ORIGINS = ["workflow-step", "tool-call"] as const;
+export type RecallOrigin = (typeof RECALL_ORIGINS)[number];
+
+// A recall event stamped before schema v5 carries no origin; every reader maps that absence to this
+// value rather than dropping or failing on the event.
+export const RECALL_ORIGIN_UNKNOWN = "unknown";
 
 export const WORKFLOW_RESULT_KINDS = ["recall", "execute_step", "harvest"] as const;
 export const WORKFLOW_STEP_OUTCOMES = ["success", "failure"] as const;
@@ -99,6 +113,7 @@ const recallEvent = z.object({
   budget: z.number(),
   returned_ids: z.array(z.string()),
   degraded: z.boolean(),
+  origin: z.enum(RECALL_ORIGINS),
   mode: z.enum(RECALL_MODES),
   corpus_size: z.number(),
   timings: z.object({

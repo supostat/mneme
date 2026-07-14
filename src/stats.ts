@@ -1,5 +1,9 @@
 import type { StoredEvent } from "./events";
 import { isAcceptedEvent, isSupersedeEvent, isStagingEvent, isNoopEvent } from "./event-dialect";
+import { RECALL_ORIGINS, RECALL_ORIGIN_UNKNOWN } from "./event-schema";
+import type { RecallOrigin } from "./event-schema";
+
+type RecallOriginBucket = RecallOrigin | typeof RECALL_ORIGIN_UNKNOWN;
 
 export interface RatioMetric {
   numerator: number;
@@ -16,6 +20,7 @@ export interface StatsSummary {
   acceptedNoteCount: number;
   liveNoteCount: number;
   recallEventCount: number;
+  recallByOrigin: Record<RecallOriginBucket, number>;
   crossSessionReuse: RatioMetric;
   neverRetrieved: RatioMetric;
   degradationFrequency: RatioMetric;
@@ -35,6 +40,7 @@ interface RecallOccurrence {
   ts: string | null;
   returnedIds: string[];
   degraded: boolean;
+  origin: RecallOriginBucket;
 }
 
 interface NoopSummary {
@@ -55,6 +61,7 @@ export function computeStats(events: StoredEvent[]): StatsSummary {
     acceptedNoteCount: acceptedIds.size,
     liveNoteCount: liveAccepted.size,
     recallEventCount: recalls.length,
+    recallByOrigin: recallByOrigin(recalls),
     crossSessionReuse: crossSessionReuse(acceptedIds, stagingAnchors, recalls),
     neverRetrieved: neverRetrievedMetric.metric,
     degradationFrequency: degradation(recalls),
@@ -122,9 +129,26 @@ function collectRecallOccurrences(events: StoredEvent[]): RecallOccurrence[] {
       ts: event.ts,
       returnedIds: stringArray(event.returned_ids),
       degraded: event.degraded === true,
+      origin: recallOriginBucket(event.origin),
     });
   }
   return occurrences;
+}
+
+// A recall event stamped before schema v5 carries no origin; its absence (or any unrecognized value)
+// reads as "unknown" rather than crashing the aggregator or being silently dropped.
+function recallOriginBucket(value: unknown): RecallOriginBucket {
+  return RECALL_ORIGINS.includes(value as RecallOrigin) ? (value as RecallOrigin) : RECALL_ORIGIN_UNKNOWN;
+}
+
+function recallByOrigin(recalls: RecallOccurrence[]): Record<RecallOriginBucket, number> {
+  const counts: Record<RecallOriginBucket, number> = {
+    "workflow-step": 0,
+    "tool-call": 0,
+    [RECALL_ORIGIN_UNKNOWN]: 0,
+  };
+  for (const recall of recalls) counts[recall.origin] += 1;
+  return counts;
 }
 
 function stringArray(value: unknown): string[] {
@@ -248,7 +272,7 @@ export function formatStats(summary: StatsSummary): string {
     "",
     `Accepted notes (historical): ${summary.acceptedNoteCount}`,
     `Live notes (accepted minus superseded): ${summary.liveNoteCount}`,
-    `Recall events: ${summary.recallEventCount}`,
+    `Recall events: ${summary.recallEventCount} (engine ${summary.recallByOrigin["workflow-step"]}, manual ${summary.recallByOrigin["tool-call"]}, unknown ${summary.recallByOrigin[RECALL_ORIGIN_UNKNOWN]})`,
     "",
     `(a) Cross-session reuse: ${renderRatio(summary.crossSessionReuse, "accepted notes")}`,
     `(b) Never retrieved: ${renderRatio(summary.neverRetrieved, "accepted notes")} (of which ${summary.neverRetrievedSupersededCount} superseded)`,

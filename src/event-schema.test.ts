@@ -87,6 +87,7 @@ const LIVE_EVENTS: Record<string, EventInput> = {
     budget: 2000,
     returned_ids: ["n1"],
     degraded: false,
+    origin: "tool-call",
     mode: "fused",
     corpus_size: 3,
     timings: { embed_ms: 1, fts_ms: 0, fusion_ms: 2 },
@@ -158,8 +159,8 @@ const GATE_REASON_MIRROR = {
 } as const satisfies Record<ExecutableGateReason, true>;
 
 describe("event-schema constants", () => {
-  test("SCHEMA_VERSION is 4", () => {
-    expect(SCHEMA_VERSION).toBe(4);
+  test("SCHEMA_VERSION is 5", () => {
+    expect(SCHEMA_VERSION).toBe(5);
   });
 
   test("EXECUTABLE_GATE_REASONS mirrors gate-runner's ExecutableGateReason in both directions", () => {
@@ -234,6 +235,7 @@ describe("eventSchema recall candidate window", () => {
       budget: 2000,
       returned_ids: [],
       degraded: false,
+      origin: "tool-call",
       mode: "fused",
       corpus_size: 30,
       timings: { embed_ms: 0, fts_ms: 0, fusion_ms: 0 },
@@ -258,5 +260,18 @@ describe("eventSchema recall candidate window", () => {
 
   test("an unknown recall mode fails", () => {
     expect(eventSchema.safeParse(stamp(recallWith({ mode: "hybrid" }))).success).toBe(false);
+  });
+
+  test("a producer recall carrying workflow-step origin validates", () => {
+    expect(eventSchema.safeParse(stamp(recallWith({ origin: "workflow-step" }))).success).toBe(true);
+  });
+
+  test("a recall missing origin fails the producer schema", () => {
+    const { origin: _omitted, ...withoutOrigin } = recallWith({});
+    expect(eventSchema.safeParse(stamp(withoutOrigin)).success).toBe(false);
+  });
+
+  test("an unknown recall origin fails", () => {
+    expect(eventSchema.safeParse(stamp(recallWith({ origin: "cron" }))).success).toBe(false);
   });
 });

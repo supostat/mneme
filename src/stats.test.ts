@@ -26,6 +26,7 @@ function recallEvent(
   ts: string | null,
   returnedIds: string[],
   degraded = false,
+  origin?: string,
 ): StoredEvent {
   return storedEvent({
     type: "recall",
@@ -35,6 +36,7 @@ function recallEvent(
     degraded,
     session_id: sessionId,
     ts,
+    ...(origin === undefined ? {} : { origin }),
   });
 }
 
@@ -379,5 +381,30 @@ describe("computeStats tolerates a torn real event log", () => {
     expect(summary.acceptedNoteCount).toBe(1);
     expect(summary.recallEventCount).toBe(1);
     expect(summary.crossSessionReuse.numerator).toBe(1);
+  });
+});
+
+describe("recall origin breakdown", () => {
+  test("recall events are counted by origin, missing origin folding into unknown", () => {
+    const events = [
+      recallEvent("s1", "2026-07-10T10:00:00.000Z", [], false, "workflow-step"),
+      recallEvent("s1", "2026-07-10T10:01:00.000Z", [], false, "workflow-step"),
+      recallEvent("s1", "2026-07-10T10:02:00.000Z", [], false, "tool-call"),
+      recallEvent("s1", "2026-07-10T10:03:00.000Z", [], false),
+    ];
+
+    const summary = computeStats(events);
+
+    expect(summary.recallEventCount).toBe(4);
+    expect(summary.recallByOrigin).toEqual({ "workflow-step": 2, "tool-call": 1, unknown: 1 });
+  });
+
+  test("formatStats renders the engine/manual/unknown recall split", () => {
+    const summary = computeStats([
+      recallEvent("s1", "2026-07-10T10:00:00.000Z", [], false, "workflow-step"),
+      recallEvent("s1", "2026-07-10T10:01:00.000Z", [], false, "tool-call"),
+    ]);
+
+    expect(formatStats(summary)).toContain("Recall events: 2 (engine 1, manual 1, unknown 0)");
   });
 });

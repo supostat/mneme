@@ -208,6 +208,7 @@ describe("compileRecallBundle happy path", () => {
     expect(recallEvents.length).toBe(1);
     expect(recallEvents[0]!.query).toBe("payment refund handling\nsrc/a.ts");
     expect(recallEvents[0]!.budget).toBe(2000);
+    expect(recallEvents[0]!.origin).toBe("workflow-step");
   });
 });
 

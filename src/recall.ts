@@ -10,6 +10,7 @@ import type { EventWriter } from "./events";
 import { DEFAULT_FUSION_PARAMS, compareIds, estimateTokens, fuseAndFill } from "./fusion";
 import type { FusionDecision, FusionInput } from "./fusion";
 import { RECALL_CANDIDATE_WINDOW, RECALL_MODES } from "./event-schema";
+import type { RecallOrigin } from "./event-schema";
 
 type RecallMode = (typeof RECALL_MODES)[number];
 
@@ -85,7 +86,12 @@ export function passesRecallThreshold(note: RecalledNote): boolean {
   return note.ftsRank !== null || (note.cosine !== null && note.cosine >= RECALL_BUNDLE_COSINE_THRESHOLD);
 }
 
-export async function recall(deps: RecallDeps, query: string, budget: number): Promise<RecallResult> {
+export async function recall(
+  deps: RecallDeps,
+  query: string,
+  budget: number,
+  origin: RecallOrigin,
+): Promise<RecallResult> {
   const terms = extractTerms(query);
   const embedded = await embedQuery(deps, query);
   const degraded = !(embedded.embed.available && hasStoredVectors(deps.db));
@@ -98,6 +104,7 @@ export async function recall(deps: RecallDeps, query: string, budget: number): P
     budget,
     returned_ids: returnedIds,
     degraded,
+    origin,
     mode: deriveMode(terms.length > 0, fusion.vectorAttempted),
     corpus_size: countMetaRows(deps.db),
     timings: { embed_ms: embedded.ms, fts_ms: fts.ms, fusion_ms: fusion.ms },

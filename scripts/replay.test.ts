@@ -127,7 +127,7 @@ describe("replayLog integration with the real recall path", () => {
     ]);
     const deps = openRecallDeps(indexPath, eventsDir);
     // Budget 10 admits the two small notes but skips the large one, so in_budget is mixed.
-    await recall(deps, "widget", 10);
+    await recall(deps, "widget", 10, "tool-call");
     deps.db.close();
 
     const report = replayLog(readEvents(eventsDir), {});

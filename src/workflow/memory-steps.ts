@@ -109,6 +109,7 @@ async function rebuildIndexWhenMissing(deps: StagingDeps): Promise<void> {
 }
 
 // recall() itself appends the recall event, so an engine-invoked recall is logged by construction.
+// It is issued as the phase's memory step, hence the "workflow-step" origin on every event.
 async function runRecall(deps: StagingDeps, query: string, budget: number): Promise<RecallResult> {
   const db = new Database(deps.corpus.indexPath, { readonly: true });
   try {
@@ -116,6 +117,7 @@ async function runRecall(deps: StagingDeps, query: string, budget: number): Prom
       { db, embeddings: deps.embeddings, eventWriter: deps.eventWriter, clock: deps.clock },
       query,
       budget,
+      "workflow-step",
     );
   } finally {
     db.close();

@@ -167,7 +167,7 @@ describe("recall FTS regression", () => {
     const { indexPath, eventsDir } = await setupIndex(specs, offlineClient());
     const deps = openRecall(indexPath, eventsDir, offlineClient());
 
-    const result = await recall(deps, "payment", 10000);
+    const result = await recall(deps, "payment", 10000, "tool-call");
 
     expect(result.returnedIds).toEqual([ulid(0)]);
   });
@@ -180,7 +180,7 @@ describe("recall FTS regression", () => {
     const { indexPath, eventsDir } = await setupIndex(specs, offlineClient());
     const deps = openRecall(indexPath, eventsDir, offlineClient());
 
-    const result = await recall(deps, "react-hook-form", 10000);
+    const result = await recall(deps, "react-hook-form", 10000, "tool-call");
 
     expect(result.returnedIds).toContain(ulid(0));
   });
@@ -192,7 +192,7 @@ describe("recall FTS regression", () => {
     const { indexPath, eventsDir } = await setupIndex(specs, offlineClient());
     const deps = openRecall(indexPath, eventsDir, offlineClient());
 
-    const result = await recall(deps, 'payment "NEAR" (foo*) OR', 10000);
+    const result = await recall(deps, 'payment "NEAR" (foo*) OR', 10000, "tool-call");
 
     expect(result.returnedIds).toContain(ulid(0));
   });
@@ -215,7 +215,7 @@ describe("recall budget", () => {
     const deps = openRecall(indexPath, eventsDir, offlineClient());
 
     for (const budget of [3, 10, 50, 100000]) {
-      const result = await recall(deps, "widget", budget);
+      const result = await recall(deps, "widget", budget, "tool-call");
       const used = result.returnedIds.reduce((sum, id) => sum + tokenEstimate(bodyById.get(id)!), 0);
       expect(used).toBeLessThanOrEqual(budget);
     }
@@ -225,10 +225,10 @@ describe("recall budget", () => {
     const { indexPath, eventsDir } = await setupIndex(specs, offlineClient());
     const deps = openRecall(indexPath, eventsDir, offlineClient());
 
-    const roomy = await recall(deps, "widget", 100000);
+    const roomy = await recall(deps, "widget", 100000, "tool-call");
     expect(roomy.returnedIds[0]).toBe(ulid(0));
 
-    const result = await recall(deps, "widget", 10);
+    const result = await recall(deps, "widget", 10, "tool-call");
 
     expect(result.returnedIds).not.toContain(ulid(0));
     expect(result.returnedIds).toContain(ulid(1));
@@ -245,7 +245,7 @@ describe("recall degraded mode", () => {
     const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
     const deps = openRecall(indexPath, eventsDir, offlineClient());
 
-    const result = await recall(deps, "payment refund ledger", 10000);
+    const result = await recall(deps, "payment refund ledger", 10000, "tool-call");
 
     expect(result.degraded).toBe(true);
     expect(result.returnedIds[0]).toBe(ulid(0));
@@ -261,7 +261,7 @@ describe("recall degraded on empty vector table", () => {
     const { indexPath, eventsDir } = await setupIndex(specs, offlineClient());
     const deps = openRecall(indexPath, eventsDir, bagOfWordsClient());
 
-    const result = await recall(deps, "payment refund ledger", 10000);
+    const result = await recall(deps, "payment refund ledger", 10000, "tool-call");
 
     expect(result.degraded).toBe(true);
     expect(result.returnedIds).toContain(ulid(0));
@@ -288,8 +288,8 @@ describe("recall relevance in both modes", () => {
     expect(specs.length).toBeGreaterThanOrEqual(20);
     const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
 
-    const fused = await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "payment refund ledger", 100000);
-    const degraded = await recall(openRecall(indexPath, eventsDir, offlineClient()), "payment refund ledger", 100000);
+    const fused = await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "payment refund ledger", 100000, "tool-call");
+    const degraded = await recall(openRecall(indexPath, eventsDir, offlineClient()), "payment refund ledger", 100000, "tool-call");
 
     expect(fused.degraded).toBe(false);
     expect(fused.returnedIds[0]).toBe(ulid(0));
@@ -307,7 +307,7 @@ describe("recall dead-anchor sink", () => {
     const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
     const deps = openRecall(indexPath, eventsDir, bagOfWordsClient());
 
-    const result = await recall(deps, "singleton pattern", 100000);
+    const result = await recall(deps, "singleton pattern", 100000, "tool-call");
 
     expect(result.returnedIds).toContain(ulid(0));
     expect(result.returnedIds).toContain(ulid(1));
@@ -322,7 +322,7 @@ describe("recall empty query", () => {
     const deps = openRecall(indexPath, eventsDir, bagOfWordsClient());
 
     // "%%% ---" yields no FTS terms and a zero-norm bag vector, so both channels stay empty.
-    const result = await recall(deps, "%%% ---", 10000);
+    const result = await recall(deps, "%%% ---", 10000, "tool-call");
 
     expect(result.returnedIds).toEqual([]);
     const events = readEvents(eventsDir);
@@ -337,7 +337,7 @@ describe("recall empty query", () => {
     const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
     const deps = openRecall(indexPath, eventsDir, offlineClient());
 
-    const result = await recall(deps, "%%% ---", 10000);
+    const result = await recall(deps, "%%% ---", 10000, "tool-call");
 
     expect(result.returnedIds).toEqual([]);
     const events = readEvents(eventsDir);
@@ -366,7 +366,7 @@ describe("recall malformed vector skip", () => {
     writable.close();
 
     const deps = openRecall(indexPath, eventsDir, bagOfWordsClient());
-    const result = await recall(deps, "payment refund ledger", 100000);
+    const result = await recall(deps, "payment refund ledger", 100000, "tool-call");
 
     expect(result.degraded).toBe(false);
     expect(result.returnedIds).toContain(ulid(0));
@@ -392,7 +392,7 @@ describe("recall malformed vector skip", () => {
     writable.close();
 
     const deps = openRecall(indexPath, eventsDir, bagOfWordsClient());
-    const result = await recall(deps, "payment refund ledger", 100000);
+    const result = await recall(deps, "payment refund ledger", 100000, "tool-call");
 
     expect(result.degraded).toBe(false);
     expect(result.returnedIds).toContain(ulid(0));
@@ -428,11 +428,11 @@ describe("recall cross-lingual and mixed queries", () => {
     // Cyrillic terms into `"term"*` MATCH syntax, so this run also pins that unicode61 tolerates
     // quoted unicode prefixes -- an empty rank map, never a raised error -- and that a query the
     // vector channel cannot serve honestly reports degradation instead of a silent empty hit.
-    const control = await recall(openRecall(indexPath, eventsDir, offlineClient()), cyrillicQuery, 100000);
+    const control = await recall(openRecall(indexPath, eventsDir, offlineClient()), cyrillicQuery, 100000, "tool-call");
     expect(control.returnedIds).toEqual([]);
     expect(control.degraded).toBe(true);
 
-    const result = await recall(openRecall(indexPath, eventsDir, crossLingualClient(translations)), cyrillicQuery, 100000);
+    const result = await recall(openRecall(indexPath, eventsDir, crossLingualClient(translations)), cyrillicQuery, 100000, "tool-call");
     // Served purely by cosine: a live embedder with stored vectors is the normal mode, not degraded.
     expect(result.degraded).toBe(false);
     expect(result.returnedIds[0]).toBe(ulid(0));
@@ -449,7 +449,7 @@ describe("recall cross-lingual and mixed queries", () => {
 
     // "починить" carries no index token; "payment"/"flow" drive FTS while the whole string drives the
     // vector. Both channels vote the payments note first -- neither the latin terms nor the prose wins alone.
-    const result = await recall(deps, "починить payment flow", 100000);
+    const result = await recall(deps, "починить payment flow", 100000, "tool-call");
 
     expect(result.degraded).toBe(false);
     expect(result.returnedIds[0]).toBe(ulid(0));
@@ -464,8 +464,8 @@ describe("recall RRF determinism", () => {
     ];
     const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
 
-    const first = await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "identical tie breaker", 100000);
-    const second = await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "identical tie breaker", 100000);
+    const first = await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "identical tie breaker", 100000, "tool-call");
+    const second = await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "identical tie breaker", 100000, "tool-call");
 
     expect(first.returnedIds).toEqual([ulid(0), ulid(1)]);
     expect(second.returnedIds).toEqual(first.returnedIds);
@@ -509,7 +509,7 @@ describe("recall candidate logging", () => {
     }));
     const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
 
-    await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "widget", 100000);
+    await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "widget", 100000, "tool-call");
 
     const event = lastRecallEvent(eventsDir);
     expect(candidatesOf(event).length).toBe(20);
@@ -521,7 +521,7 @@ describe("recall candidate logging", () => {
     const specs: NoteSpec[] = [{ id: ulid(0), body, anchor: "src/pay.ts" }];
     const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
 
-    await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "payment refund", 100000);
+    await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "payment refund", 100000, "tool-call");
 
     const candidate = candidatesOf(lastRecallEvent(eventsDir)).find((entry) => entry.id === ulid(0))!;
     expect(candidate.token_est).toBe(estimateTokens(body));
@@ -531,7 +531,7 @@ describe("recall candidate logging", () => {
     const specs: NoteSpec[] = [{ id: ulid(0), body: "payment refund ledger", anchor: "src/pay.ts" }];
     const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
 
-    await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "payment refund", 100000);
+    await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "payment refund", 100000, "tool-call");
 
     const timings = lastRecallEvent(eventsDir).timings as Record<string, number>;
     expect(Object.keys(timings).sort()).toEqual(["embed_ms", "fts_ms", "fusion_ms"]);
@@ -542,7 +542,7 @@ describe("recall candidate logging", () => {
     const specs: NoteSpec[] = [{ id: ulid(0), body: "payment refund ledger", anchor: "src/pay.ts" }];
     const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
 
-    const result = await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "payment refund", 100000);
+    const result = await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "payment refund", 100000, "tool-call");
 
     expect(Object.keys(result).sort()).toEqual(["degraded", "notes", "returnedIds"]);
     expect(result.notes.length).toBeGreaterThan(0);
@@ -555,11 +555,11 @@ describe("recall candidate logging", () => {
     const specs: NoteSpec[] = [{ id: ulid(0), body: "payment refund ledger", anchor: "src/pay.ts" }];
     const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
 
-    const fused = await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "payment refund", 100000);
+    const fused = await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "payment refund", 100000, "tool-call");
     expect(fused.notes[0]!.ftsRank).toBe(1);
     expect(fused.notes[0]!.cosine).toBeGreaterThan(0);
 
-    const degraded = await recall(openRecall(indexPath, eventsDir, offlineClient()), "payment refund", 100000);
+    const degraded = await recall(openRecall(indexPath, eventsDir, offlineClient()), "payment refund", 100000, "tool-call");
     expect(degraded.degraded).toBe(true);
     expect(degraded.notes[0]!.ftsRank).toBe(1);
     expect(degraded.notes[0]!.cosine).toBeNull();
@@ -572,7 +572,7 @@ describe("recall candidate logging", () => {
     ];
     const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
 
-    const result = await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "payment refund ledger", 100000);
+    const result = await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "payment refund ledger", 100000, "tool-call");
 
     // The orthogonal note falls below the cosine threshold, so the noise tail is dropped from the
     // returned notes while the relevant fts match survives; its null fts_rank and cosine 0 are still
@@ -593,26 +593,68 @@ describe("recall mode derivation", () => {
 
   test("both channels active is fused", async () => {
     const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
-    await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "payment refund", 100000);
+    await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "payment refund", 100000, "tool-call");
     expect(lastRecallEvent(eventsDir).mode).toBe("fused");
   });
 
   test("terms with an unavailable embedder is fts_only", async () => {
     const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
-    await recall(openRecall(indexPath, eventsDir, offlineClient()), "payment refund", 100000);
+    await recall(openRecall(indexPath, eventsDir, offlineClient()), "payment refund", 100000, "tool-call");
     expect(lastRecallEvent(eventsDir).mode).toBe("fts_only");
   });
 
   test("a term-less query with a live vector signal is vector_only", async () => {
     const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
     // "%%% ---" yields no FTS terms; the constant client still returns a non-zero query vector.
-    await recall(openRecall(indexPath, eventsDir, constantVectorClient()), "%%% ---", 100000);
+    await recall(openRecall(indexPath, eventsDir, constantVectorClient()), "%%% ---", 100000, "tool-call");
     expect(lastRecallEvent(eventsDir).mode).toBe("vector_only");
   });
 
   test("neither channel active is none", async () => {
     const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
-    await recall(openRecall(indexPath, eventsDir, offlineClient()), "%%% ---", 100000);
+    await recall(openRecall(indexPath, eventsDir, offlineClient()), "%%% ---", 100000, "tool-call");
     expect(lastRecallEvent(eventsDir).mode).toBe("none");
+  });
+});
+
+describe("recall origin marker", () => {
+  const specs: NoteSpec[] = [{ id: ulid(0), body: "payment refund ledger", anchor: "src/pay.ts" }];
+
+  test("a manual recall stamps origin=tool-call on the event", async () => {
+    const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
+    await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "payment refund", 100000, "tool-call");
+    expect(lastRecallEvent(eventsDir).origin).toBe("tool-call");
+  });
+
+  test("an engine recall stamps origin=workflow-step on the event", async () => {
+    const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
+    await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "payment refund", 100000, "workflow-step");
+    expect(lastRecallEvent(eventsDir).origin).toBe("workflow-step");
+  });
+
+  test("a pre-v5 recall event with no origin field is read without failing", () => {
+    const eventsDir = mkdtempSync(join(tmpdir(), "mneme-recall-legacy-"));
+    const legacy = {
+      type: "recall",
+      session_id: "s-legacy",
+      ts: "2026-07-01T10:00:00.000Z",
+      mneme_version: "0.1.0",
+      schema_version: 4,
+      query: "payment",
+      budget: 2000,
+      returned_ids: ["n1"],
+      degraded: false,
+      mode: "fused",
+      corpus_size: 1,
+      timings: { embed_ms: 0, fts_ms: 0, fusion_ms: 0 },
+      candidates: [],
+    };
+    writeFileSync(join(eventsDir, "2026-07.jsonl"), JSON.stringify(legacy) + "\n");
+
+    const events = readEvents(eventsDir);
+
+    expect(events.length).toBe(1);
+    expect(events[0]!.type).toBe("recall");
+    expect(events[0]!.origin).toBeUndefined();
   });
 });

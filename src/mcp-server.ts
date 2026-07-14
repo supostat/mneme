@@ -202,7 +202,12 @@ async function recallTool(
   const db = new Database(indexPath, { readonly: true });
   try {
     const budget = args.budget ?? DEFAULT_RECALL_TOKEN_BUDGET;
-    const result = await recall({ db, embeddings, eventWriter: context.eventWriter, clock }, args.query, budget);
+    const result = await recall(
+      { db, embeddings, eventWriter: context.eventWriter, clock },
+      args.query,
+      budget,
+      "tool-call",
+    );
     return textResult(formatRecall(result.notes, result.degraded));
   } finally {
     db.close();
