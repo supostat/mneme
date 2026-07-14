@@ -7,6 +7,7 @@ import type { EmbeddingsClient } from "./embeddings";
 import type { EventWriter } from "./events";
 import { serializeNote, parseNote, isNoteId } from "./note";
 import type { NoteFrontmatter, NoteType } from "./note";
+import { assertCleanNoteBody } from "./sanitize-body";
 import { classifyCandidate } from "./dedup";
 import { rebuild } from "./index-db";
 import type { RebuildDeps } from "./index-db";
@@ -71,6 +72,7 @@ function notePath(directory: string, id: string): string {
 }
 
 export async function remember(deps: StagingDeps, input: RememberInput): Promise<RememberResult> {
+  assertCleanNoteBody(input.body);
   const commit = await resolveHead(deps.projectRoot);
   const noteId = deps.idFactory();
   if (!isNoteId(noteId)) {
