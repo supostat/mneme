@@ -5,7 +5,7 @@ import { runGit } from "../git";
 import { rebuild } from "../index-db";
 import { MAX_BODY_CODE_POINTS, isNoteId, parseNote } from "../note";
 import type { Note, NoteType } from "../note";
-import { recall } from "../recall";
+import { passesRecallThreshold, recall } from "../recall";
 import type { RecallResult, RecalledNote } from "../recall";
 import { remember } from "../staging";
 import type { RememberInput, RememberResult, StagingDeps } from "../staging";
@@ -19,8 +19,6 @@ import type { RememberInput, RememberResult, StagingDeps } from "../staging";
 
 export class MemoryStepError extends Error {}
 
-// Absolute cut over the cosine-only tail, never a top-N: FTS survivors are already lexically gated.
-export const RECALL_BUNDLE_COSINE_THRESHOLD = 0.35;
 export const HARVEST_SOURCE = "harvest";
 const NOTE_EXTENSION = ".md";
 // Mirrors RETRIEVED_DATA_NOTICE in mcp-rendering.ts (not exported there); keep the phrasing in sync.
@@ -58,7 +56,9 @@ export async function compileRecallBundle(
   await rebuildIndexWhenMissing(deps);
   const query = [request.phaseDescription, ...request.anchorPaths].join("\n");
   const recalled = await runRecall(deps, query, request.budget);
-  const survivors = recalled.notes.filter(passesThresholdCut);
+  // recall already applied this cut; re-applying it strips the cold-start floor's low-confidence
+  // notes, so the workflow bundle stays a hard threshold with no top-K fallback.
+  const survivors = recalled.notes.filter(passesRecallThreshold);
   const notes: BundleNote[] = [];
   for (const survivor of survivors) {
     notes.push(await buildBundleNote(deps, survivor, request.anchorPaths));
@@ -120,13 +120,6 @@ async function runRecall(deps: StagingDeps, query: string, budget: number): Prom
   } finally {
     db.close();
   }
-}
-
-function passesThresholdCut(note: RecalledNote): boolean {
-  return (
-    note.ftsRank !== null ||
-    (note.cosine !== null && note.cosine >= RECALL_BUNDLE_COSINE_THRESHOLD)
-  );
 }
 
 async function buildBundleNote(

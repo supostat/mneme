@@ -21,12 +21,15 @@ export interface RecallDeps {
 }
 
 // cosine is null in degraded mode or for a vector-less note; ftsRank is null when the note matched
-// no query term. Both feed the recall-bundle threshold cut downstream.
+// no query term. Both feed passesRecallThreshold, which drops the cosine-only tail below threshold.
+// lowConfidence is true only for a note surfaced by the cold-start floor — every survivor was below
+// the cosine threshold, so the corpus is too poor to trust — and false for a threshold-passing note.
 export interface RecalledNote {
   id: string;
   body: string;
   cosine: number | null;
   ftsRank: number | null;
+  lowConfidence: boolean;
 }
 
 export interface RecallResult {
@@ -64,6 +67,22 @@ interface FusionOutcome {
   metaById: Map<string, MetaRow>;
   vectorAttempted: boolean;
   ms: number;
+}
+
+// The absolute cosine floor for keeping a cosine-only note, owned here by the recall scorer. FTS
+// survivors are lexically gated and bypass it, so it cuts only the semantic Lost-in-Noise tail, never
+// a top-N. The workflow bundle (memory-steps) imports this value rather than redeclaring it.
+export const RECALL_BUNDLE_COSINE_THRESHOLD = 0.35;
+
+// Cold-start protection: when the threshold empties an otherwise non-empty result — a poor corpus of
+// only sub-threshold cosine hits — recall returns this many top-ranked notes marked low-confidence
+// instead of nothing, so recall is never empty while notes exist.
+export const RECALL_LOW_CONFIDENCE_FLOOR = 3;
+
+// A note survives recall iff it matched a query term (FTS, already lexically gated) or cleared the
+// absolute cosine floor. Shared with memory-steps so the live path and the workflow bundle cut alike.
+export function passesRecallThreshold(note: RecalledNote): boolean {
+  return note.ftsRank !== null || (note.cosine !== null && note.cosine >= RECALL_BUNDLE_COSINE_THRESHOLD);
 }
 
 export async function recall(deps: RecallDeps, query: string, budget: number): Promise<RecallResult> {
@@ -127,7 +146,7 @@ function runFusion(
     DEFAULT_FUSION_PARAMS,
     budget,
   );
-  const notes = collectNotes(decisions, bodyById, ftsRanks, cosineRanks);
+  const notes = applyRecallThreshold(collectNotes(decisions, bodyById, ftsRanks, cosineRanks));
   return { decisions, notes, cosineRanks, metaById, vectorAttempted, ms: deps.clock().getTime() - startedAt };
 }
 
@@ -165,7 +184,19 @@ function collectNotes(
       body: bodyById.get(decision.id)!,
       cosine: cosineRanks.get(decision.id)?.cosine ?? null,
       ftsRank: ftsRanks.get(decision.id) ?? null,
+      lowConfidence: false,
     }));
+}
+
+// The cut runs on the budget-filled set, leaving the logged pre-threshold candidate vector (and thus
+// offline replay) untouched. When the cut would empty an otherwise non-empty result — a cold corpus of
+// only sub-threshold cosine hits — the top-ranked notes return marked low-confidence instead.
+function applyRecallThreshold(budgetFilled: RecalledNote[]): RecalledNote[] {
+  const passing = budgetFilled.filter(passesRecallThreshold);
+  if (passing.length > 0) return passing;
+  return budgetFilled
+    .slice(0, RECALL_LOW_CONFIDENCE_FLOOR)
+    .map((note) => ({ ...note, lowConfidence: true }));
 }
 
 function buildCandidates(

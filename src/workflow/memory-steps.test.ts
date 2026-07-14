@@ -20,12 +20,12 @@ import type { RunDefinition } from "./reducer";
 import {
   HARVEST_SOURCE,
   MemoryStepError,
-  RECALL_BUNDLE_COSINE_THRESHOLD,
   compileRecallBundle,
   formatRecallBundle,
   harvestPhase,
 } from "./memory-steps";
 import type { PhaseArtifact, RecallBundle } from "./memory-steps";
+import { RECALL_BUNDLE_COSINE_THRESHOLD } from "../recall";
 
 const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 

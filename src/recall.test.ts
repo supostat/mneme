@@ -547,7 +547,7 @@ describe("recall candidate logging", () => {
     expect(Object.keys(result).sort()).toEqual(["degraded", "notes", "returnedIds"]);
     expect(result.notes.length).toBeGreaterThan(0);
     for (const note of result.notes) {
-      expect(Object.keys(note).sort()).toEqual(["body", "cosine", "ftsRank", "id"]);
+      expect(Object.keys(note).sort()).toEqual(["body", "cosine", "ftsRank", "id", "lowConfidence"]);
     }
   });
 
@@ -565,7 +565,7 @@ describe("recall candidate logging", () => {
     expect(degraded.notes[0]!.cosine).toBeNull();
   });
 
-  test("a cosine-only match with no shared terms carries a null fts rank and a numeric cosine", async () => {
+  test("a cosine-only match with no shared terms is cut from notes yet logged as a candidate", async () => {
     const specs: NoteSpec[] = [
       { id: ulid(0), body: "payment refund ledger reconciliation", anchor: "src/pay.ts" },
       { id: ulid(1), body: "zebra quokka wombat burrow habitat", anchor: "src/zoo.ts" },
@@ -574,8 +574,13 @@ describe("recall candidate logging", () => {
 
     const result = await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "payment refund ledger", 100000);
 
-    const cosineOnly = result.notes.find((note) => note.id === ulid(1))!;
-    expect(cosineOnly.ftsRank).toBeNull();
+    // The orthogonal note falls below the cosine threshold, so the noise tail is dropped from the
+    // returned notes while the relevant fts match survives; its null fts_rank and cosine 0 are still
+    // visible in the pre-threshold candidate log.
+    expect(result.returnedIds).toContain(ulid(0));
+    expect(result.returnedIds).not.toContain(ulid(1));
+    const cosineOnly = candidatesOf(lastRecallEvent(eventsDir)).find((entry) => entry.id === ulid(1))!;
+    expect(cosineOnly.fts_rank).toBeNull();
     expect(cosineOnly.cosine).toBe(0);
   });
 });
