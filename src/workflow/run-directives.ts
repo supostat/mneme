@@ -72,7 +72,23 @@ export function renderCurrentDirective(active: ReadableRun): string {
   if (directive.kind === "harvest") {
     return renderHarvestDirective(active.runId, directive.phaseId);
   }
+  if (directive.kind === "recall") {
+    return renderPhaseBoundary(active.runId, directive.phaseId);
+  }
   return renderTerminal(directive);
+}
+
+// A pending recall is a PHASE BOUNDARY, not an actionable directive: the previous phase closed and the
+// next is ready, but its recall bundle is compiled lazily when the phase BEGINS — on the next call —
+// so a note accepted between the two calls reaches the bundle. The engine runs the recall itself; the
+// caller only loops with another workflow_step. Terminals (RUN COMPLETE/FAILED/ESCALATED) are never a
+// boundary — the last phase's closure renders its terminal in the same call.
+function renderPhaseBoundary(runId: string, nextPhaseId: string): string {
+  return [
+    `PHASE BOUNDARY: the previous phase is closed and phase "${nextPhaseId}" is next and ready.`,
+    "Its recall bundle compiles when the phase begins, so a note accepted before then is included.",
+    `Call workflow_step { run_id: "${runId}" } to begin it.`,
+  ].join("\n");
 }
 
 function renderExecuteStepDirective(active: ReadableRun, directive: ExecuteStepDirective): string {

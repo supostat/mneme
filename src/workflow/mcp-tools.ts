@@ -156,13 +156,19 @@ export async function workflowStepTool(deps: StagingDeps, args: WorkflowStepArgs
   const active = survey.activeRun;
   requireMatchingRunId(args, active, submitting);
   const sections: string[] = [];
+  // Lazy recall: pending recalls are compiled ONLY here, at the START of a call, so a phase's bundle
+  // is built when the phase BEGINS — after any human accept made at the preceding boundary — never
+  // eagerly when the previous phase closed. This drains a recall left pending by start, resume, or a
+  // prior phase boundary.
   sections.push(...(await runEngineSteps(deps, active)));
   if (args.step_result !== undefined) {
     sections.push(...(await applyIncomingStepResult(deps, active, args.step_result, args.agent_votes)));
   } else if (args.harvest_artifacts !== undefined) {
     sections.push(...(await applyIncomingHarvest(deps, active, args.harvest_artifacts)));
   }
-  sections.push(...(await runEngineSteps(deps, active)));
+  // A harvest that opens the next phase leaves its recall PENDING here, NOT executed: renderCurrentDirective
+  // renders that pending recall as a phase boundary, so the caller loops with another workflow_step to
+  // begin the next phase — the call break where a human can accept staged notes into the next bundle.
   return textResult(
     joinSections([renderRunHeader(active), ...sections, renderCurrentDirective(active), ...surveySections(survey)]),
   );

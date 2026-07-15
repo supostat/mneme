@@ -280,7 +280,7 @@ describe("workflow interrupt and resume", () => {
     expect(resumed).toContain("- do the work");
   });
 
-  test("a multi-phase run resumes into phase two after phase one closes", async () => {
+  test("closing phase one leaves phase two at a boundary; its recall runs only when the next call begins it", async () => {
     const bench = await makeWorkbench();
     const runId = await startRun(
       bench.client,
@@ -291,12 +291,23 @@ describe("workflow interrupt and resume", () => {
       run_id: runId,
       step_result: stepResult("phase-one", "implement", 1, "success"),
     });
+
+    // Lazy recall: closing phase one does NOT compile phase two's bundle in the same call — it returns
+    // a boundary and leaves the recall pending, so phase two's recall event is not yet in the log.
     const closed = await callText(bench.client, "workflow_step", { run_id: runId, harvest_artifacts: [] });
-    expect(closed).toContain('Recall bundle for phase "phase-two"');
-    expect(closed).toContain("phase: phase-two");
+    expect(closed).toContain('Harvested 0 artifact(s) for phase "phase-one"');
+    expect(closed).toContain("PHASE BOUNDARY");
+    expect(closed).toContain('phase "phase-two" is next and ready');
+    expect(closed).not.toContain('Recall bundle for phase "phase-two"');
+    expect(closed).not.toContain("DIRECTIVE: execute_step");
+    const afterClose = await loggedEvents(bench);
+    expect(
+      eventsOfType(afterClose, "workflow_step_applied").filter((event) => event.result_kind === "recall").length,
+    ).toBe(1);
 
+    // The next workflow_step begins phase two: NOW its recall compiles and execute_step follows.
     const resumed = await callText(await reconnect(bench), "workflow_step", {});
-
+    expect(resumed).toContain('Recall bundle for phase "phase-two"');
     expect(resumed).toContain("phase: phase-two");
     expect(resumed).toContain("step: implement");
     expect(resumed).toContain("attempt: 1");
@@ -348,6 +359,81 @@ describe("workflow interrupt and resume", () => {
       ["implement", 2, "success"],
       ["verify", 1, "success"],
     ]);
+  });
+});
+
+describe("workflow phase boundary (lazy recall)", () => {
+  async function driveToPhaseTwoBoundary(bench: Workbench): Promise<string> {
+    const runId = await startRun(
+      bench.client,
+      startArgs([phaseText("phase-one"), phaseText("phase-two", { deps: ["phase-one"] })]),
+    );
+    await callText(bench.client, "workflow_step", {});
+    await callText(bench.client, "workflow_step", {
+      run_id: runId,
+      step_result: stepResult("phase-one", "implement", 1, "success"),
+    });
+    const closed = await callText(bench.client, "workflow_step", { run_id: runId, harvest_artifacts: [] });
+    expect(closed).toContain("PHASE BOUNDARY");
+    return runId;
+  }
+
+  test("a note accepted at the boundary lands in the next phase's bundle (the closed loop)", async () => {
+    const bench = await makeWorkbench();
+    const runId = await driveToPhaseTwoBoundary(bench);
+
+    // Human accepts a note DURING the boundary pause — the exact window CLAVIS proved unreachable when
+    // the next bundle compiled eagerly at close. The idFactory mints session=ulid(0), run=ulid(1), so
+    // this first staged note is ulid(2).
+    const noteBody = "phase two boundary closure evidence note";
+    const remembered = await callText(bench.client, "remember", {
+      type: "decision",
+      body: noteBody,
+      anchors: ["src/a.ts"],
+    });
+    expect(remembered).toContain(ulid(2));
+    await callText(bench.client, "staging_resolve", { id: ulid(2), decision: "accept" });
+
+    // Beginning phase two compiles its bundle NOW, so it must contain the just-accepted note.
+    const begun = await callText(bench.client, "workflow_step", { run_id: runId });
+    expect(begun).toContain('Recall bundle for phase "phase-two"');
+    expect(begun).toContain(noteBody);
+    expect(begun).toContain("DIRECTIVE: execute_step");
+  });
+
+  test("repeated calls at a boundary run the next recall exactly once and then re-issue the directive", async () => {
+    const bench = await makeWorkbench();
+    const runId = await driveToPhaseTwoBoundary(bench);
+
+    const first = await callText(bench.client, "workflow_step", { run_id: runId });
+    const second = await callText(bench.client, "workflow_step", { run_id: runId });
+
+    expect(first).toContain('Recall bundle for phase "phase-two"');
+    expect(first).toContain("DIRECTIVE: execute_step");
+    // The second call finds the recall already consumed, so it re-issues execute_step without a bundle.
+    expect(second).toContain("DIRECTIVE: execute_step");
+    expect(second).not.toContain('Recall bundle for phase "phase-two"');
+    const events = await loggedEvents(bench);
+    const phaseTwoRecalls = eventsOfType(events, "workflow_step_applied").filter(
+      (event) => event.result_kind === "recall" && event.phase_id === "phase-two",
+    );
+    expect(phaseTwoRecalls.length).toBe(1);
+  });
+
+  test("closing the LAST phase goes straight to RUN COMPLETE with no boundary", async () => {
+    const bench = await makeWorkbench();
+    const runId = await driveToPhaseTwoBoundary(bench);
+    await callText(bench.client, "workflow_step", { run_id: runId }); // begin phase two
+    await callText(bench.client, "workflow_step", {
+      run_id: runId,
+      step_result: stepResult("phase-two", "implement", 1, "success"),
+    });
+
+    const completed = await callText(bench.client, "workflow_step", { run_id: runId, harvest_artifacts: [] });
+
+    expect(completed).toContain('Harvested 0 artifact(s) for phase "phase-two"');
+    expect(completed).toContain("RUN COMPLETE");
+    expect(completed).not.toContain("PHASE BOUNDARY");
   });
 });
 
