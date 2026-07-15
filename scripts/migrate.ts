@@ -2,13 +2,13 @@
 import { readFileSync } from "node:fs";
 import { resolveCorpus } from "../src/corpus";
 import { phaseDocumentsFromSpec } from "../src/workflow/from-spec";
-import { applyMigration, planMigration } from "../src/workflow/migration";
+import { applyMigration, planMigration, specSlug } from "../src/workflow/migration";
 import type { MigrationPlan, MigrationReport } from "../src/workflow/migration";
 
 // Thin human-driven CLI over the 12a persistence library (mirrors scripts/replay.ts): read a spec,
 // generate phase documents via from-spec, resolve the current project's corpus, and plan the
-// phase-file writes into <corpusDir>/workflow/. Dry-run by default (prints the manifest, writes
-// nothing); --apply performs the writes. Exit codes: 0 clean, 1 conflicts, 2 fault.
+// phase-file writes into <corpusDir>/workflow/<spec-slug>/. Dry-run by default (prints the manifest,
+// writes nothing); --apply performs the writes. Exit codes: 0 clean, 1 conflicts, 2 fault.
 
 const USAGE = "usage: bun scripts/migrate.ts <spec-path> [--apply]";
 
@@ -51,9 +51,9 @@ function renderPathList(header: string, paths: string[]): string {
   return [header, ...paths.map((path) => `  ${path}`)].join("\n") + "\n";
 }
 
-// The convenience launch line: /mneme:dev takes ONE phase file, so a single-phase plan gets a
-// ready-to-paste command; a multi-phase graph gets its dependency-root (plan order = listing order,
-// deps chain sequentially from from-spec) as the entry point.
+// The convenience launch line. A single-phase plan gets a ready-to-paste command naming the one
+// phase file. A multi-phase plan names the whole spec directory — /mneme:dev will accept a directory
+// once its paired multi-phase support ships; until then the line carries an honest one-line caveat.
 function renderRunCommand(plan: MigrationPlan): string {
   const paths = plan.writes.map((write) => write.absolutePath);
   const [entry] = paths;
@@ -63,7 +63,10 @@ function renderRunCommand(plan: MigrationPlan): string {
   if (paths.length === 1) {
     return `Run it with:\n  /mneme:dev ${entry}\n`;
   }
-  return `Entry phase (dependency root) — run with:\n  /mneme:dev ${entry}\n`;
+  return (
+    `Run the whole task with:\n  /mneme:dev ${plan.workflowDir}\n` +
+    `  (requires /mneme:dev multi-phase support)\n`
+  );
 }
 
 function createdAbsolutePaths(plan: MigrationPlan, report: MigrationReport): string[] {
@@ -84,7 +87,7 @@ export async function main(argv: string[]): Promise<number> {
   try {
     const phases = phaseDocumentsFromSpec(readFileSync(args.specPath, "utf8"));
     const corpus = await resolveCorpus(process.cwd());
-    const plan = planMigration(phases, corpus.corpusDir);
+    const plan = planMigration(phases, corpus.corpusDir, specSlug(args.specPath));
     const conflicts = plan.writes.filter((write) => write.action === "conflict").length;
     const absolutePaths = plan.writes.map((write) => write.absolutePath);
     if (!args.apply) {

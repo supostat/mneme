@@ -5,7 +5,9 @@ import { join } from "node:path";
 import { canonicalize, mungePath } from "../corpus";
 import { serializePhaseDocument } from "./phase-document";
 import type { PhaseDocument } from "./phase-document";
-import { WORKFLOW_PHASE_DIR, MigrationError, planMigration, applyMigration } from "./migration";
+import { WORKFLOW_PHASE_DIR, MigrationError, planMigration, applyMigration, specSlug } from "./migration";
+
+const SPEC_SLUG = "sample-spec";
 
 const temporaryDirectories: string[] = [];
 
@@ -33,44 +35,66 @@ function phase(id: string, tasks: string[] = ["do the work"]): PhaseDocument {
   };
 }
 
-function workflowFile(corpusDir: string, id: string): string {
-  return join(corpusDir, WORKFLOW_PHASE_DIR, `phase-${id}.md`);
+function workflowFile(corpusDir: string, id: string, slug: string = SPEC_SLUG): string {
+  return join(corpusDir, WORKFLOW_PHASE_DIR, slug, `phase-${id}.md`);
 }
 
-const relativeOf = (id: string): string => join(WORKFLOW_PHASE_DIR, `phase-${id}.md`);
+const relativeOf = (id: string, slug: string = SPEC_SLUG): string =>
+  join(WORKFLOW_PHASE_DIR, slug, `phase-${id}.md`);
+
+describe("specSlug", () => {
+  test("strips the directory and extension and lowercases", () => {
+    expect(specSlug("/home/u/docs/Recall-Origin.md")).toBe("recall-origin");
+  });
+
+  test("maps disallowed characters to dashes, collapsing runs and trimming edges", () => {
+    expect(specSlug("!! V2 Spec (final)!!.md")).toBe("v2-spec-final");
+  });
+
+  test("throws when the name sanitizes to nothing", () => {
+    expect(() => specSlug("/tmp/___.md")).toThrow(MigrationError);
+  });
+});
 
 describe("planMigration", () => {
-  test("classifies a new phase as create and writes nothing", () => {
+  test("classifies a new phase as create under the spec-slug subfolder and writes nothing", () => {
     const corpusDir = tempDir("mneme-mig-plan-");
-    const plan = planMigration([phase("alpha")], corpusDir);
+    const plan = planMigration([phase("alpha")], corpusDir, SPEC_SLUG);
     expect(plan.writes.map((write) => [write.relativePath, write.action])).toEqual([[relativeOf("alpha"), "create"]]);
+    expect(plan.workflowDir).toBe(join(corpusDir, WORKFLOW_PHASE_DIR, SPEC_SLUG));
     expect(plan.writes[0]!.bytes).toBeGreaterThan(0);
     expect(existsSync(join(corpusDir, WORKFLOW_PHASE_DIR))).toBe(false);
   });
 
   test("throws MigrationError on duplicate phase ids, writing nothing", () => {
     const corpusDir = tempDir("mneme-mig-dup-");
-    expect(() => planMigration([phase("alpha"), phase("alpha")], corpusDir)).toThrow(MigrationError);
+    expect(() => planMigration([phase("alpha"), phase("alpha")], corpusDir, SPEC_SLUG)).toThrow(MigrationError);
     expect(existsSync(join(corpusDir, WORKFLOW_PHASE_DIR))).toBe(false);
   });
 
   test("fails closed on an invalid phase id via serialize, writing nothing", () => {
     const corpusDir = tempDir("mneme-mig-badid-");
     const traversal = { ...phase("alpha"), id: "../evil" } as PhaseDocument;
-    expect(() => planMigration([traversal], corpusDir)).toThrow();
+    expect(() => planMigration([traversal], corpusDir, SPEC_SLUG)).toThrow();
+    expect(existsSync(join(corpusDir, WORKFLOW_PHASE_DIR))).toBe(false);
+  });
+
+  test("fails closed on a slug that is not a safe path component, writing nothing", () => {
+    const corpusDir = tempDir("mneme-mig-badslug-");
+    expect(() => planMigration([phase("alpha")], corpusDir, "../escape")).toThrow(MigrationError);
     expect(existsSync(join(corpusDir, WORKFLOW_PHASE_DIR))).toBe(false);
   });
 });
 
 describe("applyMigration", () => {
-  test("creates the phase file, keeps every path inside the workflow dir, leaves no temp files", () => {
+  test("creates the phase file, keeps every path inside the spec-slug dir, leaves no temp files", () => {
     const corpusDir = tempDir("mneme-mig-apply-");
-    const plan = planMigration([phase("alpha"), phase("beta")], corpusDir);
+    const plan = planMigration([phase("alpha"), phase("beta")], corpusDir, SPEC_SLUG);
 
     const report = applyMigration(plan);
 
     expect(report.created.sort()).toEqual([relativeOf("alpha"), relativeOf("beta")]);
-    const workflowDir = join(corpusDir, WORKFLOW_PHASE_DIR);
+    const workflowDir = join(corpusDir, WORKFLOW_PHASE_DIR, SPEC_SLUG);
     for (const write of plan.writes) {
       expect(write.absolutePath.startsWith(workflowDir + "/")).toBe(true);
     }
@@ -78,11 +102,23 @@ describe("applyMigration", () => {
     expect(readdirSync(workflowDir).some((name) => name.endsWith(".mneme-tmp"))).toBe(false);
   });
 
+  test("the same phase id from two different specs lands in separate subfolders without colliding", () => {
+    const corpusDir = tempDir("mneme-mig-collide-");
+
+    const first = applyMigration(planMigration([phase("shared")], corpusDir, "spec-a"));
+    const second = applyMigration(planMigration([phase("shared")], corpusDir, "spec-b"));
+
+    expect(first.created).toEqual([relativeOf("shared", "spec-a")]);
+    expect(second.created).toEqual([relativeOf("shared", "spec-b")]);
+    expect(existsSync(workflowFile(corpusDir, "shared", "spec-a"))).toBe(true);
+    expect(existsSync(workflowFile(corpusDir, "shared", "spec-b"))).toBe(true);
+  });
+
   test("a byte-identical re-run skips idempotently and writes nothing new", () => {
     const corpusDir = tempDir("mneme-mig-idem-");
-    applyMigration(planMigration([phase("alpha")], corpusDir));
+    applyMigration(planMigration([phase("alpha")], corpusDir, SPEC_SLUG));
 
-    const secondPlan = planMigration([phase("alpha")], corpusDir);
+    const secondPlan = planMigration([phase("alpha")], corpusDir, SPEC_SLUG);
     expect(secondPlan.writes[0]!.action).toBe("identical");
     const report = applyMigration(secondPlan);
 
@@ -92,12 +128,12 @@ describe("applyMigration", () => {
 
   test("a divergent existing file is a conflict that refuses apply and never clobbers the human edit", () => {
     const corpusDir = tempDir("mneme-mig-conflict-");
-    const workflowDir = join(corpusDir, WORKFLOW_PHASE_DIR);
+    const workflowDir = join(corpusDir, WORKFLOW_PHASE_DIR, SPEC_SLUG);
     mkdirSync(workflowDir, { recursive: true });
     const humanEdit = "--- human edit, do not clobber ---\n";
     writeFileSync(workflowFile(corpusDir, "alpha"), humanEdit);
 
-    const plan = planMigration([phase("alpha")], corpusDir);
+    const plan = planMigration([phase("alpha")], corpusDir, SPEC_SLUG);
     expect(plan.writes[0]!.action).toBe("conflict");
     expect(() => applyMigration(plan)).toThrow(MigrationError);
     expect(readFileSync(workflowFile(corpusDir, "alpha"), "utf8")).toBe(humanEdit);
@@ -182,12 +218,19 @@ describe("scripts/migrate.ts end-to-end", () => {
     return { code, stdout };
   }
 
-  test("dry-run writes nothing, --apply lands phase files, and a re-run is idempotent", async () => {
+  test("dry-run writes nothing, --apply lands phase files under the spec slug, and a re-run is idempotent", async () => {
     const tempHome = tempDir("mneme-mig-home-");
     const projectCwd = tempDir("mneme-mig-cwd-");
     const specPath = join(tempDir("mneme-mig-spec-"), "sample-spec.md");
     writeFileSync(specPath, MIGRATION_SAMPLE_SPEC);
-    const workflowDir = join(tempHome, ".mneme", mungePath(canonicalize(projectCwd)), WORKFLOW_PHASE_DIR);
+    // The three-phase spec lands under its own slug subfolder, not the flat workflow root.
+    const workflowDir = join(
+      tempHome,
+      ".mneme",
+      mungePath(canonicalize(projectCwd)),
+      WORKFLOW_PHASE_DIR,
+      "sample-spec",
+    );
 
     const dry = await runMigrate([specPath], tempHome, projectCwd);
     expect(dry.code).toBe(0);
@@ -198,10 +241,12 @@ describe("scripts/migrate.ts end-to-end", () => {
     const applied = await runMigrate([specPath, "--apply"], tempHome, projectCwd);
     expect(applied.code).toBe(0);
     const written = readdirSync(workflowDir).filter((name) => name.endsWith(".md"));
-    expect(written.length).toBeGreaterThan(0);
-    // --apply prints each created file's absolute path plus a ready /mneme:dev launch command.
+    expect(written.length).toBe(3);
+    // --apply prints each created file's absolute path plus, for a multi-phase plan, the whole spec
+    // directory as a /mneme:dev launch target carrying the transitional caveat.
     expect(applied.stdout).toContain(join(workflowDir, "phase-ingest-source.md"));
-    expect(applied.stdout).toContain("/mneme:dev ");
+    expect(applied.stdout).toContain(`/mneme:dev ${workflowDir}`);
+    expect(applied.stdout).toContain("requires /mneme:dev multi-phase support");
 
     const reapplied = await runMigrate([specPath, "--apply"], tempHome, projectCwd);
     expect(reapplied.code).toBe(0);
