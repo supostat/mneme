@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { parseNote } from "./note";
 import type { Note } from "./note";
+import { isPattern } from "./note";
 import { stalenessBoost, DEAD_ANCHOR_SINK } from "./staleness";
 import { EMBEDDING_MODEL, cosineSimilarity, floatsFromBlob } from "./embeddings";
 import type { EmbeddingsClient } from "./embeddings";
@@ -112,10 +113,17 @@ function readActiveNotes(notesDir: string): Note[] {
   return notes.filter((note) => !superseded.has(note.frontmatter.id));
 }
 
+// A pattern note is pinned to the neutral 0 boost — the same value a fresh at-HEAD anchor earns — so
+// example rot never sinks it; the git anchor scan is skipped entirely for patterns. Every other type
+// keeps the pinned staleness formula unchanged.
+const PATTERN_STALENESS_BOOST = 0;
+
 async function insertFtsAndMeta(database: Database, notes: Note[], projectRoot: string): Promise<number[]> {
   const boosts = await Promise.all(
     notes.map((note) =>
-      stalenessBoost(projectRoot, note.frontmatter.anchors, note.frontmatter.commit),
+      isPattern(note.frontmatter.type)
+        ? PATTERN_STALENESS_BOOST
+        : stalenessBoost(projectRoot, note.frontmatter.anchors, note.frontmatter.commit),
     ),
   );
   const insertFts = database.query("INSERT INTO fts(id, body) VALUES (?, ?)");

@@ -439,6 +439,29 @@ describe("compileRecallBundle anchor-overlap ranking", () => {
   });
 });
 
+describe("compileRecallBundle pattern anchor decoupling", () => {
+  test("a pattern gets anchorOverlap 0 and does not outrank a decision with real overlap", async () => {
+    const { projectRoot, commit } = await buildProjectRepo();
+    const deps = await makeDeps(projectRoot, bagClient());
+    // Both notes anchor src/a.ts (== anchorPaths) and are reachable at HEAD, so anchor overlap is the
+    // only ranking differentiator. The pattern's overlap is forced to 0, so the decision (real
+    // overlap 1) ranks ahead — a pattern is never lifted by file-anchor overlap.
+    writeNote(deps, ulid(100), "pattern", "module ranking probe pattern body", ["src/a.ts"], commit);
+    writeNote(deps, ulid(101), "decision", "module ranking probe decision body", ["src/a.ts"], commit);
+
+    const bundle = await compileRecallBundle(deps, {
+      phaseDescription: "module ranking probe",
+      anchorPaths: ["src/a.ts"],
+      budget: 100000,
+    });
+
+    expect(bundleNoteAt(bundle, ulid(100)).anchorOverlap).toBe(0);
+    expect(bundleNoteAt(bundle, ulid(101)).anchorOverlap).toBe(1);
+    const ids = bundle.notes.map((note) => note.id);
+    expect(ids.indexOf(ulid(101))).toBeLessThan(ids.indexOf(ulid(100)));
+  });
+});
+
 describe("compileRecallBundle degraded mode", () => {
   test("an offline embedder degrades the bundle to FTS matches without throwing", async () => {
     const { projectRoot, commit } = await buildProjectRepo();

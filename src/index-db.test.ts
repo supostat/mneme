@@ -305,8 +305,10 @@ describe("rebuild telemetry event", () => {
   test("emits a rebuild event with per-note staleness, dead anchors, and ollama availability", async () => {
     const { projectRoot, commit } = await buildProjectRepo(["src/a.ts"]);
     const corpus = makeCorpus();
-    writeNote(corpus.notesDir, note({ id: ulid(0), anchors: ["src/a.ts"], commit }, "alpha body"));
-    writeNote(corpus.notesDir, note({ id: ulid(1), anchors: ["src/gone.ts"], commit }, "beta body"));
+    // bugfix notes so the dead anchor still sinks: pattern staleness is now pinned to 0 and would
+    // erase the -1 this test exercises.
+    writeNote(corpus.notesDir, note({ id: ulid(0), type: "bugfix", anchors: ["src/a.ts"], commit }, "alpha body"));
+    writeNote(corpus.notesDir, note({ id: ulid(1), type: "bugfix", anchors: ["src/gone.ts"], commit }, "beta body"));
     const eventsDir = mkdtempSync(join(tmpdir(), "mneme-index-events-"));
     const eventWriter = new EventWriter(eventsDir, { sessionId: "s-index", mnemeVersion: "0.1.0", clock: fixedClock });
     const embeddings = keyedVectorClient(new Map([["alpha body", [1, 0]], ["beta body", [0, 1]]]));
@@ -324,6 +326,25 @@ describe("rebuild telemetry event", () => {
     const ollama = emitted.ollama as { available: boolean; retries: number };
     expect(ollama.available).toBe(true);
     expect(ollama.retries).toBe(0);
+  });
+
+  test("a pattern note is pinned to staleness 0 on a dead anchor while a bugfix twin still sinks to -1", async () => {
+    const { projectRoot, commit } = await buildProjectRepo(["src/a.ts"]);
+    const corpus = makeCorpus();
+    // Both notes carry the SAME dead anchor (src/gone.ts is untracked). The pattern must read 0 and
+    // stay out of dead_anchors_n; the bugfix must read -1 and be counted — the whole point of the gate.
+    writeNote(corpus.notesDir, note({ id: ulid(0), type: "pattern", anchors: ["src/gone.ts"], commit }, "pattern body"));
+    writeNote(corpus.notesDir, note({ id: ulid(1), type: "bugfix", anchors: ["src/gone.ts"], commit }, "bugfix body"));
+    const eventsDir = mkdtempSync(join(tmpdir(), "mneme-index-pattern-events-"));
+    const eventWriter = new EventWriter(eventsDir, { sessionId: "s-index-pattern", mnemeVersion: "0.1.0", clock: fixedClock });
+    const embeddings = keyedVectorClient(new Map([["pattern body", [1, 0]], ["bugfix body", [0, 1]]]));
+
+    await rebuild({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, embeddings, eventWriter, clock: fixedClock });
+
+    const emitted = readEvents(eventsDir).filter((event) => event.type === "rebuild")[0]!;
+    // staleness[] follows note (id-sorted) order: pattern ulid(0) first, bugfix ulid(1) second.
+    expect(emitted.staleness).toEqual([0, -1]);
+    expect(emitted.dead_anchors_n).toBe(1);
   });
 
   test("an offline embeddings client yields zero embedded notes and unavailable ollama", async () => {

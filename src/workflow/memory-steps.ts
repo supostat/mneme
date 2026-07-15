@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { runGit } from "../git";
 import { rebuild } from "../index-db";
-import { MAX_BODY_CODE_POINTS, isNoteId, parseNote } from "../note";
+import { MAX_BODY_CODE_POINTS, isNoteId, isPattern, parseNote } from "../note";
 import type { Note, NoteType } from "../note";
 import { passesRecallThreshold, recall } from "../recall";
 import type { RecallResult, RecalledNote } from "../recall";
@@ -136,7 +136,11 @@ async function buildBundleNote(
     type: note.frontmatter.type,
     body: recalled.body,
     anchors: note.frontmatter.anchors,
-    anchorOverlap: countAnchorOverlap(note.frontmatter.anchors, anchorPaths),
+    // A pattern's anchors are examples, not the application site, so file-anchor overlap must not
+    // lift it in the bundle — it competes on body semantics (recall's fused order) alone.
+    anchorOverlap: isPattern(note.frontmatter.type)
+      ? 0
+      : countAnchorOverlap(note.frontmatter.anchors, anchorPaths),
     cosine: recalled.cosine,
     branchReachable: branch.reachable,
     branchName: branch.branchName,

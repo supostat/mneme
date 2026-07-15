@@ -1,6 +1,14 @@
 export const NOTE_TYPES = ["bugfix", "antipattern", "decision", "pattern"] as const;
 export type NoteType = (typeof NOTE_TYPES)[number];
 
+// A pattern note's anchors are illustrative EXAMPLE links, not the address where the pattern applies,
+// so pattern is the one type for which anchor staleness and the bundle anchor-overlap bonus are
+// switched off. Both call sites (index-db rebuild, memory-steps bundle) import this single predicate
+// so the two gates cannot drift.
+export function isPattern(type: NoteType): boolean {
+  return type === "pattern";
+}
+
 export type NoteFrontmatter = {
   id: string;
   type: NoteType;

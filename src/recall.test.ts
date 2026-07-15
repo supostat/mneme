@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runGit, initRepo } from "./git";
 import { serializeNote } from "./note";
-import type { Note, NoteFrontmatter } from "./note";
+import type { Note, NoteFrontmatter, NoteType } from "./note";
 import { rebuild } from "./index-db";
 import { recall } from "./recall";
 import type { RecallDeps } from "./recall";
@@ -35,6 +35,7 @@ interface NoteSpec {
   body: string;
   anchor: string;
   dead?: boolean;
+  type?: NoteType;
 }
 
 function hashTerm(term: string): number {
@@ -97,7 +98,7 @@ async function setupIndex(
   mkdirSync(eventsDir);
   for (const spec of specs) {
     const note: Note = {
-      frontmatter: { ...baseFrontmatter, id: spec.id, anchors: [spec.anchor], commit },
+      frontmatter: { ...baseFrontmatter, id: spec.id, type: spec.type ?? baseFrontmatter.type, anchors: [spec.anchor], commit },
       body: spec.body,
     };
     writeFileSync(join(notesDir, `${spec.id}.md`), serializeNote(note));
@@ -300,9 +301,11 @@ describe("recall relevance in both modes", () => {
 
 describe("recall dead-anchor sink", () => {
   test("a dead-anchor note ranks below a live note it would otherwise tie", async () => {
+    // decision notes, not pattern: pattern staleness is now pinned to 0, so a pattern dead anchor no
+    // longer sinks — this test exercises the sink on a type that still honours anchor staleness.
     const specs: NoteSpec[] = [
-      { id: ulid(0), body: "singleton pattern usage guide", anchor: "src/live.ts" },
-      { id: ulid(1), body: "singleton pattern reference material", anchor: "src/ghost.ts", dead: true },
+      { id: ulid(0), body: "singleton pattern usage guide", anchor: "src/live.ts", type: "decision" },
+      { id: ulid(1), body: "singleton pattern reference material", anchor: "src/ghost.ts", dead: true, type: "decision" },
     ];
     const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
     const deps = openRecall(indexPath, eventsDir, bagOfWordsClient());
@@ -312,6 +315,27 @@ describe("recall dead-anchor sink", () => {
     expect(result.returnedIds).toContain(ulid(0));
     expect(result.returnedIds).toContain(ulid(1));
     expect(result.returnedIds.indexOf(ulid(0))).toBeLessThan(result.returnedIds.indexOf(ulid(1)));
+  });
+});
+
+describe("recall pattern anchor decoupling", () => {
+  test("a pattern with a dead example anchor still recalls by body, not sunk below its live twin", async () => {
+    // Two pattern notes share one body (equal FTS + cosine); the DEAD-anchor note has the smaller id.
+    // With anchor staleness it would carry -1 and sink below its live twin; with pattern staleness
+    // pinned to 0 both score alike and the id tie-break puts the (smaller-id) dead note first —
+    // proving example rot no longer sinks a pattern. On a non-pattern type this assertion would fail.
+    const body = "singleton pattern usage guide";
+    const specs: NoteSpec[] = [
+      { id: ulid(0), body, anchor: "src/ghost.ts", dead: true, type: "pattern" },
+      { id: ulid(1), body, anchor: "src/live.ts", type: "pattern" },
+    ];
+    const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
+
+    const result = await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "singleton pattern usage", 100000, "tool-call");
+
+    expect(result.returnedIds).toContain(ulid(0));
+    expect(result.returnedIds).toContain(ulid(1));
+    expect(result.returnedIds[0]).toBe(ulid(0));
   });
 });
 

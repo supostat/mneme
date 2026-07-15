@@ -142,6 +142,27 @@ describe("mcp-server tool surface", () => {
   });
 });
 
+describe("mcp-server remember description nudge", () => {
+  test("remember description nudges pattern notes toward a generalized body and example anchors", async () => {
+    const client = await connect({
+      projectRoot: await buildProjectRepo(),
+      corpusHome: corpusHomeDir(),
+      embeddings: offlineClient(),
+      idFactory: sequentialIds(),
+      clock: fixedClock,
+    });
+
+    const tools = await client.listTools();
+    const remember = tools.tools.find((tool) => tool.name === "remember");
+
+    expect(remember).toBeDefined();
+    const description = (remember!.description ?? "").toLowerCase();
+    expect(description).toContain("pattern");
+    expect(description).toContain("example");
+    expect(description).toContain("generaliz");
+  });
+});
+
 describe("mcp-server full cycle", () => {
   const acceptedBody = "wal lock contention during concurrent rebuild";
   const rejectedBody = "telemetry sampling heuristic for hot paths";
