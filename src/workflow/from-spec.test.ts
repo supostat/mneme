@@ -470,6 +470,83 @@ describe("phaseDocumentsFromSpec knowledge extraction", () => {
   });
 });
 
+describe("phaseDocumentsFromSpec shell-construction guard", () => {
+  function specWithCommand(command: string): string {
+    return gameplanSpec(
+      phaseBlock(
+        `### Phase 1: alpha ${EM_DASH} one`,
+        ["a"],
+        executableBlock(command, "alpha suite is green."),
+      ),
+    );
+  }
+
+  const shellCommands: ReadonlyArray<{ command: string; construction: string }> = [
+    { command: "bun test $(git diff --name-only)", construction: "command substitution $()" },
+    { command: 'bun test -t "quoted title" src/a.test.ts', construction: "double quotes" },
+    { command: "bun test -t 'quoted title' src/a.test.ts", construction: "single quotes" },
+    { command: "bun run typecheck && bun test src/a.test.ts", construction: "the && chain" },
+    { command: "bun run typecheck || bun test src/a.test.ts", construction: "the || chain" },
+    { command: "bun test src/a.test.ts | tee out.log", construction: "the | pipe" },
+    { command: "bun test src/a.test.ts; echo done", construction: "the ; separator" },
+  ];
+
+  test("rejects every named shell construction, naming it and the package-json cure", () => {
+    for (const { command, construction } of shellCommands) {
+      const generate = () => phaseDocumentsFromSpec(specWithCommand(command));
+      expect(generate).toThrow(PhaseGenerationError);
+      expect(generate).toThrow(construction);
+      expect(generate).toThrow('call it as "bun run <name>"');
+    }
+  });
+
+  test("a malformed command drops the whole migration: no document of any phase survives", () => {
+    const specText = gameplanSpec(
+      phaseBlock(
+        `### Phase 1: alpha ${EM_DASH} one`,
+        ["a"],
+        executableBlock("bun test src/a.test.ts", "alpha suite is green."),
+      ),
+      phaseBlock(
+        `### Phase 2: beta ${EM_DASH} two`,
+        ["b"],
+        executableBlock("bun run typecheck && bun test src/b.test.ts", "beta suite is green."),
+      ),
+    );
+    expect(() => phaseDocumentsFromSpec(specText)).toThrow(PhaseGenerationError);
+  });
+
+  test("the guard names the phase whose command is malformed", () => {
+    const specText = gameplanSpec(
+      phaseBlock(
+        `### Phase 1: alpha ${EM_DASH} one`,
+        ["a"],
+        executableBlock("bun test src/a.test.ts", "alpha suite is green."),
+      ),
+      phaseBlock(
+        `### Phase 2: beta ${EM_DASH} two`,
+        ["b"],
+        executableBlock("bun test $(ls src)", "beta suite is green."),
+      ),
+    );
+    expect(() => phaseDocumentsFromSpec(specText)).toThrow('phase "beta"');
+  });
+
+  test("wraps the tokenizer's own rejections for commands free of shell constructions", () => {
+    const generate = () => phaseDocumentsFromSpec(specWithCommand("-t alpha"));
+    expect(generate).toThrow(PhaseGenerationError);
+    expect(generate).toThrow("not spawnable");
+  });
+
+  test("clean argv commands, including multi-file arguments, pass through verbatim", () => {
+    const command = "bun test src/workflow/migration.test.ts src/workflow/mcp-tools.test.ts";
+    const [document] = phaseDocumentsFromSpec(specWithCommand(command));
+    expect(document?.doneWhen).toEqual([
+      { kind: "executable", description: "alpha suite is green.", command },
+    ]);
+  });
+});
+
 describe("phaseDocumentsFromSpec rejections", () => {
   test("throws when there is no # Gameplan section", () => {
     expect(() => phaseDocumentsFromSpec("# Overview\n\nno gameplan here")).toThrow(

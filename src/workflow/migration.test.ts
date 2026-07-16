@@ -253,4 +253,19 @@ describe("scripts/migrate.ts end-to-end", () => {
     expect(reapplied.code).toBe(0);
     expect(reapplied.stdout).toContain("wrote 0");
   }, 30_000);
+
+  test("a spec whose done-when carries a shell construction fails the whole migration before any write", async () => {
+    const tempHome = tempDir("mneme-mig-shell-home-");
+    const projectCwd = tempDir("mneme-mig-shell-cwd-");
+    const specPath = join(tempDir("mneme-mig-shell-spec-"), "shell-spec.md");
+    writeFileSync(specPath, MIGRATION_SAMPLE_SPEC.replace(
+      "bun test src/normalize.test.ts",
+      "bun run typecheck && bun test src/normalize.test.ts",
+    ));
+
+    const applied = await runMigrate([specPath, "--apply"], tempHome, projectCwd);
+
+    expect(applied.code).toBe(2);
+    expect(existsSync(join(tempHome, ".mneme", mungePath(canonicalize(projectCwd)), WORKFLOW_PHASE_DIR))).toBe(false);
+  }, 30_000);
 });

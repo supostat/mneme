@@ -1,3 +1,4 @@
+import { tokenizeCommand } from "./gate-runner";
 import {
   DEFAULT_AGENT_ROLE,
   PhaseGenerationError,
@@ -210,6 +211,9 @@ function documentFromSpecPhase(
     throw new PhaseGenerationError(`phase "${specPhase.heading.id}" has no task bullets`);
   }
   requireExecutableCriterion(specPhase);
+  for (const criterion of specPhase.criteria) {
+    requireSpawnableCommand(specPhase.heading.id, criterion);
+  }
   return {
     id: specPhase.heading.id,
     deps: previousId === null ? [] : [previousId],
@@ -226,6 +230,40 @@ function requireExecutableCriterion(specPhase: SpecPhase): void {
     throw new PhaseGenerationError(
       `phase "${specPhase.heading.id}" has no executable done-when criterion`,
     );
+  }
+}
+
+// The gate-runner spawns a done-when command as ONE argv process, never a shell: quotes throw at
+// tokenize time, and shell operators survive tokenization as literal arguments only to burn a run
+// attempt at gate time — the command is frozen into the run's event log, so a retry is doomed by
+// construction. Generation is the last moment the author can still fix the spec, which is why a
+// command carrying a shell construction fails HERE, named, with the cure.
+const SHELL_CONSTRUCTIONS: ReadonlyArray<{ marker: string; name: string }> = [
+  { marker: "$(", name: "command substitution $()" },
+  { marker: '"', name: "double quotes" },
+  { marker: "'", name: "single quotes" },
+  { marker: "&&", name: "the && chain" },
+  { marker: "||", name: "the || chain" },
+  { marker: "|", name: "the | pipe" },
+  { marker: ";", name: "the ; separator" },
+];
+
+function requireSpawnableCommand(phaseId: string, criterion: ExecutableCriterion): void {
+  const construction = SHELL_CONSTRUCTIONS.find((candidate) =>
+    criterion.command.includes(candidate.marker),
+  );
+  if (construction !== undefined) {
+    throw new PhaseGenerationError(
+      `phase "${phaseId}" done-when command uses ${construction.name}: ${criterion.command}. ` +
+        "The gate-runner spawns one argv command without a shell, so the construction can never run. " +
+        'If the criterion needs a shell, wrap it in a package.json script and call it as "bun run <name>".',
+    );
+  }
+  try {
+    tokenizeCommand(criterion.command);
+  } catch (error) {
+    const problem = error instanceof Error ? error.message : String(error);
+    throw new PhaseGenerationError(`phase "${phaseId}" done-when command is not spawnable: ${problem}`);
   }
 }
 
