@@ -41,6 +41,7 @@ export function specSlug(specPath: string): string {
 export type WriteAction = "create" | "identical" | "conflict";
 
 export interface PlannedWrite {
+  phaseId: string;
   relativePath: string;
   absolutePath: string;
   action: WriteAction;
@@ -106,6 +107,7 @@ function planOne(phase: PhaseDocument, specSlug: string, workflowDir: string): P
   const relativePath = join(WORKFLOW_PHASE_DIR, specSlug, `phase-${phase.id}.md`);
   const absolutePath = join(workflowDir, `phase-${phase.id}.md`);
   return {
+    phaseId: phase.id,
     relativePath,
     absolutePath,
     action: classifyAction(absolutePath, content),

@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { WORKFLOW_ON_FAIL_ACTIONS, WORKFLOW_STEP_OUTCOMES } from "../event-schema";
@@ -6,8 +8,20 @@ import { validateAnchor } from "../note";
 import type { StagingDeps } from "../staging";
 import type { Vote } from "./converge";
 import type { StepDefinition } from "./failure-policy";
+import { phaseDocumentsFromSpec } from "./from-spec";
 import type { PhaseArtifact } from "./memory-steps";
+import { applyMigration, planMigration, specSlug } from "./migration";
+import type { MigrationPlan, MigrationReport } from "./migration";
+import {
+  conflictingPhaseIds,
+  createdAbsolutePaths,
+  renderMigrationManifest,
+  renderPathList,
+  renderPhaseGraph,
+  renderRunCommand,
+} from "./migration-rendering";
 import { parsePhaseDocument } from "./phase-document";
+import type { PhaseDocument } from "./phase-document";
 import { buildPhaseGraph } from "./phase-graph";
 import { applyStepResult, initialRun } from "./reducer";
 import type { RunDefinition, StepResult } from "./reducer";
@@ -49,6 +63,14 @@ export const WORKFLOW_STEP_DESCRIPTION =
   "phase's FINAL step succeeds - send agent_votes (one pass|fail array per agent-judged criterion) " +
   "with that submission; a failure never runs gates. When a harvest directive is pending, submit " +
   "harvest_artifacts (an empty array is allowed) to close the phase.";
+export const WORKFLOW_MIGRATE_DESCRIPTION =
+  "Convert a spec's # Gameplan into workflow phase files under this project's corpus " +
+  "(<corpusDir>/workflow/<spec-slug>/), so the phases of one task live together. DRY-RUN by default: " +
+  "it classifies every target as create, identical or conflict and writes NOTHING; pass apply: true " +
+  "to perform the writes. A target that diverges from an existing file is a CONFLICT that refuses the " +
+  "whole migration - resolve it by hand, there is no force flag. A byte-identical target is skipped, " +
+  "so re-migrating an unchanged spec is idempotent. Both responses carry the phase graph (id, deps, " +
+  "done-when kinds); apply also carries the written paths and the /mneme:dev command that runs them.";
 
 export const WORKFLOW_START_INPUT = {
   phases: z.array(z.string()).min(1),
@@ -64,6 +86,11 @@ export const WORKFLOW_START_INPUT = {
   max_iterations: z.number().int().positive(),
   recall_budget: z.number().int().positive().optional(),
   recall_anchors: z.record(z.string(), z.array(z.string())).optional(),
+};
+
+export const WORKFLOW_MIGRATE_INPUT = {
+  spec_path: z.string(),
+  apply: z.boolean().optional(),
 };
 
 const harvestArtifact = z.discriminatedUnion("kind", [
@@ -110,6 +137,76 @@ export interface WorkflowStepArgs {
   step_result?: SubmittedStepResult;
   agent_votes?: Vote[][];
   harvest_artifacts?: PhaseArtifact[];
+}
+
+export interface WorkflowMigrateArgs {
+  spec_path: string;
+  apply?: boolean;
+}
+
+// A thin entry over the 12a persistence library: read the spec, generate its phase documents, plan
+// the writes into this project's corpus, and either render the plan (dry-run, the safe default) or
+// apply it. All classification, atomicity and conflict policy stay in migration.ts.
+export function workflowMigrateTool(deps: StagingDeps, args: WorkflowMigrateArgs): CallToolResult {
+  const specPath = resolve(deps.projectRoot, args.spec_path);
+  const documents = phaseDocumentsFromSpec(readSpec(specPath));
+  const plan = planMigration(documents, deps.corpus.corpusDir, specSlug(specPath));
+  if (args.apply !== true) {
+    return textResult(renderMigrationDryRun(plan, documents));
+  }
+  requireNoConflictingPhases(plan);
+  return textResult(renderMigrationApplied(plan, applyMigration(plan), documents));
+}
+
+function readSpec(specPath: string): string {
+  try {
+    return readFileSync(specPath, "utf8");
+  } catch {
+    throw new WorkflowToolError(`cannot read the spec at ${specPath}`);
+  }
+}
+
+// Conflicts are named by PHASE, not by path: the caller edits phases, so the phase id is the handle
+// it can act on. This refusal fires before applyMigration, whose own guard (plus its TOCTOU
+// re-classify) remains the fail-closed floor if the disk changes underneath.
+function requireNoConflictingPhases(plan: MigrationPlan): void {
+  const conflicts = conflictingPhaseIds(plan);
+  if (conflicts.length === 0) {
+    return;
+  }
+  throw new WorkflowToolError(
+    `refusing to migrate: ${conflicts.length} phase file(s) diverge from an existing file: ` +
+      `${conflicts.join(", ")}. Migration never overwrites; resolve each by hand, there is no force.`,
+  );
+}
+
+function renderMigrationDryRun(plan: MigrationPlan, documents: PhaseDocument[]): string {
+  const conflicts = conflictingPhaseIds(plan);
+  const closing =
+    conflicts.length > 0
+      ? `Nothing was written. apply would REFUSE: ${conflicts.length} phase file(s) diverge from an ` +
+        `existing file: ${conflicts.join(", ")}.`
+      : "Nothing was written. Call workflow_migrate again with apply: true to write these files.";
+  return joinSections([
+    renderMigrationManifest(plan),
+    renderPathList("Full paths (dry-run):", plan.writes.map((write) => write.absolutePath)),
+    renderPhaseGraph(documents),
+    closing,
+  ]);
+}
+
+function renderMigrationApplied(
+  plan: MigrationPlan,
+  report: MigrationReport,
+  documents: PhaseDocument[],
+): string {
+  const created = createdAbsolutePaths(plan, report);
+  return joinSections([
+    `Migrated into ${plan.workflowDir}: wrote ${report.created.length}, skipped ${report.skipped.length} identical.`,
+    created.length > 0 ? renderPathList("Created:", created) : "",
+    renderPhaseGraph(documents),
+    renderRunCommand(plan),
+  ]);
 }
 
 export async function workflowStartTool(deps: StagingDeps, args: WorkflowStartArgs): Promise<CallToolResult> {

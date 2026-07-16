@@ -243,10 +243,11 @@ describe("scripts/migrate.ts end-to-end", () => {
     const written = readdirSync(workflowDir).filter((name) => name.endsWith(".md"));
     expect(written.length).toBe(3);
     // --apply prints each created file's absolute path plus, for a multi-phase plan, the whole spec
-    // directory as a /mneme:dev launch target carrying the transitional caveat.
+    // DIRECTORY as the /mneme:dev launch target. The launch line is matched exactly: a substring
+    // check would also accept a phase-file path, which carries the directory as a prefix.
     expect(applied.stdout).toContain(join(workflowDir, "phase-ingest-source.md"));
-    expect(applied.stdout).toContain(`/mneme:dev ${workflowDir}`);
-    expect(applied.stdout).toContain("requires /mneme:dev multi-phase support");
+    expect(applied.stdout.split("\n")).toContain(`  /mneme:dev ${workflowDir}`);
+    expect(applied.stdout).not.toContain("multi-phase support");
 
     const reapplied = await runMigrate([specPath, "--apply"], tempHome, projectCwd);
     expect(reapplied.code).toBe(0);

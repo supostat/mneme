@@ -25,10 +25,13 @@ import { computeFootprint, formatFootprint } from "./stats-footprint";
 import type { StagingDeps, ResolveDecision } from "./staging";
 import { formatRemember, formatRecall, formatStagingList, formatResolve, textResult } from "./mcp-rendering";
 import {
+  WORKFLOW_MIGRATE_DESCRIPTION,
+  WORKFLOW_MIGRATE_INPUT,
   WORKFLOW_START_DESCRIPTION,
   WORKFLOW_START_INPUT,
   WORKFLOW_STEP_DESCRIPTION,
   WORKFLOW_STEP_INPUT,
+  workflowMigrateTool,
   workflowStartTool,
   workflowStepTool,
 } from "./workflow/mcp-tools";
@@ -153,6 +156,9 @@ function registerTools(
   );
   server.registerTool("workflow_step", { description: WORKFLOW_STEP_DESCRIPTION, inputSchema: WORKFLOW_STEP_INPUT }, (args) =>
     dispatch(context, "workflow_step", (current) => workflowStepTool(buildStagingDeps(current), args)),
+  );
+  server.registerTool("workflow_migrate", { description: WORKFLOW_MIGRATE_DESCRIPTION, inputSchema: WORKFLOW_MIGRATE_INPUT }, (args) =>
+    dispatch(context, "workflow_migrate", (current) => workflowMigrateTool(buildStagingDeps(current), args)),
   );
 }
 

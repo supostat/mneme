@@ -3,7 +3,12 @@ import { readFileSync } from "node:fs";
 import { resolveCorpus } from "../src/corpus";
 import { phaseDocumentsFromSpec } from "../src/workflow/from-spec";
 import { applyMigration, planMigration, specSlug } from "../src/workflow/migration";
-import type { MigrationPlan, MigrationReport } from "../src/workflow/migration";
+import {
+  createdAbsolutePaths,
+  renderMigrationManifest,
+  renderPathList,
+  renderRunCommand,
+} from "../src/workflow/migration-rendering";
 
 // Thin human-driven CLI over the 12a persistence library (mirrors scripts/replay.ts): read a spec,
 // generate phase documents via from-spec, resolve the current project's corpus, and plan the
@@ -39,41 +44,8 @@ function usageError(detail: string): Error {
   return new Error(`${detail}\n${USAGE}`);
 }
 
-function renderManifest(plan: MigrationPlan): string {
-  const lines = [`Phase-file plan -> ${plan.workflowDir}`];
-  for (const write of plan.writes) {
-    lines.push(`  ${write.action.padEnd(9)} ${write.relativePath} (${write.bytes} bytes)`);
-  }
-  return lines.join("\n") + "\n";
-}
-
-function renderPathList(header: string, paths: string[]): string {
-  return [header, ...paths.map((path) => `  ${path}`)].join("\n") + "\n";
-}
-
-// The convenience launch line. A single-phase plan gets a ready-to-paste command naming the one
-// phase file. A multi-phase plan names the whole spec directory — /mneme:dev will accept a directory
-// once its paired multi-phase support ships; until then the line carries an honest one-line caveat.
-function renderRunCommand(plan: MigrationPlan): string {
-  const paths = plan.writes.map((write) => write.absolutePath);
-  const [entry] = paths;
-  if (entry === undefined) {
-    return "";
-  }
-  if (paths.length === 1) {
-    return `Run it with:\n  /mneme:dev ${entry}\n`;
-  }
-  return (
-    `Run the whole task with:\n  /mneme:dev ${plan.workflowDir}\n` +
-    `  (requires /mneme:dev multi-phase support)\n`
-  );
-}
-
-function createdAbsolutePaths(plan: MigrationPlan, report: MigrationReport): string[] {
-  const absoluteByRelative = new Map(plan.writes.map((write) => [write.relativePath, write.absolutePath]));
-  return report.created
-    .map((relativePath) => absoluteByRelative.get(relativePath))
-    .filter((path): path is string => path !== undefined);
+function writeLine(text: string): void {
+  process.stdout.write(`${text}\n`);
 }
 
 export async function main(argv: string[]): Promise<number> {
@@ -91,25 +63,25 @@ export async function main(argv: string[]): Promise<number> {
     const conflicts = plan.writes.filter((write) => write.action === "conflict").length;
     const absolutePaths = plan.writes.map((write) => write.absolutePath);
     if (!args.apply) {
-      process.stdout.write(renderManifest(plan));
-      process.stdout.write(renderPathList("Full paths (dry-run — nothing written yet):", absolutePaths));
+      writeLine(renderMigrationManifest(plan));
+      writeLine(renderPathList("Full paths (dry-run — nothing written yet):", absolutePaths));
       if (conflicts === 0) {
-        process.stdout.write(renderRunCommand(plan));
+        writeLine(renderRunCommand(plan));
       }
       return conflicts > 0 ? 1 : 0;
     }
     if (conflicts > 0) {
-      process.stdout.write(renderManifest(plan));
+      writeLine(renderMigrationManifest(plan));
       process.stderr.write(`refusing to apply: ${conflicts} conflict(s)\n`);
       return 1;
     }
     const report = applyMigration(plan);
-    process.stdout.write(`wrote ${report.created.length}, skipped ${report.skipped.length} in ${plan.workflowDir}\n`);
+    writeLine(`wrote ${report.created.length}, skipped ${report.skipped.length} in ${plan.workflowDir}`);
     const createdPaths = createdAbsolutePaths(plan, report);
     if (createdPaths.length > 0) {
-      process.stdout.write(renderPathList("Created:", createdPaths));
+      writeLine(renderPathList("Created:", createdPaths));
     }
-    process.stdout.write(renderRunCommand(plan));
+    writeLine(renderRunCommand(plan));
     return 0;
   } catch (error) {
     process.stderr.write(`${errorMessage(error)}\n`);

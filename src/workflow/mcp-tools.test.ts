@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -14,6 +14,7 @@ import { initRepo, runGit } from "../git";
 import { createServer } from "../mcp-server";
 import type { CreateServerOptions } from "../mcp-server";
 import type { SubmittedStepResult } from "./mcp-tools";
+import { WORKFLOW_PHASE_DIR } from "./migration";
 import { parsePhaseDocument, serializePhaseDocument } from "./phase-document";
 import type { DoneWhenCriterion } from "./phase-document";
 import { buildPhaseGraph } from "./phase-graph";
@@ -912,5 +913,165 @@ describe("workflow input validation", () => {
 
     expect(result.isError).toBe(true);
     expect((result.content as Array<{ text: string }>)[0]!.text).toContain("detached HEAD");
+  });
+});
+
+const EM_DASH = String.fromCharCode(0x2014);
+
+// A two-phase spec built at runtime (repo convention: fixtures are never read from the tree). from-spec
+// chains phases sequentially, so phase 2 depends on phase 1 and the response's graph map has a real
+// edge to show. Each phase carries an executable done-when block, which from-spec requires. The
+// em-dash is composed via EM_DASH so this source file stays pure ASCII.
+const MIGRATE_SAMPLE_SPEC = [
+  "# Gameplan",
+  "",
+  `### Phase 1: parse input ${EM_DASH} read the raw text`,
+  "",
+  "- [ ] read the input",
+  "",
+  "**Done when:** the input parses.",
+  "",
+  "**Done when (EXECUTABLE):**",
+  "```",
+  "bun test src/parse.test.ts",
+  "```",
+  "the parse suite is green.",
+  "",
+  `### Phase 2: store records ${EM_DASH} persist them`,
+  "",
+  "- [ ] write the records",
+  "",
+  "**Done when:** the records persist.",
+  "",
+  "**Done when (EXECUTABLE):**",
+  "```",
+  "bun test src/store.test.ts",
+  "```",
+  "the store suite is green.",
+  "",
+].join("\n");
+
+const SPEC_FILE_NAME = "sample-spec.md";
+const PARSE_PHASE_FILE = "phase-parse-input.md";
+const STORE_PHASE_FILE = "phase-store-records.md";
+
+describe("workflow_migrate", () => {
+  // The spec lands in the project tree and is named RELATIVELY at the tool boundary: spec_path
+  // resolves against the project root, the same cwd that picks the corpus. workflowRoot is the
+  // corpus-wide workflow directory: "writes nothing" means no slug directory under it, not merely
+  // the expected one.
+  async function benchWithSpec(): Promise<{ bench: Workbench; workflowDir: string; workflowRoot: string }> {
+    const bench = await makeWorkbench();
+    writeFileSync(join(bench.projectRoot, SPEC_FILE_NAME), MIGRATE_SAMPLE_SPEC);
+    const corpus = await resolveCorpus(bench.projectRoot, { corpusHome: bench.corpusHome });
+    const workflowRoot = join(corpus.corpusDir, WORKFLOW_PHASE_DIR);
+    return { bench, workflowDir: join(workflowRoot, "sample-spec"), workflowRoot };
+  }
+
+  test("dry-run classifies every target, maps the graph, and writes nothing", async () => {
+    const { bench, workflowDir, workflowRoot } = await benchWithSpec();
+
+    const text = await callText(bench.client, "workflow_migrate", { spec_path: SPEC_FILE_NAME });
+
+    expect(text).toContain(`create    ${join(WORKFLOW_PHASE_DIR, "sample-spec", PARSE_PHASE_FILE)}`);
+    expect(text).toContain(`create    ${join(WORKFLOW_PHASE_DIR, "sample-spec", STORE_PHASE_FILE)}`);
+    expect(text).toContain(join(workflowDir, PARSE_PHASE_FILE));
+    expect(text).toContain("Nothing was written");
+    expect(existsSync(workflowRoot)).toBe(false);
+  });
+
+  test("the graph map carries each phase id, its deps and its done-when kinds", async () => {
+    const { bench } = await benchWithSpec();
+
+    const text = await callText(bench.client, "workflow_migrate", { spec_path: SPEC_FILE_NAME });
+
+    expect(text).toContain("parse-input deps: [] done-when: executable");
+    expect(text).toContain("store-records deps: [parse-input] done-when: executable");
+  });
+
+  test("apply lands parseable phase files under the spec slug and prints the launch command", async () => {
+    const { bench, workflowDir } = await benchWithSpec();
+
+    const text = await callText(bench.client, "workflow_migrate", { spec_path: SPEC_FILE_NAME, apply: true });
+
+    expect(text).toContain("wrote 2, skipped 0 identical");
+    expect(readdirSync(workflowDir).sort()).toEqual([PARSE_PHASE_FILE, STORE_PHASE_FILE]);
+    expect(text).toContain(join(workflowDir, PARSE_PHASE_FILE));
+    // A multi-phase plan launches as one run naming the spec DIRECTORY, with no caveat attached.
+    // The launch line is matched exactly: a substring check would also accept a phase-file path,
+    // which carries the directory as a prefix.
+    expect(text.split("\n")).toContain(`  /mneme:dev ${workflowDir}`);
+    expect(text).not.toContain("multi-phase support");
+    // apply carries the graph map alongside the paths, so a caller plans the run it just wrote
+    // without re-reading the phase files.
+    expect(text).toContain("store-records deps: [parse-input] done-when: executable");
+    // What landed is a real phase document: the engine parses it back without a re-serialize step.
+    const written = parsePhaseDocument(readFileSync(join(workflowDir, STORE_PHASE_FILE), "utf8"));
+    expect(written.id).toBe("store-records");
+    expect(written.deps).toEqual(["parse-input"]);
+  });
+
+  test("re-applying an unchanged spec is idempotent: every target is identical and nothing is rewritten", async () => {
+    const { bench, workflowDir } = await benchWithSpec();
+    await callText(bench.client, "workflow_migrate", { spec_path: SPEC_FILE_NAME, apply: true });
+    const firstBytes = readFileSync(join(workflowDir, PARSE_PHASE_FILE), "utf8");
+
+    const dry = await callText(bench.client, "workflow_migrate", { spec_path: SPEC_FILE_NAME });
+    const reapplied = await callText(bench.client, "workflow_migrate", { spec_path: SPEC_FILE_NAME, apply: true });
+
+    expect(dry).toContain(`identical ${join(WORKFLOW_PHASE_DIR, "sample-spec", PARSE_PHASE_FILE)}`);
+    expect(reapplied).toContain("wrote 0, skipped 2 identical");
+    expect(readFileSync(join(workflowDir, PARSE_PHASE_FILE), "utf8")).toBe(firstBytes);
+  });
+
+  test("a divergent phase file refuses the whole migration by phase name and never clobbers the edit", async () => {
+    const { bench, workflowDir } = await benchWithSpec();
+    await callText(bench.client, "workflow_migrate", { spec_path: SPEC_FILE_NAME, apply: true });
+    const humanEdit = "--- human edit, do not clobber ---\n";
+    writeFileSync(join(workflowDir, STORE_PHASE_FILE), humanEdit);
+
+    const dry = await callText(bench.client, "workflow_migrate", { spec_path: SPEC_FILE_NAME });
+    const result = await bench.client.callTool({
+      name: "workflow_migrate",
+      arguments: { spec_path: SPEC_FILE_NAME, apply: true },
+    });
+
+    expect(dry).toContain(`conflict  ${join(WORKFLOW_PHASE_DIR, "sample-spec", STORE_PHASE_FILE)}`);
+    expect(dry).toContain("apply would REFUSE");
+    expect(result.isError).toBe(true);
+    const text = (result.content as Array<{ text: string }>)[0]!.text;
+    // The refusal names the conflicting PHASE — the handle the caller can act on — and only it:
+    // never the file path underneath the id, and never a non-conflicting phase.
+    expect(text).toContain("refusing to migrate: 1 phase file(s) diverge");
+    expect(text).toContain("store-records");
+    expect(text).not.toContain(STORE_PHASE_FILE);
+    expect(text).not.toContain("parse-input");
+    expect(readFileSync(join(workflowDir, STORE_PHASE_FILE), "utf8")).toBe(humanEdit);
+  });
+
+  test("apply of a single-phase spec launches with the one phase file, not the directory", async () => {
+    const bench = await makeWorkbench();
+    const singlePhaseSpec = MIGRATE_SAMPLE_SPEC.slice(0, MIGRATE_SAMPLE_SPEC.indexOf("### Phase 2"));
+    writeFileSync(join(bench.projectRoot, "solo-spec.md"), singlePhaseSpec);
+    const corpus = await resolveCorpus(bench.projectRoot, { corpusHome: bench.corpusHome });
+    const soloDir = join(corpus.corpusDir, WORKFLOW_PHASE_DIR, "solo-spec");
+
+    const text = await callText(bench.client, "workflow_migrate", { spec_path: "solo-spec.md", apply: true });
+
+    expect(text).toContain("Run it with:");
+    expect(text.split("\n")).toContain(`  /mneme:dev ${join(soloDir, PARSE_PHASE_FILE)}`);
+  });
+
+  test("an unreadable spec path is a tool error that writes nothing", async () => {
+    const { bench, workflowRoot } = await benchWithSpec();
+
+    const result = await bench.client.callTool({
+      name: "workflow_migrate",
+      arguments: { spec_path: "no-such-spec.md", apply: true },
+    });
+
+    expect(result.isError).toBe(true);
+    expect((result.content as Array<{ text: string }>)[0]!.text).toContain("cannot read the spec");
+    expect(existsSync(workflowRoot)).toBe(false);
   });
 });
