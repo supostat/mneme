@@ -35,7 +35,7 @@ export interface FailedGateRemarks {
 export interface FailedGatesRecord {
   phaseId: string;
   stepId: string;
-  attempt: number | null;
+  attempt: number;
   failRemarks: FailedGateRemarks[];
 }
 
@@ -182,14 +182,16 @@ function absorbStepApplied(runsById: Map<string, RestoredRun>, event: StoredEven
 
 // A gated application overwrites the record wholesale: a pass clears it, a fail replaces it with the
 // fresh fail-vote remarks. Ungated applications (recall, harvest, non-final steps) leave it alone —
-// the reducer re-issues the failed step next, so the record is still the one the retry needs.
+// harmless, because the render matches on phase + step + attempt N+1, which only the immediate retry
+// of the recorded failure satisfies. A gated apply always names its step and attempt; an event
+// missing either is malformed, and the tolerant fold records nothing rather than half a record.
 function absorbGates(known: ReadableRun, payload: StepAppliedPayload): void {
   if (payload.gates === null) return;
   if (payload.gates.passed) {
     known.lastFailedGates = null;
     return;
   }
-  if (payload.step_id === null) return;
+  if (payload.step_id === null || payload.attempt === null) return;
   known.lastFailedGates = {
     phaseId: payload.phase_id,
     stepId: payload.step_id,

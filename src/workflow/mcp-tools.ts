@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { WORKFLOW_ON_FAIL_ACTIONS, WORKFLOW_STEP_OUTCOMES } from "../event-schema";
+import { AGENT_VOTE_VALUES, WORKFLOW_ON_FAIL_ACTIONS, WORKFLOW_STEP_OUTCOMES } from "../event-schema";
 import { textResult } from "../mcp-rendering";
 import { validateAnchor } from "../note";
 import type { StagingDeps } from "../staging";
@@ -20,7 +20,7 @@ import {
   renderPhaseGraph,
   renderRunCommand,
 } from "./migration-rendering";
-import { parsePhaseDocument } from "./phase-document";
+import { containsForbiddenCharacter, parsePhaseDocument } from "./phase-document";
 import type { PhaseDocument } from "./phase-document";
 import { buildPhaseGraph } from "./phase-graph";
 import { applyStepResult, initialRun } from "./reducer";
@@ -46,7 +46,6 @@ import { surveyRuns } from "./run-survey";
 export class WorkflowToolError extends Error {}
 
 export const DEFAULT_WORKFLOW_RECALL_BUDGET = 2000;
-const VOTE_VALUES = ["pass", "fail"] as const;
 
 export const WORKFLOW_START_DESCRIPTION =
   "Start a workflow run anchored to the CURRENT git branch. phases are phase-document markdown " +
@@ -98,8 +97,8 @@ export const WORKFLOW_MIGRATE_INPUT = {
 // stays valid) and the enriched { vote, remarks? } object. Normalization to the canonical AgentVote
 // happens once, here, so the engine below this boundary knows exactly one shape.
 const submittedAgentVote = z.union([
-  z.enum(VOTE_VALUES),
-  z.object({ vote: z.enum(VOTE_VALUES), remarks: z.string().optional() }),
+  z.enum(AGENT_VOTE_VALUES),
+  z.object({ vote: z.enum(AGENT_VOTE_VALUES), remarks: z.string().optional() }),
 ]);
 
 const harvestArtifact = z.discriminatedUnion("kind", [
@@ -312,10 +311,33 @@ async function applyIncomingStepResult(
   return [`Applied ${submitted.outcome} for ${pending.phaseId}/${pending.stepId} (attempt ${pending.attempt}); gates were not run.`];
 }
 
+// The single validation point for remarks, at the boundary where both submitted shapes converge:
+// what the one-line-per-remark directive frame cannot carry (line breaks, the invisible-character
+// class every sibling channel already refuses) and what carries no information (blank text) is
+// rejected HERE, never silently dropped downstream.
 function normalizeAgentVotes(votes: SubmittedAgentVote[][]): AgentVote[][] {
   return votes.map((voteArray) =>
-    voteArray.map((submitted) => (typeof submitted === "string" ? { vote: submitted } : submitted)),
+    voteArray.map((submitted) => {
+      if (typeof submitted === "string") {
+        return { vote: submitted };
+      }
+      if (submitted.remarks !== undefined) {
+        requireCleanRemarks(submitted.remarks);
+      }
+      return submitted;
+    }),
   );
+}
+
+function requireCleanRemarks(remarks: string): void {
+  if (remarks.trim() === "") {
+    throw new WorkflowToolError("vote remarks must not be blank: omit the remarks field instead");
+  }
+  if (remarks.includes("\n") || containsForbiddenCharacter(remarks)) {
+    throw new WorkflowToolError(
+      "vote remarks must be a single line free of control and invisible characters",
+    );
+  }
 }
 
 // Harvest idempotency mirrors the step-result echo gate: a harvest submission arriving while no

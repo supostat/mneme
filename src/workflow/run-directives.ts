@@ -235,17 +235,17 @@ export function describePending(directive: Directive): string {
   return `the run is terminal: ${directive.kind}`;
 }
 
-// Replays the fail-vote remarks of the matching failed gate run into the directive that retries it
-// (the immediate re-attempt, or the return to the same step after a rewind), so the rework is done
-// against WHAT the reviewers found wrong. Remarks are agent-authored free text read back from the
-// event log, so they are stripped like every other unvalidated log field.
+// Replays the fail-vote remarks of the matching failed gate run into the directive of the IMMEDIATE
+// retry (same phase, same step, attempt N+1), so the rework is done against WHAT the reviewers found
+// wrong. A rewind never matches: rewindTo resets the attempt counters, so the return to the failed
+// step arrives as attempt 1 again. Remarks are agent-authored free text read back from the event
+// log, so they are stripped like every other unvalidated log field.
 function failedReviewSection(active: ReadableRun, directive: ExecuteStepDirective): string[] {
   const record = active.lastFailedGates;
   if (
     record === null ||
     record.phaseId !== directive.phaseId ||
     record.stepId !== directive.stepId ||
-    record.attempt === null ||
     directive.attempt !== record.attempt + 1 ||
     record.failRemarks.length === 0
   ) {

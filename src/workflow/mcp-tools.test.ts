@@ -632,6 +632,32 @@ describe("workflow gates", () => {
     expect(passed).toContain("DIRECTIVE: harvest");
   });
 
+  test("remarks that the directive frame cannot carry are rejected at the boundary, before gates run", async () => {
+    const bench = await makeWorkbench();
+    const runId = await startRun(bench.client, startArgs([phaseText("phase-one", { doneWhen: JUDGED_GATE })]));
+    await callText(bench.client, "workflow_step", {});
+
+    // Blank, multi-line, and invisible-character remarks: the sibling channels (description, tasks)
+    // already refuse the invisible class, so remarks must not be a weaker-sanitized path into the
+    // same directive frame. U+200B is the zero-width space; U+E0041 is an invisible Tag character.
+    const rejectedRemarks = ["", "   ", "line one\nline two", `zero${String.fromCodePoint(0x200b)}width`, `tag${String.fromCodePoint(0xe0041)}smuggle`];
+    for (const remarks of rejectedRemarks) {
+      const result = await bench.client.callTool({
+        name: "workflow_step",
+        arguments: {
+          run_id: runId,
+          step_result: stepResult("phase-one", "implement", 1, "success"),
+          agent_votes: [[{ vote: "fail", remarks }]],
+        },
+      });
+      expect(result.isError).toBe(true);
+      expect((result.content as Array<{ text: string }>)[0]!.text).toContain("remarks");
+    }
+    // Nothing was applied: the directive is still attempt 1 of the same step.
+    const synced = await callText(bench.client, "workflow_step", {});
+    expect(synced).toContain("attempt: 1");
+  });
+
   test("an empty harvest_artifacts array still closes the phase", async () => {
     const bench = await makeWorkbench();
     const runId = await startRun(bench.client, startArgs([phaseText("phase-one")]));
