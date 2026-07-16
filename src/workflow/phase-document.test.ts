@@ -918,6 +918,59 @@ describe("phase document body parse rejection", () => {
   });
 });
 
+// The serializer prefixes its own "- " bullet, so a criterion description that arrives carrying one
+// (a bulleted prose line in a source spec) used to render as "- - ". Validation strips the leading
+// marker as grammar leakage, on both the serialize and the parse path.
+describe("criterion description bullet-marker normalization", () => {
+  test("a description arriving with a leading bullet serializes without doubling the marker", () => {
+    const serialized = serializePhaseDocument(
+      document({
+        doneWhen: [
+          { kind: "executable", description: "- the suite is green (exit 0)", command: "bun test" },
+        ],
+      }),
+    );
+    expect(serialized).toContain("\n- the suite is green (exit 0)\n");
+    expect(serialized).not.toContain("- - ");
+  });
+
+  test("a file carrying the historical doubled marker parses to a clean description", () => {
+    const doubled = canonicalText.replace("- tests pass", "- - tests pass");
+    expect(parsePhaseDocument(doubled).doneWhen).toEqual([
+      { kind: "executable", description: "tests pass", command: "bun test" },
+    ]);
+  });
+
+  test("an agent-judged description is normalized the same way", () => {
+    const serialized = serializePhaseDocument(
+      document({
+        doneWhen: [
+          { kind: "executable", description: "tests pass", command: "bun test" },
+          { kind: "agent-judged", description: "- reviewer checklist holds" },
+        ],
+      }),
+    );
+    expect(serialized).toContain("\n- reviewer checklist holds\n");
+    expect(serialized).not.toContain("- - ");
+  });
+
+  test("normalization keeps the round-trip byte-stable", () => {
+    const withBullet = document({
+      doneWhen: [
+        { kind: "executable", description: "- - the suite is green", command: "bun test" },
+      ],
+    });
+    const serialized = serializePhaseDocument(withBullet);
+    expect(serializePhaseDocument(parsePhaseDocument(serialized))).toBe(serialized);
+  });
+
+  test("a description that is nothing but bullet markers fails closed as empty", () => {
+    expect(
+      serializeWith({ doneWhen: [{ kind: "executable", description: "- - ", command: "bun test" }] }),
+    ).toThrow(PhaseDocumentValidationError);
+  });
+});
+
 describe("phase document serialize rejection", () => {
   test("empty tasks list is rejected", () => {
     expect(serializeWith({ tasks: [] })).toThrow(PhaseDocumentValidationError);

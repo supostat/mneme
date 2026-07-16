@@ -27,7 +27,11 @@ import { z } from "zod";
 //       votes [{vote, remarks}] (null for executable criteria); remarks of fail votes are replayed
 //       into the retry attempt's execute_step directive. Older gates events carry no votes key — the
 //       restore fold reads absence as "no votes recorded" (the v4 extend-never-repurpose rule).
-export const SCHEMA_VERSION = 6;
+//   7 — harvest dedup visibility: a harvest workflow_step_applied names what dedup silently dropped —
+//       dedup_rejected [{nearest_id, similarity}] (null for non-harvest applications), and
+//       harvested_n counts notes actually STAGED, no longer every submitted artifact. Telemetry
+//       payload: the log is richer than its current readers, per the deliberate exception.
+export const SCHEMA_VERSION = 7;
 
 export const DEDUP_OUTCOMES = ["add", "supersede_suggest", "noop"] as const;
 export const RESOLVE_DECISIONS = ["accept", "reject", "supersede"] as const;
@@ -265,6 +269,12 @@ const workflowStepAppliedPayload = {
     })
     .nullable(),
   harvested_n: z.number().int().nullable(),
+  // Null for non-harvest applications and OPTIONAL in the shape: pre-v7 harvest events carry no
+  // dedup_rejected key, and the restore envelope must keep parsing them (the v4 extend rule).
+  dedup_rejected: z
+    .array(z.object({ nearest_id: z.string(), similarity: z.number() }))
+    .nullable()
+    .optional(),
 };
 
 const workflowRunMarkedStalePayload = {

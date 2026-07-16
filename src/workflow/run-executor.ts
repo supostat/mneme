@@ -30,7 +30,7 @@ export async function runEngineSteps(deps: StagingDeps, active: ReadableRun): Pr
     });
     const result: StepResult = { kind: "recall", phaseId: directive.phaseId };
     active.run = applyStepResult(active.run, active.definition, result);
-    appendStepApplied(deps, active, { result, attempt: null, gates: null, harvestedCount: null });
+    appendStepApplied(deps, active, { result, attempt: null, gates: null, harvestedCount: null, dedupRejected: null });
     sections.push(`Recall bundle for phase "${directive.phaseId}":\n${formatRecallBundle(bundle)}`);
     directive = pendingDirectiveOf(active);
   }
@@ -52,7 +52,7 @@ export async function applyGatedFinalStep(
   // Mirrors the restore fold's absorbGates so the retry directive rendered in THIS response already
   // carries the fail-vote remarks, without re-folding the log.
   active.lastFailedGates = report.passed ? null : failedGatesFromReport(pending, report);
-  appendStepApplied(deps, active, { result, attempt: pending.attempt, gates: report, harvestedCount: null });
+  appendStepApplied(deps, active, { result, attempt: pending.attempt, gates: report, harvestedCount: null, dedupRejected: null });
   const verdict = report.passed ? "PASS" : "FAIL";
   return [
     `Gate verdict for ${pending.phaseId}/${pending.stepId} (attempt ${pending.attempt}): ${verdict}\n${formatGateReport(report)}`,
@@ -91,10 +91,24 @@ export async function applyHarvest(
   // Crash window between harvestPhase and the append is accepted: with live embeddings a replayed
   // harvest dedups to a noop; in degraded mode the duplicate staged note is caught by human review.
   const results = await harvestPhase(deps, artifacts);
+  const stagedCount = results.filter((outcome) => outcome.outcome === "staged").length;
+  const rejected = results.flatMap((outcome) =>
+    outcome.outcome === "noop" ? [{ nearestId: outcome.existingId, similarity: outcome.similarity }] : [],
+  );
   const result: StepResult = { kind: "harvest", phaseId: pending.phaseId };
   active.run = applyStepResult(active.run, active.definition, result);
-  appendStepApplied(deps, active, { result, attempt: null, gates: null, harvestedCount: results.length });
-  return [`Harvested ${results.length} artifact(s) for phase "${pending.phaseId}"; the phase is closed.`];
+  appendStepApplied(deps, active, {
+    result,
+    attempt: null,
+    gates: null,
+    harvestedCount: stagedCount,
+    dedupRejected: rejected,
+  });
+  const rejectionNotice =
+    rejected.length === 0 ? "" : ` ${rejected.length} artifact(s) were dropped as duplicates of existing notes;`;
+  return [
+    `Harvested ${stagedCount} artifact(s) for phase "${pending.phaseId}";${rejectionNotice} the phase is closed.`,
+  ];
 }
 
 export function appendStepApplied(deps: StagingDeps, active: ReadableRun, application: StepApplication): void {

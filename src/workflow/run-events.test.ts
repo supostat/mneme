@@ -77,7 +77,7 @@ function appendApplied(log: LogFixture, runId: string, branch: string, applicati
 }
 
 function application(result: StepResult, attempt: number | null = null): StepApplication {
-  return { result, attempt, gates: null, harvestedCount: null };
+  return { result, attempt, gates: null, harvestedCount: null, dedupRejected: null };
 }
 
 function executeSuccess(phaseId: string, stepId: string, attempt: number): StepApplication {

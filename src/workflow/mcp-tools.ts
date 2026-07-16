@@ -5,6 +5,7 @@ import { z } from "zod";
 import { AGENT_VOTE_VALUES, WORKFLOW_ON_FAIL_ACTIONS, WORKFLOW_STEP_OUTCOMES } from "../event-schema";
 import { textResult } from "../mcp-rendering";
 import { validateAnchor } from "../note";
+import { countStagedNotes } from "../staging";
 import type { StagingDeps } from "../staging";
 import type { AgentVote, Vote } from "./converge";
 import type { StepDefinition } from "./failure-policy";
@@ -277,7 +278,12 @@ export async function workflowStepTool(deps: StagingDeps, args: WorkflowStepArgs
   // renders that pending recall as a phase boundary, so the caller loops with another workflow_step to
   // begin the next phase — the call break where a human can accept staged notes into the next bundle.
   return textResult(
-    joinSections([renderRunHeader(active), ...sections, renderCurrentDirective(active), ...surveySections(survey)]),
+    joinSections([
+      renderRunHeader(active),
+      ...sections,
+      renderCurrentDirective(active, countStagedNotes(deps.corpus)),
+      ...surveySections(survey),
+    ]),
   );
 }
 
@@ -307,7 +313,7 @@ async function applyIncomingStepResult(
     outcome: submitted.outcome,
   };
   active.run = applyStepResult(active.run, active.definition, result);
-  appendStepApplied(deps, active, { result, attempt: pending.attempt, gates: null, harvestedCount: null });
+  appendStepApplied(deps, active, { result, attempt: pending.attempt, gates: null, harvestedCount: null, dedupRejected: null });
   return [`Applied ${submitted.outcome} for ${pending.phaseId}/${pending.stepId} (attempt ${pending.attempt}); gates were not run.`];
 }
 

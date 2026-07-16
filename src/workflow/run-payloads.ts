@@ -11,11 +11,17 @@ import type { RunRetrievalConfig } from "./run-events";
 
 const STALE_REASON_BRANCH_NOT_FOUND: (typeof WORKFLOW_STALE_REASONS)[number] = "branch_not_found";
 
+export interface DedupRejection {
+  nearestId: string;
+  similarity: number;
+}
+
 export interface StepApplication {
   result: StepResult;
   attempt: number | null;
   gates: GateReport | null;
   harvestedCount: number | null;
+  dedupRejected: DedupRejection[] | null;
 }
 
 export function runStartedPayload(
@@ -43,6 +49,13 @@ export function stepAppliedPayload(
     attempt: application.attempt,
     gates: application.gates === null ? null : gateReportPayload(application.gates),
     harvested_n: application.harvestedCount,
+    dedup_rejected:
+      application.dedupRejected === null
+        ? null
+        : application.dedupRejected.map((rejection) => ({
+            nearest_id: rejection.nearestId,
+            similarity: rejection.similarity,
+          })),
   };
 }
 

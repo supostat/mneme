@@ -9,6 +9,7 @@ import type { EmbeddingsClient } from "../embeddings";
 import { EventWriter, readEvents } from "../events";
 import type { StoredEvent } from "../events";
 import { initRepo, runGit } from "../git";
+import { rebuild } from "../index-db";
 import { MAX_BODY_CODE_POINTS, parseNote, serializeNote } from "../note";
 import type { Note, NoteFrontmatter, NoteType } from "../note";
 import { StagingError } from "../staging";
@@ -561,6 +562,66 @@ describe("harvestPhase green path", () => {
     expect(staged.body).toBe(prefix + astral.repeat(keptAstrals));
     // Each astral character is two UTF-16 units: a UTF-16-based clamp would have kept half as many.
     expect(staged.body.length).toBe(prefix.length + keptAstrals * 2);
+  });
+});
+
+describe("harvestPhase dedup rejection", () => {
+  test("a duplicate artifact returns a noop naming the existing note and its similarity", async () => {
+    const { projectRoot, commit } = await buildProjectRepo();
+    const deps = await makeDeps(projectRoot, bagClient());
+    writeNote(
+      deps,
+      ulid(300),
+      "decision",
+      "Decision: use sqlite for the index\nRationale: single-file disposable cache",
+      ["src/a.ts"],
+      commit,
+    );
+    await rebuild({
+      indexPath: deps.corpus.indexPath,
+      notesDir: deps.corpus.notesDir,
+      projectRoot,
+      embeddings: deps.embeddings,
+      eventWriter: deps.eventWriter,
+      clock: fixedClock,
+    });
+
+    const results = await harvestPhase(deps, [
+      {
+        kind: "decision",
+        decision: "use sqlite for the index",
+        rationale: "single-file disposable cache",
+        anchors: ["src/a.ts"],
+      },
+      {
+        kind: "decision",
+        decision: "keep flat files as the corpus truth",
+        rationale: "the index is a disposable cache",
+        anchors: ["src/a.ts"],
+      },
+    ]);
+
+    expect(results.map((result) => result.outcome)).toEqual(["noop", "staged"]);
+    const rejection = results[0]!;
+    if (rejection.outcome !== "noop") throw new Error("expected the duplicate to be a noop");
+    expect(rejection.existingId).toBe(ulid(300));
+    expect(rejection.similarity).toBeGreaterThan(0.9);
+    expect(stagedNoteFiles(deps).length).toBe(1);
+  });
+});
+
+describe("harvestPhase on a repository without commits", () => {
+  test("fails with an actionable first-commit error and stages nothing", async () => {
+    const projectRoot = mkdtempSync(join(tmpdir(), "mneme-memory-steps-headless-"));
+    await initRepo(projectRoot);
+    const deps = await makeDeps(projectRoot, offlineClient());
+
+    await expect(
+      harvestPhase(deps, [
+        { kind: "decision", decision: "anything", rationale: "anything", anchors: ["src/a.ts"] },
+      ]),
+    ).rejects.toThrow("make the first commit");
+    expect(stagedNoteFiles(deps).length).toBe(0);
   });
 });
 

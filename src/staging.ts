@@ -88,7 +88,10 @@ export async function remember(deps: StagingDeps, input: RememberInput): Promise
 async function resolveHead(projectRoot: string): Promise<string> {
   const result = await runGit(projectRoot, ["rev-parse", "HEAD"]);
   if (result.exitCode !== 0) {
-    throw new StagingError(`project has no resolvable HEAD: ${result.stderr.trim()}`);
+    throw new StagingError(
+      "project has no resolvable HEAD - a repository without commits cannot anchor notes; " +
+        `make the first commit, then retry: ${result.stderr.trim()}`,
+    );
   }
   return result.stdout.trim();
 }
@@ -126,6 +129,12 @@ function stageNote(deps: StagingDeps, noteId: string, commit: string, input: Rem
     similarity: sidecar.similarity,
     degraded: sidecar.degraded,
   };
+}
+
+// The cheap read the workflow boundary needs: how many notes await review, with no liveness
+// resolution, no sidecar reads and no staging_listed event — listing stays the reviewed act.
+export function countStagedNotes(corpus: Corpus): number {
+  return readdirSync(corpus.stagingDir).filter((name) => name.endsWith(NOTE_EXTENSION)).length;
 }
 
 export async function stagingList(deps: StagingDeps): Promise<StagingEntry[]> {

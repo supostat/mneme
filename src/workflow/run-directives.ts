@@ -64,7 +64,7 @@ export function renderReissueNotice(pendingDescription: string): string {
   ].join("\n");
 }
 
-export function renderCurrentDirective(active: ReadableRun): string {
+export function renderCurrentDirective(active: ReadableRun, stagedNoteCount: number): string {
   const directive = pendingDirectiveOf(active);
   if (directive.kind === "execute_step") {
     return renderExecuteStepDirective(active, directive);
@@ -73,7 +73,7 @@ export function renderCurrentDirective(active: ReadableRun): string {
     return renderHarvestDirective(active.runId, directive.phaseId);
   }
   if (directive.kind === "recall") {
-    return renderPhaseBoundary(active.runId, directive.phaseId);
+    return renderPhaseBoundary(active.runId, directive.phaseId, stagedNoteCount);
   }
   return renderTerminal(directive);
 }
@@ -83,9 +83,12 @@ export function renderCurrentDirective(active: ReadableRun): string {
 // so a note accepted between the two calls reaches the bundle. The engine runs the recall itself; the
 // caller only loops with another workflow_step. Terminals (RUN COMPLETE/FAILED/ESCALATED) are never a
 // boundary — the last phase's closure renders its terminal in the same call.
-function renderPhaseBoundary(runId: string, nextPhaseId: string): string {
+// The staged-note count is the boundary's decision datum: the caller chooses between pausing for a
+// human review and flying on, without spending a staging_list call to find out whether one is due.
+function renderPhaseBoundary(runId: string, nextPhaseId: string, stagedNoteCount: number): string {
   return [
     `PHASE BOUNDARY: the previous phase is closed and phase "${nextPhaseId}" is next and ready.`,
+    `Staging queue: ${stagedNoteCount} note(s) awaiting human review.`,
     "Its recall bundle compiles when the phase begins, so a note accepted before then is included.",
     `Call workflow_step { run_id: "${runId}" } to begin it.`,
   ].join("\n");

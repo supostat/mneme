@@ -218,11 +218,11 @@ function validateCriterion(criterion: DoneWhenCriterion): DoneWhenCriterion {
   if (criterion.kind === "agent-judged") {
     return {
       kind: "agent-judged",
-      description: validateSingleLine(criterion.description, "criterion description"),
+      description: normalizedCriterionDescription(criterion.description),
     };
   }
   if (criterion.kind === "executable") {
-    const description = validateSingleLine(criterion.description, "criterion description");
+    const description = normalizedCriterionDescription(criterion.description);
     const command = validateSingleLine(criterion.command, "done-when command");
     if (command.startsWith(COMMAND_FENCE)) {
       throw new PhaseDocumentValidationError(
@@ -234,6 +234,18 @@ function validateCriterion(criterion: DoneWhenCriterion): DoneWhenCriterion {
   throw new PhaseDocumentValidationError(
     `done-when criterion has an unknown kind: ${String((criterion as { kind?: unknown }).kind)}`,
   );
+}
+
+// The serializer prefixes every criterion with its own "- " bullet, so a description that ARRIVES
+// carrying one (a bulleted prose line in a source spec) would render as "- - ". The leading marker
+// is grammar leakage, not content: it is stripped until gone, at this single validation point both
+// serialize and parse funnel through, so old doubled files parse clean and new files never double.
+function normalizedCriterionDescription(description: string): string {
+  let stripped = description;
+  while (stripped.startsWith(BULLET_PREFIX)) {
+    stripped = stripped.slice(BULLET_PREFIX.length);
+  }
+  return validateSingleLine(stripped, "criterion description");
 }
 
 function validateSingleLine(value: string, label: string): string {

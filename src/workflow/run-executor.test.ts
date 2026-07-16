@@ -56,6 +56,14 @@ async function buildProjectRepo(): Promise<{ projectRoot: string; commit: string
   return { projectRoot, commit };
 }
 
+const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+// remember() validates every minted id against the note-id grammar, so the factory must produce
+// real ULIDs for any test that stages an artifact.
+function ulid(n: number): string {
+  return "01ARZ3NDEKTSV4RRFFQ69G5F" + CROCKFORD[Math.floor(n / 32) % 32]! + CROCKFORD[n % 32]!;
+}
+
 async function makeDeps(projectRoot: string): Promise<StagingDeps> {
   const corpusHome = mkdtempSync(join(tmpdir(), "mneme-executor-home-"));
   const corpus = await resolveCorpus(projectRoot, { corpusHome, clock: fixedClock });
@@ -65,7 +73,7 @@ async function makeDeps(projectRoot: string): Promise<StagingDeps> {
     clock: fixedClock,
   });
   let counter = 0;
-  return { corpus, projectRoot, clock: fixedClock, idFactory: () => `id-${counter++}`, embeddings: bagClient(), eventWriter };
+  return { corpus, projectRoot, clock: fixedClock, idFactory: () => ulid(counter++), embeddings: bagClient(), eventWriter };
 }
 
 const GREEN = [{ kind: "executable" as const, description: "green", command: "true" }];
@@ -190,6 +198,76 @@ describe("applyHarvest defers the next phase's recall (lazy)", () => {
     const bundle = sections.find((section) => section.includes('Recall bundle for phase "phase-two"'));
     expect(bundle).toBeDefined();
     expect(bundle).toContain(noteBody);
+  });
+});
+
+describe("applyHarvest dedup visibility", () => {
+  test("a duplicate artifact is counted out of harvested_n and named in dedup_rejected", async () => {
+    const { projectRoot, commit } = await buildProjectRepo();
+    const deps = await makeDeps(projectRoot);
+    const active = activeRunFrom(twoPhaseDefinition());
+    writeAcceptedNote(
+      deps,
+      ulid(200),
+      "Decision: use sqlite for the index\nRationale: single-file disposable cache",
+      commit,
+    );
+    await rebuild({
+      indexPath: deps.corpus.indexPath,
+      notesDir: deps.corpus.notesDir,
+      projectRoot,
+      embeddings: deps.embeddings,
+      eventWriter: deps.eventWriter,
+      clock: fixedClock,
+    });
+    await runEngineSteps(deps, active);
+    const executeStep = pendingDirectiveOf(active);
+    if (executeStep.kind !== "execute_step") throw new Error(`expected execute_step, got ${executeStep.kind}`);
+    await applyGatedFinalStep(deps, active, executeStep as ExecuteStepDirective, []);
+    const harvest = pendingDirectiveOf(active);
+    if (harvest.kind !== "harvest") throw new Error(`expected harvest, got ${harvest.kind}`);
+
+    const sections = await applyHarvest(deps, active, harvest as HarvestDirective, [
+      {
+        kind: "decision",
+        decision: "use sqlite for the index",
+        rationale: "single-file disposable cache",
+        anchors: ["src/a.ts"],
+      },
+      {
+        kind: "decision",
+        decision: "keep flat files as the corpus truth",
+        rationale: "the index is a disposable cache",
+        anchors: ["src/a.ts"],
+      },
+    ]);
+
+    expect(sections[0]).toContain('Harvested 1 artifact(s) for phase "phase-one"');
+    expect(sections[0]).toContain("1 artifact(s) were dropped as duplicates");
+    const harvestEvents = readEvents(deps.corpus.eventsDir).filter(
+      (event: StoredEvent) => event.type === "workflow_step_applied" && event.result_kind === "harvest",
+    );
+    expect(harvestEvents.length).toBe(1);
+    expect(harvestEvents[0]!.harvested_n).toBe(1);
+    const rejected = harvestEvents[0]!.dedup_rejected as Array<{ nearest_id: string; similarity: number }>;
+    expect(rejected.length).toBe(1);
+    expect(rejected[0]!.nearest_id).toBe(ulid(200));
+    expect(rejected[0]!.similarity).toBeGreaterThan(0.9);
+  });
+
+  test("a harvest with no duplicates records an empty rejection list, not silence", async () => {
+    const { projectRoot } = await buildProjectRepo();
+    const deps = await makeDeps(projectRoot);
+    const active = activeRunFrom(twoPhaseDefinition());
+
+    await closePhaseOne(deps, active);
+
+    const harvestEvents = readEvents(deps.corpus.eventsDir).filter(
+      (event: StoredEvent) => event.type === "workflow_step_applied" && event.result_kind === "harvest",
+    );
+    expect(harvestEvents.length).toBe(1);
+    expect(harvestEvents[0]!.dedup_rejected).toEqual([]);
+    expect(harvestEvents[0]!.harvested_n).toBe(0);
   });
 });
 
