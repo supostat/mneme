@@ -1,5 +1,5 @@
 import { evaluateConverge } from "./converge";
-import type { Vote } from "./converge";
+import type { AgentVote } from "./converge";
 import type { DoneWhenCriterion, ExecutableCriterion } from "./phase-document";
 import type { ExecuteStepResult } from "./reducer";
 
@@ -43,7 +43,7 @@ export interface AgentJudgedCriterionResult {
   kind: "agent-judged";
   description: string;
   passed: boolean;
-  votes: Vote[];
+  votes: AgentVote[];
 }
 
 export type CriterionResult = ExecutableCriterionResult | AgentJudgedCriterionResult;
@@ -57,7 +57,7 @@ export interface GateReport {
 
 export interface GateRunOptions {
   projectRoot: string;
-  agentVotes: Vote[][];
+  agentVotes: AgentVote[][];
   commandTimeoutMs?: number;
 }
 
@@ -142,16 +142,16 @@ function buildGateReport(criterionResults: CriterionResult[]): GateReport {
   };
 }
 
-function evaluateAgentJudged(description: string, votes: Vote[]): AgentJudgedCriterionResult {
+function evaluateAgentJudged(description: string, votes: AgentVote[]): AgentJudgedCriterionResult {
   return {
     kind: "agent-judged",
     description,
-    passed: evaluateConverge(votes, votes.length),
+    passed: evaluateConverge(votes.map((agentVote) => agentVote.vote), votes.length),
     votes,
   };
 }
 
-function voteArrayAt(agentVotes: Vote[][], index: number): Vote[] {
+function voteArrayAt(agentVotes: AgentVote[][], index: number): AgentVote[] {
   const votes = agentVotes[index];
   if (votes === undefined) {
     throw new Error(`missing agent vote array at index ${index}: gate vote-count invariant violated`);

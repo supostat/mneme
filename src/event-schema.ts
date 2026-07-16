@@ -23,7 +23,11 @@ import { z } from "zod";
 //       step) vs tool-call (a manual recall through MCP). Older recall events carry no origin; a
 //       reader treats its absence as "unknown" (the same backfill discipline as the v0 pre-stamp
 //       envelope), never a hard failure.
-export const SCHEMA_VERSION = 5;
+//   6 — gate votes: each agent-judged criterion in workflow_step_applied gates.criteria[] carries its
+//       votes [{vote, remarks}] (null for executable criteria); remarks of fail votes are replayed
+//       into the retry attempt's execute_step directive. Older gates events carry no votes key — the
+//       restore fold reads absence as "no votes recorded" (the v4 extend-never-repurpose rule).
+export const SCHEMA_VERSION = 6;
 
 export const DEDUP_OUTCOMES = ["add", "supersede_suggest", "noop"] as const;
 export const RESOLVE_DECISIONS = ["accept", "reject", "supersede"] as const;
@@ -41,6 +45,9 @@ export type RecallOrigin = (typeof RECALL_ORIGINS)[number];
 // value rather than dropping or failing on the event.
 export const RECALL_ORIGIN_UNKNOWN = "unknown";
 
+// Mirrors converge's Vote union; the bidirectional pin lives in event-schema.test.ts so this
+// registry never imports from src/workflow.
+export const AGENT_VOTE_VALUES = ["pass", "fail"] as const;
 export const WORKFLOW_RESULT_KINDS = ["recall", "execute_step", "harvest"] as const;
 export const WORKFLOW_STEP_OUTCOMES = ["success", "failure"] as const;
 export const WORKFLOW_ON_FAIL_ACTIONS = ["rewind", "skip", "escalate"] as const;
@@ -218,11 +225,19 @@ const runDefinitionPayload = z.object({
   recall_anchors: z.record(z.string(), z.array(z.string())),
 });
 
+const gateVotePayload = z.object({
+  vote: z.enum(AGENT_VOTE_VALUES),
+  remarks: z.string().nullable(),
+});
+
+// votes is null for executable criteria and OPTIONAL in the shape: pre-v6 gates events carry no
+// votes key at all, and the restore envelope must keep parsing them (the v4 extend rule).
 const gateCriterionPayload = z.object({
   kind: z.enum(DONE_WHEN_KINDS),
   description: z.string(),
   passed: z.boolean(),
   reason: z.enum(EXECUTABLE_GATE_REASONS).nullable(),
+  votes: z.array(gateVotePayload).nullable().optional(),
 });
 
 const workflowRunStartedPayload = {

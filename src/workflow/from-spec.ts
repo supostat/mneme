@@ -8,20 +8,21 @@ import {
 } from "./phase-generation";
 import type { PhaseHeading } from "./phase-generation";
 import { BULLET_PREFIX, COMMAND_FENCE, isFenceOpening } from "./phase-document";
-import type { ExecutableCriterion, PhaseDocument } from "./phase-document";
+import type { DoneWhenCriterion, ExecutableCriterion, PhaseDocument } from "./phase-document";
 
 const GAMEPLAN_HEADING = "# Gameplan";
 const KNOWLEDGE_HEADING = "# Knowledge";
 const LEVEL_ONE_HEADING_PREFIX = "# ";
 const DONE_WHEN_PREFIX = "**Done when:**";
 const EXECUTABLE_DONE_WHEN_MARKER = "**Done when (EXECUTABLE):**";
+const AGENT_JUDGED_DONE_WHEN_MARKER = "**Done when (AGENT-JUDGED):**";
 const TASK_BULLET_REGEX = /^- \[[ xX]\]\s+(.+)$/;
 
 interface SpecPhase {
   heading: PhaseHeading;
   tasks: string[];
   acceptanceProse: string;
-  criteria: ExecutableCriterion[];
+  criteria: DoneWhenCriterion[];
 }
 
 export function phaseDocumentsFromSpec(specText: string): PhaseDocument[] {
@@ -113,6 +114,10 @@ function consumePhaseDetail(specPhase: SpecPhase, lines: string[], index: number
   if (line === EXECUTABLE_DONE_WHEN_MARKER) {
     return parseCriteriaBlock(lines, index + 1, specPhase.criteria);
   }
+  if (line.startsWith(AGENT_JUDGED_DONE_WHEN_MARKER)) {
+    specPhase.criteria.push(parseAgentJudgedCriterion(line));
+    return index + 1;
+  }
   if (isFenceOpening(line)) {
     throw new PhaseGenerationError(
       "a fenced done-when command must sit directly inside an executable done-when block, with no blank line separating adjacent criteria",
@@ -124,10 +129,22 @@ function consumePhaseDetail(specPhase: SpecPhase, lines: string[], index: number
   return index + 1;
 }
 
+// An agent-judged criterion is a single marker line whose prose IS the criterion: there is no
+// command to fence, so the fence-first block grammar of executable criteria does not apply.
+function parseAgentJudgedCriterion(line: string): DoneWhenCriterion {
+  const prose = line.slice(AGENT_JUDGED_DONE_WHEN_MARKER.length).trim();
+  if (prose === "") {
+    throw new PhaseGenerationError(
+      "an agent-judged done-when must carry its prose on the marker line",
+    );
+  }
+  return { kind: "agent-judged", description: prose };
+}
+
 function parseCriteriaBlock(
   lines: string[],
   startIndex: number,
-  criteria: ExecutableCriterion[],
+  criteria: DoneWhenCriterion[],
 ): number {
   const countBeforeBlock = criteria.length;
   let index = startIndex;
@@ -145,7 +162,7 @@ function parseCriteriaBlock(
 function parseFenceFirstCriterion(
   lines: string[],
   fenceIndex: number,
-  criteria: ExecutableCriterion[],
+  criteria: DoneWhenCriterion[],
 ): number {
   const fencedCommand = readFencedSpecCommand(lines, fenceIndex);
   const trailingProse = readTrailingProse(lines, fencedCommand.nextIndex);
@@ -198,8 +215,16 @@ function readTrailingProse(lines: string[], startIndex: number): TrailingProse {
   return { description: proseLines.join(" "), nextIndex: index };
 }
 
+// A trailing-prose line ends at the next structural element. The agent-judged marker is one of them:
+// without this stop the marker line would be swallowed as executable prose (the exact gluing bug
+// this marker exists to fix), never reaching consumePhaseDetail.
 function isProseContinuation(line: string): boolean {
-  return line.trim() !== "" && parsePhaseHeading(line) === null && !isFenceOpening(line);
+  return (
+    line.trim() !== "" &&
+    parsePhaseHeading(line) === null &&
+    !isFenceOpening(line) &&
+    !line.startsWith(AGENT_JUDGED_DONE_WHEN_MARKER)
+  );
 }
 
 function documentFromSpecPhase(
@@ -212,7 +237,9 @@ function documentFromSpecPhase(
   }
   requireExecutableCriterion(specPhase);
   for (const criterion of specPhase.criteria) {
-    requireSpawnableCommand(specPhase.heading.id, criterion);
+    if (criterion.kind === "executable") {
+      requireSpawnableCommand(specPhase.heading.id, criterion);
+    }
   }
   return {
     id: specPhase.heading.id,
@@ -225,8 +252,10 @@ function documentFromSpecPhase(
   };
 }
 
+// Policy A holds with agent-judged criteria in the mix: every phase still needs at least one
+// EXECUTABLE criterion — verdicts complement the green suite, they never replace it.
 function requireExecutableCriterion(specPhase: SpecPhase): void {
-  if (specPhase.criteria.length === 0) {
+  if (!specPhase.criteria.some((criterion) => criterion.kind === "executable")) {
     throw new PhaseGenerationError(
       `phase "${specPhase.heading.id}" has no executable done-when criterion`,
     );

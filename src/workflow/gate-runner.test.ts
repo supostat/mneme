@@ -183,7 +183,7 @@ describe("runPhaseGates agent-judged criteria", () => {
   test("a unanimous vote passes and is counted as agent-judged", async () => {
     const report = await runPhaseGates(
       [agentJudged("reviewer approves")],
-      optionsFor(sharedProjectRoot, [["pass"]]),
+      optionsFor(sharedProjectRoot, [[{ vote: "pass" }]]),
     );
     expect(report.passed).toBe(true);
     expect(report.executableCount).toBe(0);
@@ -192,14 +192,14 @@ describe("runPhaseGates agent-judged criteria", () => {
       kind: "agent-judged",
       description: "reviewer approves",
       passed: true,
-      votes: ["pass"],
+      votes: [{ vote: "pass" }],
     });
   });
 
   test("a non-unanimous K=N vote fails closed", async () => {
     const report = await runPhaseGates(
       [agentJudged("reviewer approves")],
-      optionsFor(sharedProjectRoot, [["pass", "fail"]]),
+      optionsFor(sharedProjectRoot, [[{ vote: "pass" }, { vote: "fail" }]]),
     );
     expect(report.passed).toBe(false);
   });
@@ -211,13 +211,27 @@ describe("runPhaseGates agent-judged criteria", () => {
     );
     expect(report.passed).toBe(false);
   });
+
+  test("a fail vote's remarks survive into the criterion result verbatim", async () => {
+    const report = await runPhaseGates(
+      [agentJudged("reviewer approves")],
+      optionsFor(sharedProjectRoot, [[{ vote: "fail", remarks: "the parser drops the last line" }]]),
+    );
+    expect(report.passed).toBe(false);
+    expect(report.criterionResults[0]).toEqual({
+      kind: "agent-judged",
+      description: "reviewer approves",
+      passed: false,
+      votes: [{ vote: "fail", remarks: "the parser drops the last line" }],
+    });
+  });
 });
 
 describe("runPhaseGates mixed documents", () => {
   test("counts both kinds and passes only when every criterion passes", async () => {
     const report = await runPhaseGates(
       [executable("command succeeds", "bun exit-zero.ts"), agentJudged("reviewer approves")],
-      optionsFor(sharedProjectRoot, [["pass"]]),
+      optionsFor(sharedProjectRoot, [[{ vote: "pass" }]]),
     );
     expect(report.passed).toBe(true);
     expect(report.executableCount).toBe(1);
@@ -241,7 +255,7 @@ describe("runPhaseGates caller-contract validation", () => {
     expect(
       runPhaseGates(
         [executable("command succeeds", "bun exit-zero.ts")],
-        optionsFor(sharedProjectRoot, [["pass"]]),
+        optionsFor(sharedProjectRoot, [[{ vote: "pass" }]]),
       ),
     ).rejects.toBeInstanceOf(GateInputError);
   });
@@ -282,7 +296,7 @@ describe("formatGateReport", () => {
   test("renders per-criterion markers and a total-criteria counter line", async () => {
     const report = await runPhaseGates(
       [executable("command succeeds", "bun exit-zero.ts"), agentJudged("reviewer approves")],
-      optionsFor(sharedProjectRoot, [["fail"]]),
+      optionsFor(sharedProjectRoot, [[{ vote: "fail" }]]),
     );
     const formatted = formatGateReport(report);
     expect(formatted).toContain("PASS command succeeds [exit-zero]");
@@ -302,8 +316,8 @@ describe("formatGateReport", () => {
           reason: "exit-zero",
           exitCode: 0,
         },
-        { kind: "agent-judged", description: "b", passed: false, votes: ["fail"] },
-        { kind: "agent-judged", description: "c", passed: true, votes: ["pass"] },
+        { kind: "agent-judged", description: "b", passed: false, votes: [{ vote: "fail" }] },
+        { kind: "agent-judged", description: "c", passed: true, votes: [{ vote: "pass" }] },
       ],
       executableCount: 1,
       agentJudgedCount: 2,

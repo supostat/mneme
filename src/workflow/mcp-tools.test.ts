@@ -233,9 +233,15 @@ describe("workflow full run", () => {
       executable_n: 2,
       agent_judged_n: 1,
       criteria: [
-        { kind: "executable", description: "always green", passed: true, reason: "exit-zero" },
-        { kind: "executable", description: "also green", passed: true, reason: "exit-zero" },
-        { kind: "agent-judged", description: "review approves", passed: true, reason: null },
+        { kind: "executable", description: "always green", passed: true, reason: "exit-zero", votes: null },
+        { kind: "executable", description: "also green", passed: true, reason: "exit-zero", votes: null },
+        {
+          kind: "agent-judged",
+          description: "review approves",
+          passed: true,
+          reason: null,
+          votes: [{ vote: "pass", remarks: null }],
+        },
       ],
     });
     for (const event of events) {
@@ -575,6 +581,55 @@ describe("workflow gates", () => {
 
     expect(failed).toContain("Gate verdict for phase-one/implement (attempt 1): FAIL");
     expect(failed).toContain("attempt: 2");
+  });
+
+  test("fail-vote remarks reach the retry directive, survive a reconnect, and land in the log", async () => {
+    const bench = await makeWorkbench();
+    const gates: DoneWhenCriterion[] = [...GREEN_GATE, ...JUDGED_GATE];
+    const runId = await startRun(
+      bench.client,
+      startArgs([phaseText("phase-one", { doneWhen: gates })], RETRYING_STEP),
+    );
+    await callText(bench.client, "workflow_step", {});
+
+    const failed = await callText(bench.client, "workflow_step", {
+      run_id: runId,
+      step_result: stepResult("phase-one", "implement", 1, "success"),
+      agent_votes: [[{ vote: "fail", remarks: "the parser drops the last line" }]],
+    });
+
+    expect(failed).toContain("Gate verdict for phase-one/implement (attempt 1): FAIL");
+    expect(failed).toContain("attempt: 2");
+    expect(failed).toContain("review remarks from failed attempt 1:");
+    expect(failed).toContain("- [review approves] the parser drops the last line");
+
+    // The remarks are restored from the event log, not process memory: a fresh session's sync
+    // re-issues the retry directive still carrying them.
+    const reconnected = await reconnect(bench);
+    const resumed = await callText(reconnected, "workflow_step", {});
+    expect(resumed).toContain("attempt: 2");
+    expect(resumed).toContain("- [review approves] the parser drops the last line");
+
+    const events = await loggedEvents(bench);
+    const gated = eventsOfType(events, "workflow_step_applied").find((event) => event.gates !== null);
+    expect(gated?.gates).toMatchObject({
+      passed: false,
+      executable_n: 1,
+      agent_judged_n: 1,
+      criteria: [
+        { kind: "executable", votes: null },
+        { kind: "agent-judged", votes: [{ vote: "fail", remarks: "the parser drops the last line" }] },
+      ],
+    });
+
+    // A bare enum vote stays valid on the retry; the PASS verdict opens harvest with no remarks left.
+    const passed = await callText(bench.client, "workflow_step", {
+      run_id: runId,
+      step_result: stepResult("phase-one", "implement", 2, "success"),
+      agent_votes: [["pass"]],
+    });
+    expect(passed).toContain("Gate verdict for phase-one/implement (attempt 2): PASS");
+    expect(passed).toContain("DIRECTIVE: harvest");
   });
 
   test("an empty harvest_artifacts array still closes the phase", async () => {

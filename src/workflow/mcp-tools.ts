@@ -6,7 +6,7 @@ import { WORKFLOW_ON_FAIL_ACTIONS, WORKFLOW_STEP_OUTCOMES } from "../event-schem
 import { textResult } from "../mcp-rendering";
 import { validateAnchor } from "../note";
 import type { StagingDeps } from "../staging";
-import type { Vote } from "./converge";
+import type { AgentVote, Vote } from "./converge";
 import type { StepDefinition } from "./failure-policy";
 import { phaseDocumentsFromSpec } from "./from-spec";
 import type { PhaseArtifact } from "./memory-steps";
@@ -60,7 +60,8 @@ export const WORKFLOW_STEP_DESCRIPTION =
   "Calling with no arguments is ALWAYS a safe sync that re-issues the pending directive. A " +
   "step_result submission must ECHO the pending directive's phase_id, step_id and attempt; a " +
   "mismatched echo changes nothing and re-issues the directive. Done-when gates run only when the " +
-  "phase's FINAL step succeeds - send agent_votes (one pass|fail array per agent-judged criterion) " +
+  "phase's FINAL step succeeds - send agent_votes (one array per agent-judged criterion; a vote is " +
+  '"pass"|"fail" or { vote, remarks }, and remarks of fail votes are replayed into the retry directive) ' +
   "with that submission; a failure never runs gates. When a harvest directive is pending, submit " +
   "harvest_artifacts (an empty array is allowed) to close the phase.";
 export const WORKFLOW_MIGRATE_DESCRIPTION =
@@ -93,6 +94,14 @@ export const WORKFLOW_MIGRATE_INPUT = {
   apply: z.boolean().optional(),
 };
 
+// The tool boundary accepts BOTH vote shapes: the bare "pass"|"fail" enum (every pre-remarks caller
+// stays valid) and the enriched { vote, remarks? } object. Normalization to the canonical AgentVote
+// happens once, here, so the engine below this boundary knows exactly one shape.
+const submittedAgentVote = z.union([
+  z.enum(VOTE_VALUES),
+  z.object({ vote: z.enum(VOTE_VALUES), remarks: z.string().optional() }),
+]);
+
 const harvestArtifact = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("fixed_test"), test: z.string(), failure: z.string(), fix: z.string(), anchors: z.array(z.string()) }),
   z.object({ kind: z.literal("resolved_error"), error: z.string(), resolution: z.string(), anchors: z.array(z.string()) }),
@@ -109,7 +118,7 @@ export const WORKFLOW_STEP_INPUT = {
       outcome: z.enum(WORKFLOW_STEP_OUTCOMES),
     })
     .optional(),
-  agent_votes: z.array(z.array(z.enum(VOTE_VALUES)).min(1)).optional(),
+  agent_votes: z.array(z.array(submittedAgentVote).min(1)).optional(),
   harvest_artifacts: z.array(harvestArtifact).optional(),
 };
 
@@ -132,10 +141,12 @@ export interface SubmittedStepResult {
   outcome: (typeof WORKFLOW_STEP_OUTCOMES)[number];
 }
 
+export type SubmittedAgentVote = Vote | { vote: Vote; remarks?: string };
+
 export interface WorkflowStepArgs {
   run_id?: string;
   step_result?: SubmittedStepResult;
-  agent_votes?: Vote[][];
+  agent_votes?: SubmittedAgentVote[][];
   harvest_artifacts?: PhaseArtifact[];
 }
 
@@ -278,14 +289,14 @@ async function applyIncomingStepResult(
   deps: StagingDeps,
   active: ReadableRun,
   submitted: SubmittedStepResult,
-  agentVotes: Vote[][] | undefined,
+  agentVotes: SubmittedAgentVote[][] | undefined,
 ): Promise<string[]> {
   const pending = pendingDirectiveOf(active);
   if (pending.kind !== "execute_step" || !echoMatches(pending, submitted)) {
     return [renderReissueNotice(describePending(pending))];
   }
   if (submitted.outcome === "success" && isFinalStep(active.definition, active.run)) {
-    return applyGatedFinalStep(deps, active, pending, agentVotes ?? []);
+    return applyGatedFinalStep(deps, active, pending, normalizeAgentVotes(agentVotes ?? []));
   }
   if (agentVotes !== undefined) {
     throw new WorkflowToolError("agent_votes are only accepted with a success submission of the phase's final step");
@@ -299,6 +310,12 @@ async function applyIncomingStepResult(
   active.run = applyStepResult(active.run, active.definition, result);
   appendStepApplied(deps, active, { result, attempt: pending.attempt, gates: null, harvestedCount: null });
   return [`Applied ${submitted.outcome} for ${pending.phaseId}/${pending.stepId} (attempt ${pending.attempt}); gates were not run.`];
+}
+
+function normalizeAgentVotes(votes: SubmittedAgentVote[][]): AgentVote[][] {
+  return votes.map((voteArray) =>
+    voteArray.map((submitted) => (typeof submitted === "string" ? { vote: submitted } : submitted)),
+  );
 }
 
 // Harvest idempotency mirrors the step-result echo gate: a harvest submission arriving while no

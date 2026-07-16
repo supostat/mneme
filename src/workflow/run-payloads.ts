@@ -96,6 +96,10 @@ function gateReportPayload(report: GateReport): Record<string, unknown> {
       description: result.description,
       passed: result.passed,
       reason: result.kind === "executable" ? result.reason : null,
+      votes:
+        result.kind === "agent-judged"
+          ? result.votes.map((agentVote) => ({ vote: agentVote.vote, remarks: agentVote.remarks ?? null }))
+          : null,
     })),
   };
 }

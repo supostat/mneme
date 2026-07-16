@@ -24,6 +24,21 @@ export interface RunRetrievalConfig {
   recallAnchors: Record<string, string[]>;
 }
 
+// The fail-vote remarks of the LAST failed gate run, kept so the retry attempt's directive can
+// replay WHAT the reviewers found wrong. One record suffices: the reducer re-issues the failed
+// step, and a passed gate clears it. Restored from the event log and updated live by the executor.
+export interface FailedGateRemarks {
+  criterionDescription: string;
+  remarks: string[];
+}
+
+export interface FailedGatesRecord {
+  phaseId: string;
+  stepId: string;
+  attempt: number | null;
+  failRemarks: FailedGateRemarks[];
+}
+
 export interface ReadableRun {
   kind: "restored";
   runId: string;
@@ -32,6 +47,7 @@ export interface ReadableRun {
   retrieval: RunRetrievalConfig;
   run: WorkflowRun;
   startedTs: string;
+  lastFailedGates: FailedGatesRecord | null;
 }
 
 export interface UnreadableRun {
@@ -129,6 +145,7 @@ function restoredRunFrom(runId: string, payload: RunStartedPayload): ReadableRun
     },
     run: initialRun(definition),
     startedTs: payload.ts,
+    lastFailedGates: null,
   };
 }
 
@@ -157,9 +174,36 @@ function absorbStepApplied(runsById: Map<string, RestoredRun>, event: StoredEven
   }
   try {
     known.run = applyStepResult(known.run, known.definition, stepResultFromPayload(parsed.data));
+    absorbGates(known, parsed.data);
   } catch (error) {
     setUnreadable(runsById, runId, known.branch, problemMessage(error));
   }
+}
+
+// A gated application overwrites the record wholesale: a pass clears it, a fail replaces it with the
+// fresh fail-vote remarks. Ungated applications (recall, harvest, non-final steps) leave it alone —
+// the reducer re-issues the failed step next, so the record is still the one the retry needs.
+function absorbGates(known: ReadableRun, payload: StepAppliedPayload): void {
+  if (payload.gates === null) return;
+  if (payload.gates.passed) {
+    known.lastFailedGates = null;
+    return;
+  }
+  if (payload.step_id === null) return;
+  known.lastFailedGates = {
+    phaseId: payload.phase_id,
+    stepId: payload.step_id,
+    attempt: payload.attempt,
+    failRemarks: payload.gates.criteria
+      .filter((criterion) => criterion.kind === "agent-judged" && !criterion.passed)
+      .map((criterion) => ({
+        criterionDescription: criterion.description,
+        remarks: (criterion.votes ?? []).flatMap((vote) =>
+          vote.vote === "fail" && vote.remarks !== null && vote.remarks !== "" ? [vote.remarks] : [],
+        ),
+      }))
+      .filter((entry) => entry.remarks.length > 0),
+  };
 }
 
 function payloadToDefinition(payload: RunStartedPayload["definition"]): RunDefinition {

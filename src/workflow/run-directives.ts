@@ -103,6 +103,7 @@ function renderExecuteStepDirective(active: ReadableRun, directive: ExecuteStepD
     lines.push("intent:", directive.description);
   }
   lines.push("tasks:", ...directive.tasks.map((task) => `- ${task}`));
+  lines.push(...failedReviewSection(active, directive));
   if (isFinalStep(active.definition, active.run)) {
     lines.push(...finalStepSection(phaseOf(active.definition, directive.phaseId)));
   }
@@ -234,6 +235,33 @@ export function describePending(directive: Directive): string {
   return `the run is terminal: ${directive.kind}`;
 }
 
+// Replays the fail-vote remarks of the matching failed gate run into the directive that retries it
+// (the immediate re-attempt, or the return to the same step after a rewind), so the rework is done
+// against WHAT the reviewers found wrong. Remarks are agent-authored free text read back from the
+// event log, so they are stripped like every other unvalidated log field.
+function failedReviewSection(active: ReadableRun, directive: ExecuteStepDirective): string[] {
+  const record = active.lastFailedGates;
+  if (
+    record === null ||
+    record.phaseId !== directive.phaseId ||
+    record.stepId !== directive.stepId ||
+    record.attempt === null ||
+    directive.attempt !== record.attempt + 1 ||
+    record.failRemarks.length === 0
+  ) {
+    return [];
+  }
+  const lines = [`review remarks from failed attempt ${record.attempt}:`];
+  for (const failed of record.failRemarks) {
+    for (const remark of failed.remarks) {
+      lines.push(
+        `- [${stripUnrenderableCharacters(failed.criterionDescription)}] ${stripUnrenderableCharacters(remark)}`,
+      );
+    }
+  }
+  return lines;
+}
+
 function finalStepSection(phase: PhaseDocument): string[] {
   const agentJudgedCount = phase.doneWhen.filter((criterion) => criterion.kind === "agent-judged").length;
   const lines = [
@@ -244,7 +272,9 @@ function finalStepSection(phase: PhaseDocument): string[] {
   lines.push(
     agentJudgedCount === 0
       ? "Do not send agent_votes: every criterion is executable."
-      : `With outcome "success", send agent_votes: exactly ${agentJudgedCount} non-empty array(s) of "pass"|"fail" votes, one per agent-judged criterion in order.`,
+      : `With outcome "success", send agent_votes: exactly ${agentJudgedCount} non-empty array(s) of votes, ` +
+          'one per agent-judged criterion in order. A vote is "pass"|"fail" or { vote, remarks }; ' +
+          "remarks of fail votes are replayed into the retry attempt's directive.",
   );
   return lines;
 }

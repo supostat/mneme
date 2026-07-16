@@ -1,12 +1,13 @@
 import type { StagingDeps } from "../staging";
 import { formatGateReport, runPhaseGates, stepResultFromGateReport } from "./gate-runner";
-import type { Vote } from "./converge";
+import type { AgentJudgedCriterionResult, GateReport } from "./gate-runner";
+import type { AgentVote } from "./converge";
 import { compileRecallBundle, formatRecallBundle, harvestPhase } from "./memory-steps";
 import type { PhaseArtifact } from "./memory-steps";
 import { applyStepResult } from "./reducer";
 import type { ExecuteStepDirective, HarvestDirective, StepResult } from "./reducer";
 import { pendingDirectiveOf, phaseOf } from "./run-events";
-import type { ReadableRun } from "./run-events";
+import type { FailedGatesRecord, ReadableRun } from "./run-events";
 import { stepAppliedPayload } from "./run-payloads";
 import type { StepApplication } from "./run-payloads";
 
@@ -42,17 +43,41 @@ export async function applyGatedFinalStep(
   deps: StagingDeps,
   active: ReadableRun,
   pending: ExecuteStepDirective,
-  agentVotes: Vote[][],
+  agentVotes: AgentVote[][],
 ): Promise<string[]> {
   const phase = phaseOf(active.definition, pending.phaseId);
   const report = await runPhaseGates(phase.doneWhen, { projectRoot: deps.projectRoot, agentVotes });
   const result = stepResultFromGateReport(pending.phaseId, pending.stepId, report);
   active.run = applyStepResult(active.run, active.definition, result);
+  // Mirrors the restore fold's absorbGates so the retry directive rendered in THIS response already
+  // carries the fail-vote remarks, without re-folding the log.
+  active.lastFailedGates = report.passed ? null : failedGatesFromReport(pending, report);
   appendStepApplied(deps, active, { result, attempt: pending.attempt, gates: report, harvestedCount: null });
   const verdict = report.passed ? "PASS" : "FAIL";
   return [
     `Gate verdict for ${pending.phaseId}/${pending.stepId} (attempt ${pending.attempt}): ${verdict}\n${formatGateReport(report)}`,
   ];
+}
+
+function failedGatesFromReport(pending: ExecuteStepDirective, report: GateReport): FailedGatesRecord {
+  return {
+    phaseId: pending.phaseId,
+    stepId: pending.stepId,
+    attempt: pending.attempt,
+    failRemarks: report.criterionResults
+      .filter(
+        (result): result is AgentJudgedCriterionResult => result.kind === "agent-judged" && !result.passed,
+      )
+      .map((result) => ({
+        criterionDescription: result.description,
+        remarks: result.votes.flatMap((agentVote) =>
+          agentVote.vote === "fail" && agentVote.remarks !== undefined && agentVote.remarks !== ""
+            ? [agentVote.remarks]
+            : [],
+        ),
+      }))
+      .filter((entry) => entry.remarks.length > 0),
+  };
 }
 
 // Invoked only while a harvest directive is pending (the reissue gate is owned by the caller,

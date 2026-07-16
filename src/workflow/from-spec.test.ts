@@ -470,6 +470,106 @@ describe("phaseDocumentsFromSpec knowledge extraction", () => {
   });
 });
 
+describe("phaseDocumentsFromSpec agent-judged criteria", () => {
+  const AGENT_JUDGED_MARKER_LINE = "**Done when (AGENT-JUDGED):**";
+
+  test("the marker line parses as a SEPARATE agent-judged criterion beside the executable one", () => {
+    const specText = gameplanSpec(
+      phaseBlock(
+        `### Phase 1: alpha ${EM_DASH} one`,
+        ["a"],
+        [
+          executableBlock("bun test src/a.test.ts", "alpha suite is green."),
+          `${AGENT_JUDGED_MARKER_LINE} the reviewer checklist passes.`,
+        ].join("\n"),
+      ),
+    );
+    const [document] = phaseDocumentsFromSpec(specText);
+    expect(document?.doneWhen).toEqual([
+      { kind: "executable", description: "alpha suite is green.", command: "bun test src/a.test.ts" },
+      { kind: "agent-judged", description: "the reviewer checklist passes." },
+    ]);
+  });
+
+  test("the marker directly after executable prose is not glued into that prose", () => {
+    const specText = gameplanSpec(
+      [
+        `### Phase 1: alpha ${EM_DASH} one`,
+        "",
+        "- [ ] a",
+        "",
+        EXECUTABLE_MARKER,
+        "```",
+        "bun test src/a.test.ts",
+        "```",
+        "alpha suite is green.",
+        `${AGENT_JUDGED_MARKER_LINE} security checklist holds.`,
+        "",
+      ].join("\n"),
+    );
+    const [document] = phaseDocumentsFromSpec(specText);
+    expect(document?.doneWhen).toEqual([
+      { kind: "executable", description: "alpha suite is green.", command: "bun test src/a.test.ts" },
+      { kind: "agent-judged", description: "security checklist holds." },
+    ]);
+  });
+
+  test("a mixed phase round-trips through serialize/parse", () => {
+    const specText = gameplanSpec(
+      phaseBlock(
+        `### Phase 1: alpha ${EM_DASH} one`,
+        ["a"],
+        [
+          executableBlock("bun test src/a.test.ts", "alpha suite is green."),
+          `${AGENT_JUDGED_MARKER_LINE} the reviewer checklist passes.`,
+        ].join("\n"),
+      ),
+    );
+    for (const document of phaseDocumentsFromSpec(specText)) {
+      expect(parsePhaseDocument(serializePhaseDocument(document))).toEqual(document);
+    }
+  });
+
+  test("a spec without agent-judged markers behaves exactly as before", () => {
+    const specText = gameplanSpec(
+      phaseBlock(
+        `### Phase 1: alpha ${EM_DASH} one`,
+        ["a"],
+        executableBlock("bun test src/a.test.ts", "alpha suite is green."),
+      ),
+    );
+    const [document] = phaseDocumentsFromSpec(specText);
+    expect(document?.doneWhen).toEqual([
+      { kind: "executable", description: "alpha suite is green.", command: "bun test src/a.test.ts" },
+    ]);
+  });
+
+  test("a marker line with no prose fails closed", () => {
+    const specText = gameplanSpec(
+      phaseBlock(
+        `### Phase 1: alpha ${EM_DASH} one`,
+        ["a"],
+        [
+          executableBlock("bun test src/a.test.ts", "alpha suite is green."),
+          AGENT_JUDGED_MARKER_LINE,
+        ].join("\n"),
+      ),
+    );
+    expect(() => phaseDocumentsFromSpec(specText)).toThrow(PhaseGenerationError);
+  });
+
+  test("a phase carrying ONLY agent-judged criteria still fails policy A", () => {
+    const specText = gameplanSpec(
+      phaseBlock(
+        `### Phase 1: alpha ${EM_DASH} one`,
+        ["a"],
+        `${AGENT_JUDGED_MARKER_LINE} the reviewer checklist passes.`,
+      ),
+    );
+    expect(() => phaseDocumentsFromSpec(specText)).toThrow("no executable done-when criterion");
+  });
+});
+
 describe("phaseDocumentsFromSpec shell-construction guard", () => {
   function specWithCommand(command: string): string {
     return gameplanSpec(

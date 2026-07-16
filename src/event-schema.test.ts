@@ -7,12 +7,14 @@ import type { EventInput, StoredEvent } from "./events";
 import {
   eventSchema,
   SCHEMA_VERSION,
+  AGENT_VOTE_VALUES,
   BOOTSTRAP_TO_EXTENDED,
   EXECUTABLE_GATE_REASONS,
   workflowRunMarkedStaleRestore,
   workflowRunStartedRestore,
   workflowStepAppliedRestore,
 } from "./event-schema";
+import type { Vote } from "./workflow/converge";
 import type { ExecutableGateReason } from "./workflow/gate-runner";
 
 // Stamps a producer event through the real writer so the test validates exactly what lands on disk.
@@ -158,9 +160,16 @@ const GATE_REASON_MIRROR = {
   "malformed-command": true,
 } as const satisfies Record<ExecutableGateReason, true>;
 
+// Compile-time reverse pin for votes, mirroring GATE_REASON_MIRROR: widening or shrinking
+// converge's Vote union fails this file's type check.
+const AGENT_VOTE_MIRROR = {
+  pass: true,
+  fail: true,
+} as const satisfies Record<Vote, true>;
+
 describe("event-schema constants", () => {
-  test("SCHEMA_VERSION is 5", () => {
-    expect(SCHEMA_VERSION).toBe(5);
+  test("SCHEMA_VERSION is 6", () => {
+    expect(SCHEMA_VERSION).toBe(6);
   });
 
   test("EXECUTABLE_GATE_REASONS mirrors gate-runner's ExecutableGateReason in both directions", () => {
@@ -168,6 +177,13 @@ describe("event-schema constants", () => {
     const forward: readonly ExecutableGateReason[] = EXECUTABLE_GATE_REASONS;
     const listedReasons: string[] = [...forward].sort();
     expect(listedReasons).toEqual(Object.keys(GATE_REASON_MIRROR).sort());
+  });
+
+  test("AGENT_VOTE_VALUES mirrors converge's Vote union in both directions", () => {
+    // Compile-time forward pin: every listed vote must be a member of the converge union.
+    const forward: readonly Vote[] = AGENT_VOTE_VALUES;
+    const listedVotes: string[] = [...forward].sort();
+    expect(listedVotes).toEqual(Object.keys(AGENT_VOTE_MIRROR).sort());
   });
 
   test("BOOTSTRAP_TO_EXTENDED maps the five schema-v1 write-path names", () => {
