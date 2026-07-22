@@ -462,6 +462,27 @@ describe("compileRecallBundle pattern anchor decoupling", () => {
     const ids = bundle.notes.map((note) => note.id);
     expect(ids.indexOf(ulid(101))).toBeLessThan(ids.indexOf(ulid(100)));
   });
+
+  test("an antipattern gets anchorOverlap 0 and does not outrank a decision with real overlap", async () => {
+    const { projectRoot, commit } = await buildProjectRepo();
+    const deps = await makeDeps(projectRoot, bagClient());
+    // The same discriminating setup as the pattern case: both notes anchor src/a.ts (== anchorPaths)
+    // and are equally reachable at HEAD, so anchor overlap is the only ranking differentiator. The
+    // antipattern's overlap is forced to 0, so the decision (real overlap 1) ranks ahead.
+    writeNote(deps, ulid(100), "antipattern", "module ranking probe antipattern body", ["src/a.ts"], commit);
+    writeNote(deps, ulid(101), "decision", "module ranking probe decision body", ["src/a.ts"], commit);
+
+    const bundle = await compileRecallBundle(deps, {
+      phaseDescription: "module ranking probe",
+      anchorPaths: ["src/a.ts"],
+      budget: 100000,
+    });
+
+    expect(bundleNoteAt(bundle, ulid(100)).anchorOverlap).toBe(0);
+    expect(bundleNoteAt(bundle, ulid(101)).anchorOverlap).toBe(1);
+    const ids = bundle.notes.map((note) => note.id);
+    expect(ids.indexOf(ulid(101))).toBeLessThan(ids.indexOf(ulid(100)));
+  });
 });
 
 describe("compileRecallBundle degraded mode", () => {

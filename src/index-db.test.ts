@@ -347,6 +347,25 @@ describe("rebuild telemetry event", () => {
     expect(emitted.dead_anchors_n).toBe(1);
   });
 
+  test("an antipattern is pinned to staleness 0 on a dead anchor while a bugfix twin still sinks to -1", async () => {
+    const { projectRoot, commit } = await buildProjectRepo(["src/a.ts"]);
+    const corpus = makeCorpus();
+    // The same discriminating pair as the pattern gate: both notes carry the SAME dead anchor. The
+    // antipattern must read 0 and stay out of dead_anchors_n (example rot is not decay for a
+    // generalized "don't do this"); the bugfix must read -1 and be counted.
+    writeNote(corpus.notesDir, note({ id: ulid(0), type: "antipattern", anchors: ["src/gone.ts"], commit }, "antipattern body"));
+    writeNote(corpus.notesDir, note({ id: ulid(1), type: "bugfix", anchors: ["src/gone.ts"], commit }, "bugfix body"));
+    const eventsDir = mkdtempSync(join(tmpdir(), "mneme-index-antipattern-events-"));
+    const eventWriter = new EventWriter(eventsDir, { sessionId: "s-index-antipattern", mnemeVersion: "0.1.0", clock: fixedClock });
+    const embeddings = keyedVectorClient(new Map([["antipattern body", [1, 0]], ["bugfix body", [0, 1]]]));
+
+    await rebuild({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, embeddings, eventWriter, clock: fixedClock });
+
+    const emitted = readEvents(eventsDir).filter((event) => event.type === "rebuild")[0]!;
+    expect(emitted.staleness).toEqual([0, -1]);
+    expect(emitted.dead_anchors_n).toBe(1);
+  });
+
   test("an offline embeddings client yields zero embedded notes and unavailable ollama", async () => {
     const corpus = makeCorpus();
     const projectRoot = mkdtempSync(join(tmpdir(), "mneme-norepo-"));

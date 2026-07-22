@@ -356,6 +356,25 @@ describe("recall pattern anchor decoupling", () => {
     expect(result.returnedIds).toContain(ulid(1));
     expect(result.returnedIds[0]).toBe(ulid(0));
   });
+
+  test("an antipattern with a dead example anchor still recalls by body, not sunk below its live twin", async () => {
+    // The same discriminating pair as the pattern case: identical bodies (equal FTS + cosine), the
+    // DEAD-anchor note carries the smaller id. Anchor staleness would sink it to -1 below its live
+    // twin; anchor-neutral staleness pins both to 0 so the id tie-break puts the dead note first.
+    // The decision-type dead-anchor sink test above proves this ordering flips for anchored types.
+    const body = "never mock the clock in integration tests";
+    const specs: NoteSpec[] = [
+      { id: ulid(0), body, anchor: "src/ghost.ts", dead: true, type: "antipattern" },
+      { id: ulid(1), body, anchor: "src/live.ts", type: "antipattern" },
+    ];
+    const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
+
+    const result = await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "never mock the clock", 100000, "tool-call");
+
+    expect(result.returnedIds).toContain(ulid(0));
+    expect(result.returnedIds).toContain(ulid(1));
+    expect(result.returnedIds[0]).toBe(ulid(0));
+  });
 });
 
 describe("recall empty query", () => {
