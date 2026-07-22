@@ -25,12 +25,15 @@ import { computeFootprint, formatFootprint } from "./stats-footprint";
 import type { StagingDeps, ResolveDecision } from "./staging";
 import { formatRemember, formatRecall, formatStagingList, formatResolve, textResult } from "./mcp-rendering";
 import {
+  WORKFLOW_ABANDON_DESCRIPTION,
+  WORKFLOW_ABANDON_INPUT,
   WORKFLOW_MIGRATE_DESCRIPTION,
   WORKFLOW_MIGRATE_INPUT,
   WORKFLOW_START_DESCRIPTION,
   WORKFLOW_START_INPUT,
   WORKFLOW_STEP_DESCRIPTION,
   WORKFLOW_STEP_INPUT,
+  workflowAbandonTool,
   workflowMigrateTool,
   workflowStartTool,
   workflowStepTool,
@@ -159,6 +162,9 @@ function registerTools(
   );
   server.registerTool("workflow_migrate", { description: WORKFLOW_MIGRATE_DESCRIPTION, inputSchema: WORKFLOW_MIGRATE_INPUT }, (args) =>
     dispatch(context, "workflow_migrate", (current) => workflowMigrateTool(buildStagingDeps(current), args)),
+  );
+  server.registerTool("workflow_abandon", { description: WORKFLOW_ABANDON_DESCRIPTION, inputSchema: WORKFLOW_ABANDON_INPUT }, (args) =>
+    dispatch(context, "workflow_abandon", (current) => workflowAbandonTool(buildStagingDeps(current), args)),
   );
 }
 

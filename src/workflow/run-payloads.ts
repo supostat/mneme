@@ -63,6 +63,10 @@ export function runMarkedStalePayload(runId: string, branch: string): Record<str
   return { run_id: runId, branch, reason: STALE_REASON_BRANCH_NOT_FOUND };
 }
 
+export function runAbandonedPayload(runId: string, branch: string, reason: string): Record<string, unknown> {
+  return { run_id: runId, branch, reason };
+}
+
 function definitionToPayload(
   definition: RunDefinition,
   retrieval: RunRetrievalConfig,

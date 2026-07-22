@@ -31,7 +31,10 @@ import { z } from "zod";
 //       dedup_rejected [{nearest_id, similarity}] (null for non-harvest applications), and
 //       harvested_n counts notes actually STAGED, no longer every submitted artifact. Telemetry
 //       payload: the log is richer than its current readers, per the deliberate exception.
-export const SCHEMA_VERSION = 7;
+//   8 — run abandonment: workflow_run_abandoned { run_id, branch, reason } is a human's terminal
+//       refusal of a run — distinct from failure. Restore honors the marker on the raw run_id (the
+//       stale-marker discipline) and the survey excludes abandoned runs from every live listing.
+export const SCHEMA_VERSION = 8;
 
 export const DEDUP_OUTCOMES = ["add", "supersede_suggest", "noop"] as const;
 export const RESOLVE_DECISIONS = ["accept", "reject", "supersede"] as const;
@@ -283,6 +286,13 @@ const workflowRunMarkedStalePayload = {
   reason: z.enum(WORKFLOW_STALE_REASONS),
 };
 
+// reason is the human's free-text refusal, validated to a single clean line at the tool boundary.
+const workflowRunAbandonedPayload = {
+  run_id: z.string(),
+  branch: z.string(),
+  reason: z.string(),
+};
+
 export const workflowRunStartedEvent = z.object({
   type: z.literal("workflow_run_started"),
   ...envelope,
@@ -299,6 +309,12 @@ export const workflowRunMarkedStaleEvent = z.object({
   type: z.literal("workflow_run_marked_stale"),
   ...envelope,
   ...workflowRunMarkedStalePayload,
+});
+
+export const workflowRunAbandonedEvent = z.object({
+  type: z.literal("workflow_run_abandoned"),
+  ...envelope,
+  ...workflowRunAbandonedPayload,
 });
 
 export const workflowRunStartedRestore = z.object({
@@ -319,6 +335,12 @@ export const workflowRunMarkedStaleRestore = z.object({
   ...workflowRunMarkedStalePayload,
 });
 
+export const workflowRunAbandonedRestore = z.object({
+  type: z.literal("workflow_run_abandoned"),
+  ...restoreEnvelope,
+  ...workflowRunAbandonedPayload,
+});
+
 export const eventSchema = z.discriminatedUnion("type", [
   recallEvent,
   rememberEvent,
@@ -331,4 +353,5 @@ export const eventSchema = z.discriminatedUnion("type", [
   workflowRunStartedEvent,
   workflowStepAppliedEvent,
   workflowRunMarkedStaleEvent,
+  workflowRunAbandonedEvent,
 ]);

@@ -9,7 +9,7 @@ import type { PhaseDocument } from "./phase-document";
 import { buildPhaseGraph } from "./phase-graph";
 import type { RunDefinition } from "./reducer";
 import { surveySections } from "./run-directives";
-import { runStartedPayload } from "./run-payloads";
+import { runAbandonedPayload, runStartedPayload } from "./run-payloads";
 import { surveyRuns } from "./run-survey";
 
 const fixedClock = () => new Date("2026-07-06T10:00:00.000Z");
@@ -70,5 +70,27 @@ describe("surveyRuns with unanswerable branch questions", () => {
       `WARNING: could not verify that branch "feature" (run ${FOREIGN_RUN_ID}) still exists`,
     );
     expect(sections).not.toContain("STALE RUNS");
+  });
+
+  test("an abandoned run leaves every live listing before the orphan scan", async () => {
+    const deps = await makeNonRepoDeps();
+    deps.eventWriter.append({
+      ...runStartedPayload(FOREIGN_RUN_ID, "feature", makeDefinition(), { recallBudget: 2000, recallAnchors: {} }),
+      type: "workflow_run_started",
+    });
+    deps.eventWriter.append({
+      ...runAbandonedPayload(FOREIGN_RUN_ID, "feature", "spec rescoped"),
+      type: "workflow_run_abandoned",
+    });
+
+    const survey = await surveyRuns(deps, "main");
+
+    // Without the marker this foreign-branch run would surface as indeterminate (the projectRoot
+    // cannot answer branch questions); abandoned, it is terminal and never branch-checked at all.
+    expect(survey.activeRun).toBeNull();
+    expect(survey.indeterminateRuns).toEqual([]);
+    expect(survey.pausedRuns).toEqual([]);
+    expect(survey.markedStale).toEqual([]);
+    expect(surveySections(survey)).toEqual([]);
   });
 });

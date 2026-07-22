@@ -72,21 +72,29 @@ export function restoreRuns(events: StoredEvent[]): RestoredRun[] {
 }
 
 export function staleMarkedRunIds(events: StoredEvent[]): Set<string> {
-  const staleRunIds = new Set<string>();
-  for (const event of events) {
-    if (event.type !== "workflow_run_marked_stale") continue;
-    // Fail safe: even a schema-invalid stale marker still poisons its run — a run marked stale must
-    // never resume, so the marker is honored on the raw run_id alone.
-    const runId = stringField(event, "run_id");
-    if (runId !== null) staleRunIds.add(runId);
-  }
-  return staleRunIds;
+  return terminalMarkedRunIds(events, "workflow_run_marked_stale");
 }
 
-export function unfinishedRunsOf(runs: RestoredRun[], staleRunIds: Set<string>): ReadableRun[] {
+// Abandonment shares the stale-marker discipline: the marker is honored on the raw run_id alone,
+// so an abandoned run can never resume even when the marker event is otherwise schema-invalid.
+export function abandonedRunIds(events: StoredEvent[]): Set<string> {
+  return terminalMarkedRunIds(events, "workflow_run_abandoned");
+}
+
+function terminalMarkedRunIds(events: StoredEvent[], type: string): Set<string> {
+  const markedRunIds = new Set<string>();
+  for (const event of events) {
+    if (event.type !== type) continue;
+    const runId = stringField(event, "run_id");
+    if (runId !== null) markedRunIds.add(runId);
+  }
+  return markedRunIds;
+}
+
+export function unfinishedRunsOf(runs: RestoredRun[], terminalMarkedIds: Set<string>): ReadableRun[] {
   return runs.filter(
     (run): run is ReadableRun =>
-      run.kind === "restored" && run.run.status === "running" && !staleRunIds.has(run.runId),
+      run.kind === "restored" && run.run.status === "running" && !terminalMarkedIds.has(run.runId),
   );
 }
 

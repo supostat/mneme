@@ -1,4 +1,5 @@
 import type { DoneWhenCriterion, PhaseDocument } from "./phase-document";
+import { readyPhaseIds } from "./phase-graph";
 import type { Directive, ExecuteStepDirective } from "./reducer";
 import { isFinalStep, pendingDirectiveOf, phaseOf } from "./run-events";
 import type { ReadableRun, UnreadableRun } from "./run-events";
@@ -194,8 +195,24 @@ function renderUnreadableRun(run: UnreadableRun): string {
   return `- run ${runId}${branchLabel} is unreadable and will not be resumed: ${stripUnrenderableCharacters(run.problem)}`;
 }
 
+// The reducer executes ONE ready phase at a time (selectNextReadyPhase takes the first); when the
+// graph holds more, this line keeps the parallelism visible instead of silently serialized.
+function renderReadyPhases(active: ReadableRun): string {
+  const ready = readyPhaseIds(active.definition.graph, active.run.phaseStatuses);
+  if (ready.length <= 1) {
+    return "";
+  }
+  return (
+    `ready: ${ready.length} phases (${ready.join(", ")}) — ` +
+    "the engine executes one at a time; the rest stay ready."
+  );
+}
+
 export function surveySections(survey: RunSurvey): string[] {
   const sections: string[] = [];
+  if (survey.activeRun !== null) {
+    sections.push(renderReadyPhases(survey.activeRun));
+  }
   if (survey.markedStale.length > 0) {
     sections.push(renderStaleSection(survey.markedStale));
   }

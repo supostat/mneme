@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { AGENT_VOTE_VALUES, WORKFLOW_ON_FAIL_ACTIONS, WORKFLOW_STEP_OUTCOMES } from "../event-schema";
+import { readEvents } from "../events";
 import { textResult } from "../mcp-rendering";
 import { validateAnchor } from "../note";
 import { countStagedNotes } from "../staging";
@@ -38,10 +39,10 @@ import {
   renderRunStarted,
   surveySections,
 } from "./run-directives";
-import { isFinalStep, pendingDirectiveOf } from "./run-events";
+import { abandonedRunIds, isFinalStep, pendingDirectiveOf, restoreRuns } from "./run-events";
 import type { ReadableRun, RunRetrievalConfig } from "./run-events";
 import { appendStepApplied, applyGatedFinalStep, applyHarvest, echoMatches, runEngineSteps } from "./run-executor";
-import { runStartedPayload } from "./run-payloads";
+import { runAbandonedPayload, runStartedPayload } from "./run-payloads";
 import { surveyRuns } from "./run-survey";
 
 export class WorkflowToolError extends Error {}
@@ -64,6 +65,11 @@ export const WORKFLOW_STEP_DESCRIPTION =
   '"pass"|"fail" or { vote, remarks }, and remarks of fail votes are replayed into the retry directive) ' +
   "with that submission; a failure never runs gates. When a harvest directive is pending, submit " +
   "harvest_artifacts (an empty array is allowed) to close the phase.";
+export const WORKFLOW_ABANDON_DESCRIPTION =
+  "Abandon an unfinished workflow run by run_id: a terminal human refusal, distinct from failure. " +
+  "The run leaves every survey listing and can NEVER be resumed; its branch is untouched and a new " +
+  "run can be started there at any time. Abandoning an already-abandoned run is a no-op that " +
+  "appends nothing; abandoning an unknown run or a run that already reached a terminal is an error.";
 export const WORKFLOW_MIGRATE_DESCRIPTION =
   "Convert a spec's # Gameplan into workflow phase files under this project's corpus " +
   "(<corpusDir>/workflow/<spec-slug>/), so the phases of one task live together. DRY-RUN by default: " +
@@ -92,6 +98,11 @@ export const WORKFLOW_START_INPUT = {
 export const WORKFLOW_MIGRATE_INPUT = {
   spec_path: z.string(),
   apply: z.boolean().optional(),
+};
+
+export const WORKFLOW_ABANDON_INPUT = {
+  run_id: z.string(),
+  reason: z.string(),
 };
 
 // The tool boundary accepts BOTH vote shapes: the bare "pass"|"fail" enum (every pre-remarks caller
@@ -153,6 +164,47 @@ export interface WorkflowStepArgs {
 export interface WorkflowMigrateArgs {
   spec_path: string;
   apply?: boolean;
+}
+
+export interface WorkflowAbandonArgs {
+  run_id: string;
+  reason: string;
+}
+
+// Abandonment targets a run WHEREVER its branch lives: the current checkout is irrelevant, so the
+// tool never touches git — the event names the branch the run itself was anchored to. Idempotency
+// mirrors the submission gates: a repeated abandon changes nothing and appends nothing.
+export function workflowAbandonTool(deps: StagingDeps, args: WorkflowAbandonArgs): CallToolResult {
+  requireCleanSingleLine(args.reason, "abandon reason");
+  const events = readEvents(deps.corpus.eventsDir);
+  if (abandonedRunIds(events).has(args.run_id)) {
+    return textResult(`Run ${args.run_id} is already abandoned; nothing was appended.`);
+  }
+  const target = restoreRuns(events).find((run) => run.runId === args.run_id);
+  if (target === undefined) {
+    throw new WorkflowToolError(`no workflow run "${args.run_id}" exists in the event log`);
+  }
+  if (target.kind === "unreadable") {
+    throw new WorkflowToolError(
+      `run ${args.run_id} is unreadable (${target.problem}); an unreadable run cannot be abandoned`,
+    );
+  }
+  if (target.run.status !== "running") {
+    throw new WorkflowToolError(
+      `run ${args.run_id} already reached a terminal (${target.run.status}); only unfinished runs can be abandoned`,
+    );
+  }
+  deps.eventWriter.append({
+    ...runAbandonedPayload(target.runId, target.branch, args.reason),
+    type: "workflow_run_abandoned",
+  });
+  return textResult(
+    [
+      `Run ${target.runId} [branch "${target.branch}"] is abandoned: ${args.reason}`,
+      "Abandoned is terminal — the run leaves the survey and can never be resumed. " +
+        "Start a new run with workflow_start when the work still matters.",
+    ].join("\n"),
+  );
 }
 
 // A thin entry over the 12a persistence library: read the spec, generate its phase documents, plan
@@ -328,20 +380,23 @@ function normalizeAgentVotes(votes: SubmittedAgentVote[][]): AgentVote[][] {
         return { vote: submitted };
       }
       if (submitted.remarks !== undefined) {
-        requireCleanRemarks(submitted.remarks);
+        requireCleanSingleLine(submitted.remarks, "vote remarks");
       }
       return submitted;
     }),
   );
 }
 
-function requireCleanRemarks(remarks: string): void {
-  if (remarks.trim() === "") {
-    throw new WorkflowToolError("vote remarks must not be blank: omit the remarks field instead");
+// The one-line contract shared by every free-text field that travels into directive frames and log
+// events: blank text carries no information, and line breaks or invisible characters would break
+// the one-line-per-entry render downstream.
+function requireCleanSingleLine(text: string, subject: string): void {
+  if (text.trim() === "") {
+    throw new WorkflowToolError(`${subject} must not be blank`);
   }
-  if (remarks.includes("\n") || containsForbiddenCharacter(remarks)) {
+  if (text.includes("\n") || containsForbiddenCharacter(text)) {
     throw new WorkflowToolError(
-      "vote remarks must be a single line free of control and invisible characters",
+      `${subject} must be a single line free of control and invisible characters`,
     );
   }
 }

@@ -1,7 +1,7 @@
 import { readEvents } from "../events";
 import type { StagingDeps } from "../staging";
 import { branchExists } from "./run-branch";
-import { restoreRuns, staleMarkedRunIds, unfinishedRunsOf } from "./run-events";
+import { abandonedRunIds, restoreRuns, staleMarkedRunIds, unfinishedRunsOf } from "./run-events";
 import type { ReadableRun, UnreadableRun } from "./run-events";
 import { runMarkedStalePayload } from "./run-payloads";
 
@@ -32,7 +32,10 @@ export async function surveyRuns(deps: StagingDeps, branch: string): Promise<Run
   const events = readEvents(deps.corpus.eventsDir);
   const runs = restoreRuns(events);
   const staleRunIds = staleMarkedRunIds(events);
-  const unfinished = unfinishedRunsOf(runs, staleRunIds);
+  const abandonedIds = abandonedRunIds(events);
+  // An abandoned run is terminal by marker: it leaves every live listing — including the stale
+  // listing of its branch — before the orphan scan, so it is never branch-checked again.
+  const unfinished = unfinishedRunsOf(runs, new Set([...staleRunIds, ...abandonedIds]));
   const verdicts = await markOrphans(deps, unfinished.filter((run) => run.branch !== branch));
   const runningHere = unfinished.filter((run) => run.branch === branch);
   const terminalHere = runs.filter(
@@ -48,7 +51,10 @@ export async function surveyRuns(deps: StagingDeps, branch: string): Promise<Run
     indeterminateRuns: verdicts.indeterminate,
     staleRunsOfBranch: runs.filter(
       (run): run is ReadableRun =>
-        run.kind === "restored" && run.branch === branch && staleRunIds.has(run.runId),
+        run.kind === "restored" &&
+        run.branch === branch &&
+        staleRunIds.has(run.runId) &&
+        !abandonedIds.has(run.runId),
     ),
     unreadableRuns: runs.filter((run): run is UnreadableRun => run.kind === "unreadable"),
     lastTerminalRun: terminalHere.at(-1) ?? null,

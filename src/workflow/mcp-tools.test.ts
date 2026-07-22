@@ -1156,3 +1156,124 @@ describe("workflow_migrate", () => {
     expect(existsSync(workflowRoot)).toBe(false);
   });
 });
+
+describe("workflow abandon", () => {
+  test("abandoning a live run is terminal: the log carries the event and the survey is clean", async () => {
+    const bench = await makeWorkbench();
+    const runId = await startRun(bench.client, startArgs([phaseText("phase-one")]));
+
+    const abandoned = await callText(bench.client, "workflow_abandon", {
+      run_id: runId,
+      reason: "superseded by a rescoped spec",
+    });
+
+    expect(abandoned).toContain(`Run ${runId} [branch "`);
+    expect(abandoned).toContain("abandoned: superseded by a rescoped spec");
+    const events = await loggedEvents(bench);
+    const markers = eventsOfType(events, "workflow_run_abandoned");
+    expect(markers.length).toBe(1);
+    expect(markers[0]!.run_id).toBe(runId);
+    expect(markers[0]!.reason).toBe("superseded by a rescoped spec");
+    for (const event of events) {
+      const parsed = eventSchema.safeParse(event);
+      if (!parsed.success) {
+        throw new Error(`event ${String(event.type)} failed schema: ${JSON.stringify(parsed.error.issues)}`);
+      }
+    }
+    // The run left the living: a sync finds no active run and never resumes the abandoned one.
+    const synced = await callText(bench.client, "workflow_step", {});
+    expect(synced).toContain("No unfinished workflow run");
+    expect(synced).not.toContain("DIRECTIVE");
+    // The branch is free for a fresh run: start mints a NEW id instead of resuming.
+    const restarted = await startRun(bench.client, startArgs([phaseText("phase-one")]));
+    expect(restarted).not.toBe(runId);
+  });
+
+  test("a repeated abandon is a no-op that appends nothing", async () => {
+    const bench = await makeWorkbench();
+    const runId = await startRun(bench.client, startArgs([phaseText("phase-one")]));
+    await callText(bench.client, "workflow_abandon", { run_id: runId, reason: "first refusal" });
+
+    const repeated = await callText(bench.client, "workflow_abandon", { run_id: runId, reason: "second refusal" });
+
+    expect(repeated).toContain(`Run ${runId} is already abandoned; nothing was appended.`);
+    const markers = eventsOfType(await loggedEvents(bench), "workflow_run_abandoned");
+    expect(markers.length).toBe(1);
+    expect(markers[0]!.reason).toBe("first refusal");
+  });
+
+  test("abandoning an unknown run is a clear error, not a marker", async () => {
+    const bench = await makeWorkbench();
+
+    const result = await bench.client.callTool({
+      name: "workflow_abandon",
+      arguments: { run_id: "01ARZ3NDEKTSV4RRFFQ69G5FZZ", reason: "nothing to refuse" },
+    });
+
+    expect(result.isError).toBe(true);
+    expect((result.content as Array<{ text: string }>)[0]!.text).toContain(
+      'no workflow run "01ARZ3NDEKTSV4RRFFQ69G5FZZ" exists in the event log',
+    );
+    expect(eventsOfType(await loggedEvents(bench), "workflow_run_abandoned")).toEqual([]);
+  });
+
+  test("a run that already reached a terminal cannot be abandoned", async () => {
+    const bench = await makeWorkbench();
+    const runId = await startRun(bench.client, startArgs([phaseText("phase-one")]));
+    await callText(bench.client, "workflow_step", {});
+    await callText(bench.client, "workflow_step", {
+      run_id: runId,
+      step_result: stepResult("phase-one", "implement", 1, "success"),
+    });
+    const completed = await callText(bench.client, "workflow_step", { run_id: runId, harvest_artifacts: [] });
+    expect(completed).toContain("RUN COMPLETE");
+
+    const result = await bench.client.callTool({
+      name: "workflow_abandon",
+      arguments: { run_id: runId, reason: "too late to refuse" },
+    });
+
+    expect(result.isError).toBe(true);
+    expect((result.content as Array<{ text: string }>)[0]!.text).toContain("already reached a terminal (complete)");
+  });
+
+  test("a blank or multi-line reason is rejected before anything is appended", async () => {
+    const bench = await makeWorkbench();
+    const runId = await startRun(bench.client, startArgs([phaseText("phase-one")]));
+
+    for (const reason of ["", "   ", "line one\nline two"]) {
+      const result = await bench.client.callTool({
+        name: "workflow_abandon",
+        arguments: { run_id: runId, reason },
+      });
+      expect(result.isError).toBe(true);
+      expect((result.content as Array<{ text: string }>)[0]!.text).toContain("abandon reason");
+    }
+    expect(eventsOfType(await loggedEvents(bench), "workflow_run_abandoned")).toEqual([]);
+  });
+});
+
+describe("workflow ready-phase visibility", () => {
+  test("a run with several ready phases names them all; a single ready phase stays silent", async () => {
+    const bench = await makeWorkbench();
+    const runId = await startRun(
+      bench.client,
+      startArgs([phaseText("phase-a"), phaseText("phase-b"), phaseText("phase-c", { deps: ["phase-a", "phase-b"] })]),
+    );
+
+    // Both dependency-free phases are ready; the blocked third is not counted.
+    const opened = await callText(bench.client, "workflow_step", {});
+    expect(opened).toContain("ready: 2 phases (phase-a, phase-b)");
+    expect(opened).not.toContain("phase-c)");
+
+    await callText(bench.client, "workflow_step", {
+      run_id: runId,
+      step_result: stepResult("phase-a", "implement", 1, "success"),
+    });
+    await callText(bench.client, "workflow_step", { run_id: runId, harvest_artifacts: [] });
+
+    // Only phase-b remains ready: one ready phase is the normal serial case, no honesty line.
+    const serial = await callText(bench.client, "workflow_step", {});
+    expect(serial).not.toContain("ready:");
+  });
+});
