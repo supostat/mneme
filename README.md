@@ -1,5 +1,7 @@
 # mneme
 
+[![CI](https://github.com/supostat/mneme/actions/workflows/ci.yml/badge.svg)](https://github.com/supostat/mneme/actions/workflows/ci.yml)
+
 mneme is a local-first MCP memory server for Claude Code, over a personal, cross-project note corpus
 that lives on your machine. Every remembered note is **staged for human review** rather than saved
 silently: you accept, reject, or supersede staged notes yourself, so the corpus only ever grows with
