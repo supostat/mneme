@@ -1,7 +1,7 @@
 import { readEvents } from "./events";
 import type { StoredEvent } from "./events";
 import { isStagingEvent } from "./event-dialect";
-import { DEDUP_OUTCOMES, RESOLVE_DECISIONS } from "./event-schema";
+import { DEDUP_OUTCOMES, RESOLVE_DECISIONS, RETIRE_DECISIONS } from "./event-schema";
 import type { DedupThresholds } from "./dedup";
 import type { StagedClassification } from "./dedup-sidecar";
 import type { StagingDeps, RememberInput } from "./staging";
@@ -61,6 +61,31 @@ export function dedupFromClassification(
     return dedupPayload("supersede_suggest", classification.neighborId, classification.similarity, false, thresholds);
   }
   return dedupPayload("add", classification.neighborId, classification.similarity, classification.degraded, thresholds);
+}
+
+export function appendRetireStaged(deps: StagingDeps, requestId: string, targetId: string, reason: string): void {
+  deps.eventWriter.append({
+    type: "note_retire_staged",
+    request_id: requestId,
+    target_id: targetId,
+    reason,
+  });
+}
+
+export function appendRetireResolved(
+  deps: StagingDeps,
+  requestId: string,
+  targetId: string,
+  decision: (typeof RETIRE_DECISIONS)[number],
+  commit: string | null,
+): void {
+  deps.eventWriter.append({
+    type: "note_retire_resolved",
+    request_id: requestId,
+    target_id: targetId,
+    decision,
+    commit,
+  });
 }
 
 interface StagingResolveExtra {

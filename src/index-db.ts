@@ -100,7 +100,10 @@ function readEmbeddingCache(indexPath: string): Map<string, Uint8Array> {
   }
 }
 
-function readActiveNotes(notesDir: string): Note[] {
+// The single definition of "active": not superseded and not retired. Rebuild indexes exactly this
+// population, so retired notes leave recall AND dedup neighborhoods by never being indexed; the
+// curation listing imports the same function so the two populations cannot drift.
+export function readActiveNotes(notesDir: string): Note[] {
   const files = readdirSync(notesDir)
     .filter((name) => name.endsWith(".md"))
     .sort();
@@ -110,7 +113,7 @@ function readActiveNotes(notesDir: string): Note[] {
       .map((note) => note.frontmatter.supersedes)
       .filter((id): id is string => id !== undefined),
   );
-  return notes.filter((note) => !superseded.has(note.frontmatter.id));
+  return notes.filter((note) => !superseded.has(note.frontmatter.id) && note.frontmatter.retired !== true);
 }
 
 // A pattern note is pinned to the neutral 0 boost — the same value a fresh at-HEAD anchor earns — so

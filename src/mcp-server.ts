@@ -21,11 +21,20 @@ import { recall } from "./recall";
 import { NOTE_TYPES } from "./note";
 import type { NoteType } from "./note";
 import { remember, stagingList, stagingResolve } from "./staging";
+import { listRetireRequests, noteRetire, notesList, showNote } from "./curation";
 import { computeStats, formatStats } from "./stats";
 import { computeFriction, formatFriction } from "./stats-friction";
 import { computeFootprint, formatFootprint } from "./stats-footprint";
 import type { StagingDeps, ResolveDecision } from "./staging";
-import { formatRemember, formatRecall, formatStagingList, formatResolve, textResult } from "./mcp-rendering";
+import {
+  formatNoteShow,
+  formatNotesList,
+  formatRecall,
+  formatRemember,
+  formatResolve,
+  formatStagingList,
+  textResult,
+} from "./mcp-rendering";
 import {
   WORKFLOW_ABANDON_DESCRIPTION,
   WORKFLOW_ABANDON_INPUT,
@@ -66,7 +75,23 @@ const STATS_DESCRIPTION =
   "resolved latency median/p90 and resolution batch sizes); tool errors by tool; and the log footprint " +
   "(total bytes and events per type). Present the numbers to the human; the output contains no note bodies.";
 
+const NOTES_LIST_DESCRIPTION =
+  "Curate ACCEPTED notes. Without id: one line per live note (id, type, first line, anchor count, " +
+  "dead-anchor count) — bodies are never listed; filter by type or dead_anchors_only, cap with " +
+  "limit. With id: the full note. Superseded and retired notes are excluded from the listing.";
+const NOTE_RETIRE_DESCRIPTION =
+  "Queue the retirement of an accepted note for HUMAN review. This does NOT retire the note; it " +
+  "only stages a retire request — the human decides via staging_resolve (accept or reject). An " +
+  "accepted retire keeps the file in notes/ as history but excludes the note from recall.";
+
 const REMEMBER_INPUT = { type: z.enum(NOTE_TYPES), body: z.string(), anchors: z.array(z.string()) };
+const NOTES_LIST_INPUT = {
+  id: z.string().optional(),
+  type: z.enum(NOTE_TYPES).optional(),
+  dead_anchors_only: z.boolean().optional(),
+  limit: z.number().int().positive().optional(),
+};
+const NOTE_RETIRE_INPUT = { id: z.string(), reason: z.string() };
 const RECALL_INPUT = { query: z.string(), budget: z.number().int().positive().optional() };
 const STAGING_RESOLVE_INPUT = {
   id: z.string(),
@@ -160,6 +185,12 @@ function registerTools(
   server.registerTool("staging_list", { description: STAGING_LIST_DESCRIPTION, inputSchema: {} }, () =>
     dispatch(context, "staging_list", (current) => stagingListTool(buildStagingDeps(current))),
   );
+  server.registerTool("notes_list", { description: NOTES_LIST_DESCRIPTION, inputSchema: NOTES_LIST_INPUT }, (args) =>
+    dispatch(context, "notes_list", (current) => notesListTool(buildStagingDeps(current), args)),
+  );
+  server.registerTool("note_retire", { description: NOTE_RETIRE_DESCRIPTION, inputSchema: NOTE_RETIRE_INPUT }, (args) =>
+    dispatch(context, "note_retire", (current) => noteRetireTool(buildStagingDeps(current), args)),
+  );
   server.registerTool("staging_resolve", { description: STAGING_RESOLVE_DESCRIPTION, inputSchema: STAGING_RESOLVE_INPUT }, (args) =>
     dispatch(context, "staging_resolve", (current) => stagingResolveTool(buildStagingDeps(current), args)),
   );
@@ -245,7 +276,32 @@ async function recallTool(
 
 async function stagingListTool(stagingDeps: StagingDeps): Promise<CallToolResult> {
   const entries = await stagingList(stagingDeps);
-  return textResult(formatStagingList(entries));
+  return textResult(formatStagingList(entries, listRetireRequests(stagingDeps.corpus)));
+}
+
+async function notesListTool(
+  stagingDeps: StagingDeps,
+  args: { id?: string; type?: NoteType; dead_anchors_only?: boolean; limit?: number },
+): Promise<CallToolResult> {
+  if (args.id !== undefined) {
+    return textResult(formatNoteShow(showNote(stagingDeps.corpus, args.id)));
+  }
+  const result = await notesList(stagingDeps, {
+    type: args.type,
+    deadAnchorsOnly: args.dead_anchors_only,
+    limit: args.limit,
+  });
+  return textResult(formatNotesList(result));
+}
+
+function noteRetireTool(stagingDeps: StagingDeps, args: { id: string; reason: string }): CallToolResult {
+  const staged = noteRetire(stagingDeps, args.id, args.reason);
+  return textResult(
+    [
+      `Staged retire request ${staged.requestId} for note ${staged.targetId}. Nothing is retired yet.`,
+      "Ask the human to review it with staging_list and decide accept or reject via staging_resolve.",
+    ].join("\n"),
+  );
 }
 
 async function stagingResolveTool(

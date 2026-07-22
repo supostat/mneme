@@ -16,6 +16,9 @@ export type NoteFrontmatter = {
   commit: string;
   created: string;
   supersedes?: string;
+  // Lifecycle metadata, system-written at retire-accept (the supersedes precedent): the body stays
+  // immutable, the file stays in notes/ as history, and rebuild derives exclusion from this flag.
+  retired?: true;
 };
 
 export interface Note {
@@ -39,7 +42,7 @@ export const MAX_BODY_CODE_POINTS = 1500;
 const FRONTMATTER_FENCE = "---\n";
 const FRONTMATTER_CLOSING = "\n---\n";
 const KEY_VALUE_SEPARATOR = ": ";
-const FRONTMATTER_KEYS = ["id", "type", "anchors", "commit", "created", "supersedes"] as const;
+const FRONTMATTER_KEYS = ["id", "type", "anchors", "commit", "created", "supersedes", "retired"] as const;
 const ALLOWED_KEYS: ReadonlySet<string> = new Set(FRONTMATTER_KEYS);
 
 export function serializeNote(note: Note): string {
@@ -54,6 +57,9 @@ export function serializeNote(note: Note): string {
   ];
   if (frontmatter.supersedes !== undefined) {
     lines.push(`supersedes: ${JSON.stringify(frontmatter.supersedes)}`);
+  }
+  if (frontmatter.retired !== undefined) {
+    lines.push("retired: true");
   }
   return `${FRONTMATTER_FENCE}${lines.join("\n")}${FRONTMATTER_CLOSING}${note.body}`;
 }
@@ -112,7 +118,19 @@ function validateFrontmatter(candidate: Record<string, unknown>): NoteFrontmatte
   if (candidate.supersedes !== undefined) {
     frontmatter.supersedes = validateSupersedes(candidate.supersedes);
   }
+  if (candidate.retired !== undefined) {
+    frontmatter.retired = validateRetired(candidate.retired);
+  }
   return frontmatter;
+}
+
+// Only the literal true is a valid marker: a "retired: false" key would be a second way to spell an
+// un-retired note, so it is rejected instead of normalized.
+function validateRetired(value: unknown): true {
+  if (value !== true) {
+    throw new NoteValidationError(`retired must be the literal true when present: ${String(value)}`);
+  }
+  return true;
 }
 
 function validateId(value: unknown): string {

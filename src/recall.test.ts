@@ -36,6 +36,7 @@ interface NoteSpec {
   anchor: string;
   dead?: boolean;
   type?: NoteType;
+  retired?: boolean;
 }
 
 function hashTerm(term: string): number {
@@ -97,10 +98,15 @@ async function setupIndex(
   mkdirSync(notesDir);
   mkdirSync(eventsDir);
   for (const spec of specs) {
-    const note: Note = {
-      frontmatter: { ...baseFrontmatter, id: spec.id, type: spec.type ?? baseFrontmatter.type, anchors: [spec.anchor], commit },
-      body: spec.body,
+    const frontmatter: NoteFrontmatter = {
+      ...baseFrontmatter,
+      id: spec.id,
+      type: spec.type ?? baseFrontmatter.type,
+      anchors: [spec.anchor],
+      commit,
     };
+    if (spec.retired === true) frontmatter.retired = true;
+    const note: Note = { frontmatter, body: spec.body };
     writeFileSync(join(notesDir, `${spec.id}.md`), serializeNote(note));
   }
   const indexPath = join(corpusDir, "index.db");
@@ -184,6 +190,19 @@ describe("recall FTS regression", () => {
     const result = await recall(deps, "react-hook-form", 10000, "tool-call");
 
     expect(result.returnedIds).toContain(ulid(0));
+  });
+
+  test("a retired note never reaches recall, even as the best textual match", async () => {
+    const specs: NoteSpec[] = [
+      { id: ulid(0), body: "payments are reconciled nightly", anchor: "src/pay.ts", retired: true },
+      { id: ulid(1), body: "payments ledger is append only", anchor: "src/pay.ts" },
+    ];
+    const { indexPath, eventsDir } = await setupIndex(specs, offlineClient());
+    const deps = openRecall(indexPath, eventsDir, offlineClient());
+
+    const result = await recall(deps, "payment", 10000, "tool-call");
+
+    expect(result.returnedIds).toEqual([ulid(1)]);
   });
 
   test("fts operator characters in the query do not throw and still match", async () => {

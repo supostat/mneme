@@ -1,7 +1,9 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { RememberResult, StagingEntry, ResolveResult } from "./staging";
 import type { RecalledNote } from "./recall";
+import type { NotesListResult, RetireRequest } from "./curation";
 import type { DedupSummary } from "./dedup-sidecar";
+import type { Note } from "./note";
 import type { StagedAnchor } from "./anchor-liveness";
 
 // Renders tool results as the delimiter-fenced text handed back to the LLM. Kept apart from the
@@ -53,11 +55,26 @@ export function formatRecall(notes: RecalledNote[], degraded: boolean): string {
   return `${header}\n${blocks.join("\n")}`;
 }
 
-export function formatStagingList(entries: StagingEntry[]): string {
-  if (entries.length === 0) return "The staging queue is empty. Nothing to review.";
+export function formatStagingList(entries: StagingEntry[], retireRequests: RetireRequest[]): string {
+  if (entries.length === 0 && retireRequests.length === 0) {
+    return "The staging queue is empty. Nothing to review.";
+  }
   const fence = makeFence();
-  const blocks = entries.map((entry) => formatStagingEntry(entry, fence));
+  const blocks = [
+    ...entries.map((entry) => formatStagingEntry(entry, fence)),
+    ...retireRequests.map((request) => formatRetireRequest(request, fence)),
+  ];
   return `${RETRIEVED_DATA_NOTICE}\n${blocks.join("\n")}\nAsk the human to decide accept, reject, or supersede for each, then call staging_resolve.`;
+}
+
+function formatRetireRequest(request: RetireRequest, fence: NoteFence): string {
+  return [
+    fence.begin,
+    `id: ${request.requestId}`,
+    `retire request for note ${request.targetId} (accept or reject only)`,
+    `reason: ${request.reason}`,
+    fence.end,
+  ].join("\n");
 }
 
 function formatStagingEntry(entry: StagingEntry, fence: NoteFence): string {
@@ -85,5 +102,39 @@ function formatAnchors(anchors: StagedAnchor[]): string {
 export function formatResolve(result: ResolveResult): string {
   if (result.outcome === "accepted") return `Accepted note ${result.noteId}; committed ${result.commit}.`;
   if (result.outcome === "rejected") return `Rejected note ${result.noteId}; moved to the archive.`;
+  if (result.outcome === "retired") {
+    return `Retired note ${result.noteId}; the file stays in notes/ as history and left recall. Committed ${result.commit}.`;
+  }
+  if (result.outcome === "retire_rejected") {
+    return `Rejected the retire request for note ${result.noteId}; the note stays live.`;
+  }
   return `Superseded ${result.supersededId} with note ${result.noteId}; committed ${result.commit}.`;
+}
+
+export function formatNotesList(result: NotesListResult): string {
+  if (result.total === 0) return "No notes match the filters.";
+  const lines = result.entries.map(
+    (entry) =>
+      `${entry.id} [${entry.type}] anchors: ${entry.anchorsN}, dead: ${entry.deadN} — ${entry.firstLine}`,
+  );
+  const header =
+    result.entries.length < result.total
+      ? `Showing ${result.entries.length} of ${result.total} matching notes (raise limit to see more).`
+      : `${result.total} matching note(s).`;
+  return [header, ...lines, "Bodies are not listed; call notes_list with an id to read one note in full."].join("\n");
+}
+
+export function formatNoteShow(note: Note): string {
+  const fence = makeFence();
+  const lifecycle = note.frontmatter.retired === true ? "retired: true\n" : "";
+  return [
+    RETRIEVED_DATA_NOTICE,
+    fence.begin,
+    `id: ${note.frontmatter.id}`,
+    `type: ${note.frontmatter.type}`,
+    `anchors: ${note.frontmatter.anchors.join(", ")}`,
+    `commit: ${note.frontmatter.commit}`,
+    `${lifecycle}${note.body}`,
+    fence.end,
+  ].join("\n");
 }

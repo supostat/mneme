@@ -34,10 +34,15 @@ import { z } from "zod";
 //   8 — run abandonment: workflow_run_abandoned { run_id, branch, reason } is a human's terminal
 //       refusal of a run — distinct from failure. Restore honors the marker on the raw run_id (the
 //       stale-marker discipline) and the survey excludes abandoned runs from every live listing.
-export const SCHEMA_VERSION = 8;
+//   9 — curation: note_retire_staged {request_id, target_id, reason} queues a retire decision for
+//       the human gate; note_retire_resolved {request_id, target_id, decision, commit} applies it.
+//       An accepted retire rewrites the note's frontmatter (retired: true) — the file stays in
+//       notes/ as history and the index keeps deriving from notes/ alone.
+export const SCHEMA_VERSION = 9;
 
 export const DEDUP_OUTCOMES = ["add", "supersede_suggest", "noop"] as const;
 export const RESOLVE_DECISIONS = ["accept", "reject", "supersede"] as const;
+export const RETIRE_DECISIONS = ["accept", "reject"] as const;
 export const ANCHOR_LIVENESS = ["tracked", "untracked-exists", "missing"] as const;
 export const RECALL_MODES = ["fused", "fts_only", "vector_only", "none"] as const;
 export const RECALL_CANDIDATE_WINDOW = 20;
@@ -178,6 +183,24 @@ const rebuildEvent = z.object({
   dead_anchors_n: z.number(),
   staleness: z.array(z.number()),
   ollama: z.object({ available: z.boolean(), retries: z.number() }),
+});
+
+const noteRetireStagedEvent = z.object({
+  type: z.literal("note_retire_staged"),
+  ...envelope,
+  request_id: z.string(),
+  target_id: z.string(),
+  reason: z.string(),
+});
+
+// commit is null for a rejected retire (nothing was written to the corpus repo).
+const noteRetireResolvedEvent = z.object({
+  type: z.literal("note_retire_resolved"),
+  ...envelope,
+  request_id: z.string(),
+  target_id: z.string(),
+  decision: z.enum(RETIRE_DECISIONS),
+  commit: z.string().nullable(),
 });
 
 // session_start / session_end carry only the envelope. An ABSENT session_end means the session was
@@ -346,6 +369,8 @@ export const eventSchema = z.discriminatedUnion("type", [
   rememberEvent,
   stagingResolveEvent,
   stagingListedEvent,
+  noteRetireStagedEvent,
+  noteRetireResolvedEvent,
   rebuildEvent,
   sessionStartEvent,
   sessionEndEvent,

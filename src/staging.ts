@@ -16,7 +16,9 @@ import { resolveAnchorLiveness } from "./anchor-liveness";
 import type { StagedAnchor } from "./anchor-liveness";
 import { sidecarFor, writeSidecar, readSidecar, removeSidecar, dedupSummary } from "./dedup-sidecar";
 import type { StagedClassification, DedupSummary } from "./dedup-sidecar";
-import { emitRemember, dedupPayload, dedupFromClassification, appendStagingResolve } from "./staging-resolve";
+import { emitRemember, dedupPayload, dedupFromClassification, appendRetireResolved, appendStagingResolve } from "./staging-resolve";
+import { countRetireRequests, readRetireRequest, removeRetireRequest } from "./curation";
+import type { RetireRequest } from "./curation";
 
 export class StagingError extends Error {}
 
@@ -64,7 +66,9 @@ export type ResolveDecision = "accept" | "reject" | { supersede: string };
 export type ResolveResult =
   | { outcome: "accepted"; noteId: string; commit: string }
   | { outcome: "rejected"; noteId: string }
-  | { outcome: "superseded"; noteId: string; supersededId: string; commit: string; suggested: boolean };
+  | { outcome: "superseded"; noteId: string; supersededId: string; commit: string; suggested: boolean }
+  | { outcome: "retired"; requestId: string; noteId: string; commit: string }
+  | { outcome: "retire_rejected"; requestId: string; noteId: string };
 
 const NOTE_EXTENSION = ".md";
 const COMMIT_AUTHOR_ARGS = ["-c", "user.email=mneme@localhost", "-c", "user.name=mneme"];
@@ -133,10 +137,12 @@ function stageNote(deps: StagingDeps, noteId: string, commit: string, input: Rem
   };
 }
 
-// The cheap read the workflow boundary needs: how many notes await review, with no liveness
-// resolution, no sidecar reads and no staging_listed event — listing stays the reviewed act.
+// The cheap read the workflow boundary needs: how many decisions await review — staged notes AND
+// queued retire requests — with no liveness resolution, no sidecar reads and no staging_listed
+// event; listing stays the reviewed act.
 export function countStagedNotes(corpus: Corpus): number {
-  return readdirSync(corpus.stagingDir).filter((name) => name.endsWith(NOTE_EXTENSION)).length;
+  const stagedNotes = readdirSync(corpus.stagingDir).filter((name) => name.endsWith(NOTE_EXTENSION)).length;
+  return stagedNotes + countRetireRequests(corpus);
 }
 
 export async function stagingList(deps: StagingDeps): Promise<StagingEntry[]> {
@@ -176,6 +182,10 @@ export async function stagingResolve(deps: StagingDeps, id: string, decision: Re
   if (!isNoteId(id)) {
     throw new StagingError(`invalid staged note id: ${id}`);
   }
+  const retireRequest = readRetireRequest(deps.corpus, id);
+  if (retireRequest !== undefined) {
+    return resolveRetireRequest(deps, retireRequest, decision);
+  }
   if (decision === "reject") {
     return rejectNote(deps, id);
   }
@@ -183,6 +193,43 @@ export async function stagingResolve(deps: StagingDeps, id: string, decision: Re
     return acceptNote(deps, id);
   }
   return supersedeNote(deps, id, decision.supersede);
+}
+
+// The retire decision resolves like any staged item: accept rewrites the note's frontmatter
+// (retired: true) in place — the file stays in notes/ as history — commits the corpus, and rebuilds
+// so recall and dedup stop seeing it; reject just drops the request. Both outcomes are logged.
+async function resolveRetireRequest(
+  deps: StagingDeps,
+  request: RetireRequest,
+  decision: ResolveDecision,
+): Promise<ResolveResult> {
+  if (decision !== "accept" && decision !== "reject") {
+    throw new StagingError(`a retire request resolves with accept or reject only: ${request.requestId}`);
+  }
+  if (decision === "reject") {
+    removeRetireRequest(deps.corpus, request.requestId);
+    appendRetireResolved(deps, request.requestId, request.targetId, "reject", null);
+    return { outcome: "retire_rejected", requestId: request.requestId, noteId: request.targetId };
+  }
+  markNoteRetired(deps.corpus, request.targetId);
+  const commit = await commitResolved(
+    deps.corpus,
+    notesRelPath(request.targetId),
+    `Retire note ${shortId(request.targetId)}`,
+  );
+  removeRetireRequest(deps.corpus, request.requestId);
+  appendRetireResolved(deps, request.requestId, request.targetId, "accept", commit);
+  await rebuild(rebuildDeps(deps));
+  return { outcome: "retired", requestId: request.requestId, noteId: request.targetId, commit };
+}
+
+function markNoteRetired(corpus: Corpus, targetId: string): void {
+  const path = notePath(corpus.notesDir, targetId);
+  if (!existsSync(path)) {
+    throw new StagingError(`no note to retire: ${targetId}`);
+  }
+  const note = parseNote(readFileSync(path, "utf8"));
+  writeFileSync(path, serializeNote({ frontmatter: { ...note.frontmatter, retired: true }, body: note.body }));
 }
 
 async function acceptNote(deps: StagingDeps, id: string): Promise<ResolveResult> {
