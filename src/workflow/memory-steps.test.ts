@@ -485,6 +485,34 @@ describe("compileRecallBundle pattern anchor decoupling", () => {
   });
 });
 
+describe("compileRecallBundle read-side sanitize", () => {
+  test("a poisoned body is excluded from the bundle loudly while its clean twin passes", async () => {
+    const { projectRoot, commit } = await buildProjectRepo();
+    const deps = await makeDeps(projectRoot, bagClient());
+    // The poisoned body is assembled from pieces (the sanitize-body framing-safety convention): it
+    // simulates a note accepted before the write-path tightening or edited on disk by hand —
+    // serializeNote does not run the curator set, so the file lands in notes/ carrying the token.
+    const closingInvokeTag = "<" + "/" + "inv" + "oke>";
+    const poisonedBody = "payment ledger reconciliation guide\n" + closingInvokeTag;
+    writeNote(deps, ulid(100), "decision", poisonedBody, ["src/a.ts"], commit);
+    writeNote(deps, ulid(101), "decision", "payment ledger reconciliation notes", ["src/a.ts"], commit);
+
+    const bundle = await compileRecallBundle(deps, {
+      phaseDescription: "payment ledger reconciliation",
+      anchorPaths: [],
+      budget: 100000,
+    });
+
+    expect(bundle.notes.map((note) => note.id)).toEqual([ulid(101)]);
+    expect(formatRecallBundle(bundle)).not.toContain(closingInvokeTag);
+    const rejected = readEvents(deps.corpus.eventsDir).filter((event) => event.type === "bundle_note_rejected");
+    expect(rejected.length).toBe(1);
+    expect(rejected[0]!.note_id).toBe(ulid(100));
+    // findForbiddenMarkup names the matched token, which stops at the tag name's word boundary.
+    expect(rejected[0]!.marker).toBe("<" + "/" + "inv" + "oke");
+  });
+});
+
 describe("compileRecallBundle degraded mode", () => {
   test("an offline embedder degrades the bundle to FTS matches without throwing", async () => {
     const { projectRoot, commit } = await buildProjectRepo();

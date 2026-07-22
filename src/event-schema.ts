@@ -38,7 +38,10 @@ import { z } from "zod";
 //       the human gate; note_retire_resolved {request_id, target_id, decision, commit} applies it.
 //       An accepted retire rewrites the note's frontmatter (retired: true) — the file stays in
 //       notes/ as history and the index keeps deriving from notes/ alone.
-export const SCHEMA_VERSION = 9;
+//  10 — bundle hygiene: bundle_note_rejected {note_id, marker} — a note whose body fails the
+//       write-path curator set at bundle compilation (accepted before a tightening, or hand-edited
+//       on disk) is excluded from the recall bundle LOUDLY, never silently.
+export const SCHEMA_VERSION = 10;
 
 export const DEDUP_OUTCOMES = ["add", "supersede_suggest", "noop"] as const;
 export const RESOLVE_DECISIONS = ["accept", "reject", "supersede"] as const;
@@ -201,6 +204,15 @@ const noteRetireResolvedEvent = z.object({
   target_id: z.string(),
   decision: z.enum(RETIRE_DECISIONS),
   commit: z.string().nullable(),
+});
+
+// marker is the offending token findForbiddenMarkup named; the log is same-UID data, never agent
+// context, so recording it verbatim is safe and is what makes the rejection debuggable.
+const bundleNoteRejectedEvent = z.object({
+  type: z.literal("bundle_note_rejected"),
+  ...envelope,
+  note_id: z.string(),
+  marker: z.string(),
 });
 
 // session_start / session_end carry only the envelope. An ABSENT session_end means the session was
@@ -371,6 +383,7 @@ export const eventSchema = z.discriminatedUnion("type", [
   stagingListedEvent,
   noteRetireStagedEvent,
   noteRetireResolvedEvent,
+  bundleNoteRejectedEvent,
   rebuildEvent,
   sessionStartEvent,
   sessionEndEvent,

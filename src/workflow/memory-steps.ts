@@ -7,6 +7,7 @@ import { MAX_BODY_CODE_POINTS, isAnchorNeutral, isNoteId, parseNote } from "../n
 import type { Note, NoteType } from "../note";
 import { passesRecallThreshold, recall } from "../recall";
 import type { RecallResult, RecalledNote } from "../recall";
+import { findForbiddenMarkup } from "../sanitize-body";
 import { remember } from "../staging";
 import type { RememberInput, RememberResult, StagingDeps } from "../staging";
 
@@ -61,6 +62,14 @@ export async function compileRecallBundle(
   const survivors = recalled.notes.filter(passesRecallThreshold);
   const notes: BundleNote[] = [];
   for (const survivor of survivors) {
+    // The write-path curator set re-applied on read: a body accepted before a tightening (or edited
+    // on disk) must not ride the bundle into the agent context. The exclusion is loud — an event
+    // names the note and the offending token — never a silent drop.
+    const marker = findForbiddenMarkup(survivor.body);
+    if (marker !== null) {
+      deps.eventWriter.append({ type: "bundle_note_rejected", note_id: survivor.id, marker });
+      continue;
+    }
     notes.push(await buildBundleNote(deps, survivor, request.anchorPaths));
   }
   return { query, notes: rankBundleNotes(notes), degraded: recalled.degraded };
