@@ -3,6 +3,7 @@ import { Database } from "bun:sqlite";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { defaultConfig } from "../config";
 import { resolveCorpus } from "../corpus";
 import { EMBEDDING_DIMENSION } from "../embeddings";
 import type { EmbeddingsClient } from "../embeddings";
@@ -149,7 +150,7 @@ async function makeDeps(projectRoot: string, embeddings: EmbeddingsClient): Prom
     mnemeVersion: "0.1.0",
     clock: fixedClock,
   });
-  return { corpus, projectRoot, clock: fixedClock, idFactory: sequentialIds(), embeddings, eventWriter };
+  return { corpus, projectRoot, config: defaultConfig(), clock: fixedClock, idFactory: sequentialIds(), embeddings, eventWriter };
 }
 
 // Bypasses the dedup gate: notes land straight in notesDir as already-accepted corpus content; the

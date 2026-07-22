@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import type { MnemeConfig } from "./config";
 import type { Corpus } from "./corpus";
 import { runGit } from "./git";
 import type { GitResult } from "./git";
@@ -22,6 +23,7 @@ export class StagingError extends Error {}
 export interface StagingDeps {
   corpus: Corpus;
   projectRoot: string;
+  config: MnemeConfig;
   clock: () => Date;
   idFactory: () => string;
   embeddings: EmbeddingsClient;
@@ -78,7 +80,7 @@ export async function remember(deps: StagingDeps, input: RememberInput): Promise
   if (!isNoteId(noteId)) {
     throw new StagingError(`idFactory produced an invalid note id: ${noteId}`);
   }
-  const classification = await classifyCandidate(deps.corpus.indexPath, deps.embeddings, input.body);
+  const classification = await classifyCandidate(deps.corpus.indexPath, deps.embeddings, input.body, deps.config.dedup);
   if (classification.kind === "noop") {
     return dedupeNoop(deps, noteId, input, classification.neighborId, classification.similarity);
   }
@@ -103,7 +105,7 @@ function dedupeNoop(
   existingId: string,
   similarity: number,
 ): RememberResult {
-  emitRemember(deps, noteId, input, dedupPayload("noop", existingId, similarity, false));
+  emitRemember(deps, noteId, input, dedupPayload("noop", existingId, similarity, false, deps.config.dedup));
   return { outcome: "noop", noteId, existingId, similarity };
 }
 
@@ -116,10 +118,10 @@ function stageNote(deps: StagingDeps, noteId: string, commit: string, input: Rem
     created: deps.clock().toISOString(),
   };
   const serialized = serializeNote({ frontmatter, body: input.body });
-  const sidecar = sidecarFor(classification);
+  const sidecar = sidecarFor(classification, deps.config.dedup);
   writeFileSync(notePath(deps.corpus.stagingDir, noteId), serialized);
   writeSidecar(deps.corpus, noteId, sidecar);
-  emitRemember(deps, noteId, input, dedupFromClassification(classification));
+  emitRemember(deps, noteId, input, dedupFromClassification(classification, deps.config.dedup));
   return {
     outcome: "staged",
     noteId,

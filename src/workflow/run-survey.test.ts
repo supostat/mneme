@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { defaultConfig } from "../config";
 import { resolveCorpus } from "../corpus";
 import { EventWriter, readEvents } from "../events";
 import type { StagingDeps } from "../staging";
@@ -41,6 +42,7 @@ async function makeNonRepoDeps(): Promise<StagingDeps> {
   return {
     corpus,
     projectRoot,
+    config: defaultConfig(),
     clock: fixedClock,
     idFactory: () => FOREIGN_RUN_ID,
     embeddings: { embed: async () => ({ available: false, embeddings: [], retries: 0 }) },

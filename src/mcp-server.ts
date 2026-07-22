@@ -12,6 +12,8 @@ import type { Corpus } from "./corpus";
 import { EventWriter, readEvents } from "./events";
 import { RESOLVE_DECISIONS } from "./event-schema";
 import { sanitizeToolErrorMessage } from "./sanitize";
+import { loadConfig } from "./config";
+import type { MnemeConfig } from "./config";
 import { OllamaEmbeddingsClient } from "./embeddings";
 import type { EmbeddingsClient } from "./embeddings";
 import { rebuild } from "./index-db";
@@ -41,7 +43,6 @@ import {
 
 const MNEME_VERSION = packageJson.version;
 const REMEMBER_SOURCE = "mcp";
-const DEFAULT_RECALL_TOKEN_BUDGET = 2000;
 
 const REMEMBER_DESCRIPTION =
   "Stage a note for HUMAN review. This does NOT save or publish the note; it only queues it. " +
@@ -94,7 +95,12 @@ export interface BuiltServer {
 export function buildServer(options: CreateServerOptions): BuiltServer {
   const clock = options.clock ?? (() => new Date());
   const idFactory = options.idFactory ?? (() => crypto.randomUUID());
-  const embeddings = options.embeddings ?? new OllamaEmbeddingsClient();
+  // Fail-closed at construction: a broken .mneme.json refuses the whole server with a named error
+  // instead of silently running on defaults.
+  const config = loadConfig(options.projectRoot);
+  const embeddings =
+    options.embeddings ??
+    new OllamaEmbeddingsClient(config.embedder.baseUrl, (url, init) => fetch(url, init), config.embedder.model);
   const sessionId = idFactory();
   let cached: ServerContext | undefined;
 
@@ -108,11 +114,11 @@ export function buildServer(options: CreateServerOptions): BuiltServer {
   }
 
   function buildStagingDeps(current: ServerContext): StagingDeps {
-    return { corpus: current.corpus, projectRoot: options.projectRoot, clock, idFactory, embeddings, eventWriter: current.eventWriter };
+    return { corpus: current.corpus, projectRoot: options.projectRoot, config, clock, idFactory, embeddings, eventWriter: current.eventWriter };
   }
 
   const server = new McpServer({ name: "mneme", version: MNEME_VERSION });
-  registerTools(server, context, buildStagingDeps, options.projectRoot, embeddings, clock);
+  registerTools(server, context, buildStagingDeps, options.projectRoot, config, embeddings, clock);
   return { server, context };
 }
 
@@ -136,6 +142,7 @@ function registerTools(
   context: () => Promise<ServerContext>,
   buildStagingDeps: (current: ServerContext) => StagingDeps,
   projectRoot: string,
+  config: MnemeConfig,
   embeddings: EmbeddingsClient,
   clock: () => Date,
 ): void {
@@ -143,7 +150,7 @@ function registerTools(
     dispatch(context, "remember", (current) => rememberTool(buildStagingDeps(current), args)),
   );
   server.registerTool("recall", { description: RECALL_DESCRIPTION, inputSchema: RECALL_INPUT }, (args) =>
-    dispatch(context, "recall", (current) => recallTool(current, projectRoot, embeddings, clock, args)),
+    dispatch(context, "recall", (current) => recallTool(current, projectRoot, config, embeddings, clock, args)),
   );
   server.registerTool("staging_list", { description: STAGING_LIST_DESCRIPTION, inputSchema: {} }, () =>
     dispatch(context, "staging_list", (current) => stagingListTool(buildStagingDeps(current))),
@@ -206,6 +213,7 @@ async function rememberTool(
 async function recallTool(
   context: ServerContext,
   projectRoot: string,
+  config: MnemeConfig,
   embeddings: EmbeddingsClient,
   clock: () => Date,
   args: { query: string; budget?: number },
@@ -217,7 +225,7 @@ async function recallTool(
   }
   const db = new Database(indexPath, { readonly: true });
   try {
-    const budget = args.budget ?? DEFAULT_RECALL_TOKEN_BUDGET;
+    const budget = args.budget ?? config.recall.budget;
     const result = await recall(
       { db, embeddings, eventWriter: context.eventWriter, clock },
       args.query,

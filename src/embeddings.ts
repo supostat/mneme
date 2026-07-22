@@ -65,6 +65,7 @@ export class OllamaEmbeddingsClient implements EmbeddingsClient {
   constructor(
     private readonly baseUrl: string = OLLAMA_BASE_URL,
     private readonly fetchImplementation: FetchImplementation = (url, init) => fetch(url, init),
+    private readonly model: string = EMBEDDING_MODEL,
   ) {}
 
   async embed(inputs: string[], options: EmbedOptions = {}): Promise<EmbedResult> {
@@ -77,6 +78,7 @@ export class OllamaEmbeddingsClient implements EmbeddingsClient {
       const embeddings = await attemptEmbed(
         this.fetchImplementation,
         this.baseUrl,
+        this.model,
         inputs,
         timeoutMs,
       );
@@ -98,6 +100,7 @@ function delay(milliseconds: number): Promise<void> {
 async function attemptEmbed(
   fetchImplementation: FetchImplementation,
   baseUrl: string,
+  model: string,
   inputs: string[],
   timeoutMs: number,
 ): Promise<Float32Array[] | undefined> {
@@ -105,7 +108,7 @@ async function attemptEmbed(
     const response = await fetchImplementation(`${baseUrl}${EMBED_ENDPOINT}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ model: EMBEDDING_MODEL, input: inputs }),
+      body: JSON.stringify({ model, input: inputs }),
       signal: AbortSignal.timeout(timeoutMs),
     });
     if (!response.ok) {

@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runGit, initRepo } from "./git";
+import { defaultConfig } from "./config";
 import { resolveCorpus } from "./corpus";
 import { EventWriter } from "./events";
 import type { EmbeddingsClient } from "./embeddings";
@@ -117,7 +118,7 @@ async function makeDeps(projectRoot: string): Promise<StagingDeps> {
     mnemeVersion: "0.1.0",
     clock: fixedClock,
   });
-  return { corpus, projectRoot, clock: fixedClock, idFactory: ulid, embeddings: offlineClient(), eventWriter };
+  return { corpus, projectRoot, config: defaultConfig(), clock: fixedClock, idFactory: ulid, embeddings: offlineClient(), eventWriter };
 }
 
 describe("remember write path rejects poisoned bodies before staging", () => {

@@ -1,8 +1,7 @@
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Corpus } from "./corpus";
-import { DEDUP_SUPERSEDE_THRESHOLD, DEDUP_NOOP_THRESHOLD } from "./dedup";
-import type { DedupClassification } from "./dedup";
+import type { DedupClassification, DedupThresholds } from "./dedup";
 
 const SIDECAR_EXTENSION = ".dedup.json";
 
@@ -26,12 +25,12 @@ function sidecarPath(corpus: Corpus, id: string): string {
   return join(corpus.stagingDir, `${id}${SIDECAR_EXTENSION}`);
 }
 
-export function sidecarFor(classification: StagedClassification): Sidecar {
-  const thresholds = { supersede_threshold: DEDUP_SUPERSEDE_THRESHOLD, noop_threshold: DEDUP_NOOP_THRESHOLD };
+export function sidecarFor(classification: StagedClassification, thresholds: DedupThresholds): Sidecar {
+  const recorded = { supersede_threshold: thresholds.supersedeThreshold, noop_threshold: thresholds.noopThreshold };
   if (classification.kind === "supersede_offer") {
-    return { dedup: "supersede_offer", nearest_id: classification.neighborId, similarity: classification.similarity, degraded: false, ...thresholds };
+    return { dedup: "supersede_offer", nearest_id: classification.neighborId, similarity: classification.similarity, degraded: false, ...recorded };
   }
-  return { dedup: "add", nearest_id: null, similarity: null, degraded: classification.degraded, ...thresholds };
+  return { dedup: "add", nearest_id: null, similarity: null, degraded: classification.degraded, ...recorded };
 }
 
 export function writeSidecar(corpus: Corpus, id: string, sidecar: Sidecar): void {

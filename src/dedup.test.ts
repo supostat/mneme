@@ -9,6 +9,11 @@ import { EMBEDDING_DIMENSION } from "./embeddings";
 import type { EmbeddingsClient } from "./embeddings";
 import { EventWriter } from "./events";
 import { classifyCandidate, DEDUP_SUPERSEDE_THRESHOLD, DEDUP_NOOP_THRESHOLD } from "./dedup";
+import { defaultConfig } from "./config";
+
+// The live path threads config.dedup; these specs pin the historical bands, so the default
+// thresholds ARE the fixture.
+const THRESHOLDS = defaultConfig().dedup;
 
 const fixedClock = () => new Date("2026-07-06T10:00:00.000Z");
 
@@ -91,7 +96,7 @@ function candidateClient(components: number[]): EmbeddingsClient {
 describe("classifyCandidate bands", () => {
   test("a similarity below the supersede threshold is a clean ADD carrying the neighbor", async () => {
     const indexPath = await indexWithExistingVector([1, 0]);
-    const result = await classifyCandidate(indexPath, candidateClient([45, 28]), CANDIDATE_BODY); // 45/53 = 0.849
+    const result = await classifyCandidate(indexPath, candidateClient([45, 28]), CANDIDATE_BODY, THRESHOLDS); // 45/53 = 0.849
     expect(result.kind).toBe("add");
     if (result.kind === "add") {
       expect(result.degraded).toBe(false);
@@ -102,7 +107,7 @@ describe("classifyCandidate bands", () => {
 
   test("a similarity in the supersede band is a supersede offer carrying the neighbor", async () => {
     const indexPath = await indexWithExistingVector([1, 0]);
-    const result = await classifyCandidate(indexPath, candidateClient([24, 7]), CANDIDATE_BODY); // 24/25 = 0.96
+    const result = await classifyCandidate(indexPath, candidateClient([24, 7]), CANDIDATE_BODY, THRESHOLDS); // 24/25 = 0.96
     expect(result.kind).toBe("supersede_offer");
     if (result.kind === "supersede_offer") {
       expect(result.neighborId).toBe(baseFrontmatter.id);
@@ -112,7 +117,7 @@ describe("classifyCandidate bands", () => {
 
   test("a similarity at or above the noop threshold is a noop", async () => {
     const indexPath = await indexWithExistingVector([1, 0]);
-    const result = await classifyCandidate(indexPath, candidateClient([40, 9]), CANDIDATE_BODY); // 40/41 = 0.9756
+    const result = await classifyCandidate(indexPath, candidateClient([40, 9]), CANDIDATE_BODY, THRESHOLDS); // 40/41 = 0.9756
     expect(result.kind).toBe("noop");
     if (result.kind === "noop") {
       expect(result.neighborId).toBe(baseFrontmatter.id);
@@ -124,8 +129,8 @@ describe("classifyCandidate bands", () => {
 describe("classifyCandidate boundaries", () => {
   test("just below 0.85 stays ADD while just above enters the supersede band", async () => {
     const indexPath = await indexWithExistingVector([1, 0]);
-    const below = await classifyCandidate(indexPath, candidateClient([45, 28]), CANDIDATE_BODY); // 0.849
-    const above = await classifyCandidate(indexPath, candidateClient([75, 40]), CANDIDATE_BODY); // 0.882
+    const below = await classifyCandidate(indexPath, candidateClient([45, 28]), CANDIDATE_BODY, THRESHOLDS); // 0.849
+    const above = await classifyCandidate(indexPath, candidateClient([75, 40]), CANDIDATE_BODY, THRESHOLDS); // 0.882
     expect(below.kind).toBe("add");
     expect(above.kind).toBe("supersede_offer");
     expect(DEDUP_SUPERSEDE_THRESHOLD).toBe(0.85);
@@ -133,8 +138,8 @@ describe("classifyCandidate boundaries", () => {
 
   test("just below 0.97 stays a supersede offer while at or above it is a noop", async () => {
     const indexPath = await indexWithExistingVector([1, 0]);
-    const below = await classifyCandidate(indexPath, candidateClient([24, 7]), CANDIDATE_BODY); // 0.96
-    const above = await classifyCandidate(indexPath, candidateClient([40, 9]), CANDIDATE_BODY); // 0.9756
+    const below = await classifyCandidate(indexPath, candidateClient([24, 7]), CANDIDATE_BODY, THRESHOLDS); // 0.96
+    const above = await classifyCandidate(indexPath, candidateClient([40, 9]), CANDIDATE_BODY, THRESHOLDS); // 0.9756
     expect(below.kind).toBe("supersede_offer");
     expect(above.kind).toBe("noop");
     expect(DEDUP_NOOP_THRESHOLD).toBe(0.97);
@@ -142,7 +147,7 @@ describe("classifyCandidate boundaries", () => {
 
   test("an identical vector is a noop at the top of the band", async () => {
     const indexPath = await indexWithExistingVector([1, 0]);
-    const result = await classifyCandidate(indexPath, candidateClient([1, 0]), CANDIDATE_BODY); // cosine 1
+    const result = await classifyCandidate(indexPath, candidateClient([1, 0]), CANDIDATE_BODY, THRESHOLDS); // cosine 1
     expect(result.kind).toBe("noop");
   });
 });
@@ -150,14 +155,14 @@ describe("classifyCandidate boundaries", () => {
 describe("classifyCandidate degraded and empty", () => {
   test("an unavailable embedder degrades to a degraded ADD without consulting the index", async () => {
     const indexPath = await indexWithExistingVector([1, 0]);
-    const result = await classifyCandidate(indexPath, offlineClient(), CANDIDATE_BODY);
+    const result = await classifyCandidate(indexPath, offlineClient(), CANDIDATE_BODY, THRESHOLDS);
     expect(result).toEqual({ kind: "add", degraded: true, neighborId: null, similarity: null });
   });
 
   test("no stored neighbor yields a clean ADD", async () => {
     const corpusDir = mkdtempSync(join(tmpdir(), "mneme-dedup-empty-"));
     const indexPath = join(corpusDir, "index.db"); // never built -> nearestNeighbor undefined
-    const result = await classifyCandidate(indexPath, candidateClient([1, 0]), CANDIDATE_BODY);
+    const result = await classifyCandidate(indexPath, candidateClient([1, 0]), CANDIDATE_BODY, THRESHOLDS);
     expect(result).toEqual({ kind: "add", degraded: false, neighborId: null, similarity: null });
   });
 });

@@ -2,7 +2,7 @@ import { readEvents } from "./events";
 import type { StoredEvent } from "./events";
 import { isStagingEvent } from "./event-dialect";
 import { DEDUP_OUTCOMES, RESOLVE_DECISIONS } from "./event-schema";
-import { DEDUP_SUPERSEDE_THRESHOLD, DEDUP_NOOP_THRESHOLD } from "./dedup";
+import type { DedupThresholds } from "./dedup";
 import type { StagedClassification } from "./dedup-sidecar";
 import type { StagingDeps, RememberInput } from "./staging";
 
@@ -41,22 +41,26 @@ export function dedupPayload(
   nearestId: string | null,
   similarity: number | null,
   degraded: boolean,
+  thresholds: DedupThresholds,
 ): DedupEventPayload {
   return {
     outcome,
     nearest_id: nearestId,
     similarity,
-    supersede_threshold: DEDUP_SUPERSEDE_THRESHOLD,
-    noop_threshold: DEDUP_NOOP_THRESHOLD,
+    supersede_threshold: thresholds.supersedeThreshold,
+    noop_threshold: thresholds.noopThreshold,
     degraded,
   };
 }
 
-export function dedupFromClassification(classification: StagedClassification): DedupEventPayload {
+export function dedupFromClassification(
+  classification: StagedClassification,
+  thresholds: DedupThresholds,
+): DedupEventPayload {
   if (classification.kind === "supersede_offer") {
-    return dedupPayload("supersede_suggest", classification.neighborId, classification.similarity, false);
+    return dedupPayload("supersede_suggest", classification.neighborId, classification.similarity, false, thresholds);
   }
-  return dedupPayload("add", classification.neighborId, classification.similarity, classification.degraded);
+  return dedupPayload("add", classification.neighborId, classification.similarity, classification.degraded, thresholds);
 }
 
 interface StagingResolveExtra {

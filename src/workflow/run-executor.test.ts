@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { defaultConfig } from "../config";
 import { resolveCorpus } from "../corpus";
 import { EMBEDDING_DIMENSION } from "../embeddings";
 import type { EmbeddingsClient } from "../embeddings";
@@ -73,7 +74,7 @@ async function makeDeps(projectRoot: string): Promise<StagingDeps> {
     clock: fixedClock,
   });
   let counter = 0;
-  return { corpus, projectRoot, clock: fixedClock, idFactory: () => ulid(counter++), embeddings: bagClient(), eventWriter };
+  return { corpus, projectRoot, config: defaultConfig(), clock: fixedClock, idFactory: () => ulid(counter++), embeddings: bagClient(), eventWriter };
 }
 
 const GREEN = [{ kind: "executable" as const, description: "green", command: "true" }];

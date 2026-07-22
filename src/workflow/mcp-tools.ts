@@ -47,8 +47,6 @@ import { surveyRuns } from "./run-survey";
 
 export class WorkflowToolError extends Error {}
 
-export const DEFAULT_WORKFLOW_RECALL_BUDGET = 2000;
-
 export const WORKFLOW_START_DESCRIPTION =
   "Start a workflow run anchored to the CURRENT git branch. phases are phase-document markdown " +
   "texts; steps define the retry/failure policy applied inside every phase; run state lives only " +
@@ -286,7 +284,7 @@ export async function workflowStartTool(deps: StagingDeps, args: WorkflowStartAr
   }
   const definition = buildDefinitionFromArgs(args);
   const retrieval: RunRetrievalConfig = {
-    recallBudget: args.recall_budget ?? DEFAULT_WORKFLOW_RECALL_BUDGET,
+    recallBudget: args.recall_budget ?? deps.config.recall.budget,
     recallAnchors: args.recall_anchors ?? {},
   };
   requireValidRecallAnchors(definition, retrieval.recallAnchors);

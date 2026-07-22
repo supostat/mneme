@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, existsSync, read
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runGit, initRepo } from "./git";
+import { defaultConfig } from "./config";
 import { resolveCorpus } from "./corpus";
 import type { Corpus } from "./corpus";
 import { EventWriter, readEvents } from "./events";
@@ -112,7 +113,7 @@ async function makeDeps(
     mnemeVersion: "0.1.0",
     clock,
   });
-  return { corpus, projectRoot, clock, idFactory, embeddings, eventWriter };
+  return { corpus, projectRoot, config: defaultConfig(), clock, idFactory, embeddings, eventWriter };
 }
 
 function eventsOfType(corpus: Corpus, type: string): StoredEvent[] {
