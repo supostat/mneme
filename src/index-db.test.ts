@@ -8,7 +8,7 @@ import { serializeNote } from "./note";
 import type { Note, NoteFrontmatter } from "./note";
 import { rebuild, dumpIndex, dumpVectors, nearestNeighbor } from "./index-db";
 import type { RebuildDeps } from "./index-db";
-import { OllamaEmbeddingsClient, EMBEDDING_DIMENSION, OLLAMA_BASE_URL } from "./embeddings";
+import { HttpEmbeddingsClient, EMBEDDING_DIMENSION, OLLAMA_BASE_URL } from "./embeddings";
 import type { EmbeddingsClient } from "./embeddings";
 import { EventWriter, readEvents } from "./events";
 
@@ -419,7 +419,7 @@ describe("rebuild with real Ollama", () => {
         indexPath: corpus.indexPath,
         notesDir: corpus.notesDir,
         projectRoot,
-        embeddings: new OllamaEmbeddingsClient(),
+        embeddings: new HttpEmbeddingsClient(),
       });
 
       await rebuild(deps);

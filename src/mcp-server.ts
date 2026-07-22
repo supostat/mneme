@@ -14,7 +14,7 @@ import { RESOLVE_DECISIONS } from "./event-schema";
 import { sanitizeToolErrorMessage } from "./sanitize";
 import { loadConfig } from "./config";
 import type { MnemeConfig } from "./config";
-import { OllamaEmbeddingsClient } from "./embeddings";
+import { HttpEmbeddingsClient } from "./embeddings";
 import type { EmbeddingsClient } from "./embeddings";
 import { rebuild } from "./index-db";
 import { recall } from "./recall";
@@ -100,7 +100,12 @@ export function buildServer(options: CreateServerOptions): BuiltServer {
   const config = loadConfig(options.projectRoot);
   const embeddings =
     options.embeddings ??
-    new OllamaEmbeddingsClient(config.embedder.baseUrl, (url, init) => fetch(url, init), config.embedder.model);
+    new HttpEmbeddingsClient(
+      config.embedder.baseUrl,
+      (url, init) => fetch(url, init),
+      config.embedder.model,
+      config.embedder.format,
+    );
   const sessionId = idFactory();
   let cached: ServerContext | undefined;
 

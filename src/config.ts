@@ -2,7 +2,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import { DEDUP_NOOP_THRESHOLD, DEDUP_SUPERSEDE_THRESHOLD } from "./dedup";
-import { EMBEDDING_MODEL, OLLAMA_BASE_URL } from "./embeddings";
+import { EMBEDDER_FORMATS, EMBEDDING_MODEL, OLLAMA_BASE_URL } from "./embeddings";
+import type { EmbedderFormat } from "./embeddings";
 
 // Project-level configuration: <projectRoot>/.mneme.json overridden by MNEME_* environment
 // variables. Every default IS the historical constant, imported from its canonical module, so a
@@ -13,9 +14,6 @@ export class ConfigError extends Error {}
 
 export const CONFIG_FILE_NAME = ".mneme.json";
 export const DEFAULT_RECALL_BUDGET = 2000;
-
-export const EMBEDDER_FORMATS = ["ollama", "openai"] as const;
-export type EmbedderFormat = (typeof EMBEDDER_FORMATS)[number];
 
 export interface MnemeConfig {
   embedder: { baseUrl: string; model: string; format: EmbedderFormat };

@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { corpusDirFor } from "../src/corpus";
 import { runDoctor, renderDoctorReport } from "../src/doctor";
-import { OllamaEmbeddingsClient } from "../src/embeddings";
+import { HttpEmbeddingsClient } from "../src/embeddings";
 
 // Thin human-driven CLI over the read-only doctor library (mirrors scripts/replay.ts and
 // scripts/migrate.ts): locate the current project's corpus WITHOUT creating it, run every wiring check,
@@ -17,7 +17,7 @@ export async function main(argv: string[]): Promise<number> {
   }
   try {
     const { corpusDir } = corpusDirFor(process.cwd());
-    const report = await runDoctor({ corpusDir, embedder: new OllamaEmbeddingsClient() });
+    const report = await runDoctor({ corpusDir, embedder: new HttpEmbeddingsClient() });
     process.stdout.write(renderDoctorReport(report) + "\n");
     return report.overall === "ok" ? 0 : 1;
   } catch (error) {

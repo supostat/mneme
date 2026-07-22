@@ -7,7 +7,17 @@ export const RECALL_EMBED_TIMEOUT_MS = 2000;
 export const RECALL_EMBED_ATTEMPTS = 1;
 export const EMBED_RETRY_BACKOFF_MS = 50;
 
-const EMBED_ENDPOINT = "/api/embed";
+// Two wire dialects, one client: ollama (native /api/embed) and openai (/v1/embeddings, the shape
+// LM Studio, llama.cpp-server and cloud endpoints speak). Both take the same {model, input} body;
+// only the endpoint and the response shape differ.
+export const EMBEDDER_FORMATS = ["ollama", "openai"] as const;
+export type EmbedderFormat = (typeof EMBEDDER_FORMATS)[number];
+
+const EMBED_ENDPOINTS: Record<EmbedderFormat, string> = {
+  ollama: "/api/embed",
+  openai: "/v1/embeddings",
+};
+
 export const FLOAT_BYTES = 4;
 export const EMBEDDING_BLOB_BYTES = EMBEDDING_DIMENSION * FLOAT_BYTES;
 
@@ -61,11 +71,12 @@ export type FetchImplementation = (
   init: EmbeddingsHttpRequest,
 ) => Promise<EmbeddingsHttpResponse>;
 
-export class OllamaEmbeddingsClient implements EmbeddingsClient {
+export class HttpEmbeddingsClient implements EmbeddingsClient {
   constructor(
     private readonly baseUrl: string = OLLAMA_BASE_URL,
     private readonly fetchImplementation: FetchImplementation = (url, init) => fetch(url, init),
     private readonly model: string = EMBEDDING_MODEL,
+    private readonly format: EmbedderFormat = "ollama",
   ) {}
 
   async embed(inputs: string[], options: EmbedOptions = {}): Promise<EmbedResult> {
@@ -79,6 +90,7 @@ export class OllamaEmbeddingsClient implements EmbeddingsClient {
         this.fetchImplementation,
         this.baseUrl,
         this.model,
+        this.format,
         inputs,
         timeoutMs,
       );
@@ -101,11 +113,12 @@ async function attemptEmbed(
   fetchImplementation: FetchImplementation,
   baseUrl: string,
   model: string,
+  format: EmbedderFormat,
   inputs: string[],
   timeoutMs: number,
 ): Promise<Float32Array[] | undefined> {
   try {
-    const response = await fetchImplementation(`${baseUrl}${EMBED_ENDPOINT}`, {
+    const response = await fetchImplementation(`${baseUrl}${EMBED_ENDPOINTS[format]}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ model, input: inputs }),
@@ -114,18 +127,21 @@ async function attemptEmbed(
     if (!response.ok) {
       return undefined;
     }
-    return parseEmbeddings(await response.json(), inputs.length);
+    return parseEmbeddings(format, await response.json(), inputs.length);
   } catch {
     return undefined;
   }
 }
 
-function parseEmbeddings(payload: unknown, expectedCount: number): Float32Array[] | undefined {
-  if (typeof payload !== "object" || payload === null) {
-    return undefined;
-  }
-  const rows = (payload as { embeddings?: unknown }).embeddings;
-  if (!Array.isArray(rows) || rows.length !== expectedCount) {
+// Any malformed response — wrong shape, wrong count, wrong dimension — is undefined, which feeds the
+// SAME retry-then-degrade path for both formats; a format never gets its own failure semantics.
+function parseEmbeddings(
+  format: EmbedderFormat,
+  payload: unknown,
+  expectedCount: number,
+): Float32Array[] | undefined {
+  const rows = format === "ollama" ? ollamaRows(payload) : openaiRows(payload);
+  if (rows === undefined || rows.length !== expectedCount) {
     return undefined;
   }
   const vectors: Float32Array[] = [];
@@ -137,6 +153,27 @@ function parseEmbeddings(payload: unknown, expectedCount: number): Float32Array[
     vectors.push(vector);
   }
   return vectors;
+}
+
+function ollamaRows(payload: unknown): unknown[] | undefined {
+  if (typeof payload !== "object" || payload === null) {
+    return undefined;
+  }
+  const rows = (payload as { embeddings?: unknown }).embeddings;
+  return Array.isArray(rows) ? rows : undefined;
+}
+
+function openaiRows(payload: unknown): unknown[] | undefined {
+  if (typeof payload !== "object" || payload === null) {
+    return undefined;
+  }
+  const data = (payload as { data?: unknown }).data;
+  if (!Array.isArray(data)) {
+    return undefined;
+  }
+  return data.map((entry) =>
+    typeof entry === "object" && entry !== null ? (entry as { embedding?: unknown }).embedding : undefined,
+  );
 }
 
 function toVector(row: unknown): Float32Array | undefined {

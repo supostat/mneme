@@ -1,6 +1,6 @@
 import { test, expect, describe } from "bun:test";
 import {
-  OllamaEmbeddingsClient,
+  HttpEmbeddingsClient,
   EMBEDDING_DIMENSION,
   EMBED_ATTEMPTS,
   EMBED_TIMEOUT_MS,
@@ -21,21 +21,27 @@ function okResponse(payload: unknown): EmbeddingsHttpResponse {
 
 interface CallLog {
   count: number;
+  lastUrl?: string;
   lastRequest: EmbeddingsHttpRequest | undefined;
 }
 
 function recordingFetch(payload: unknown, log: CallLog): FetchImplementation {
-  return async (_url, init) => {
+  return async (url, init) => {
     log.count++;
+    log.lastUrl = url;
     log.lastRequest = init;
     return okResponse(payload);
   };
 }
 
-describe("OllamaEmbeddingsClient happy path", () => {
+function openaiClient(fetchImplementation: FetchImplementation): HttpEmbeddingsClient {
+  return new HttpEmbeddingsClient(BASE_URL, fetchImplementation, "text-embedding-stub", "openai");
+}
+
+describe("HttpEmbeddingsClient happy path", () => {
   test("embeds each input into a finite 1024-dimension vector", async () => {
     const log: CallLog = { count: 0, lastRequest: undefined };
-    const client = new OllamaEmbeddingsClient(
+    const client = new HttpEmbeddingsClient(
       BASE_URL,
       recordingFetch({ embeddings: [validRow(1), validRow(2)] }, log),
     );
@@ -53,7 +59,7 @@ describe("OllamaEmbeddingsClient happy path", () => {
 
   test("sends the pinned model and the inputs in the request body", async () => {
     const log: CallLog = { count: 0, lastRequest: undefined };
-    const client = new OllamaEmbeddingsClient(BASE_URL, recordingFetch({ embeddings: [validRow()] }, log));
+    const client = new HttpEmbeddingsClient(BASE_URL, recordingFetch({ embeddings: [validRow()] }, log));
 
     await client.embed(["only"]);
 
@@ -63,10 +69,82 @@ describe("OllamaEmbeddingsClient happy path", () => {
   });
 });
 
-describe("OllamaEmbeddingsClient empty input", () => {
+describe("HttpEmbeddingsClient openai format", () => {
+  test("posts {model, input} to /v1/embeddings and reads data[].embedding", async () => {
+    const log: CallLog = { count: 0, lastRequest: undefined };
+    const client = openaiClient(
+      recordingFetch({ data: [{ embedding: validRow(1) }, { embedding: validRow(2) }] }, log),
+    );
+
+    const result = await client.embed(["alpha", "beta"]);
+
+    expect(result.available).toBe(true);
+    expect(result.embeddings.length).toBe(2);
+    expect(result.embeddings[0]!.length).toBe(EMBEDDING_DIMENSION);
+    expect(log.lastUrl).toBe(`${BASE_URL}/v1/embeddings`);
+    const body = JSON.parse(log.lastRequest!.body);
+    expect(body.model).toBe("text-embedding-stub");
+    expect(body.input).toEqual(["alpha", "beta"]);
+  });
+
+  test("the ollama format still talks to /api/embed — the endpoint follows the format", async () => {
+    const log: CallLog = { count: 0, lastRequest: undefined };
+    const client = new HttpEmbeddingsClient(BASE_URL, recordingFetch({ embeddings: [validRow()] }, log));
+
+    await client.embed(["only"]);
+
+    expect(log.lastUrl).toBe(`${BASE_URL}/api/embed`);
+  });
+
+  test("an unreachable openai endpoint degrades through the shared path", async () => {
+    const client = openaiClient(async () => {
+      throw new TypeError("connection refused");
+    });
+
+    const result = await client.embed(["alpha"]);
+
+    expect(result).toEqual({ available: false, embeddings: [], retries: 1 });
+  });
+
+  test("an ollama-shaped response on the openai format is malformed and degrades", async () => {
+    const client = openaiClient(async () => okResponse({ embeddings: [validRow()] }));
+
+    const result = await client.embed(["alpha"]);
+
+    expect(result).toEqual({ available: false, embeddings: [], retries: 1 });
+  });
+
+  test("a data entry without an embedding array degrades", async () => {
+    const client = openaiClient(async () => okResponse({ data: [{ index: 0, object: "embedding" }] }));
+
+    const result = await client.embed(["alpha"]);
+
+    expect(result).toEqual({ available: false, embeddings: [], retries: 1 });
+  });
+
+  test("a wrong-dimension openai row degrades", async () => {
+    const client = openaiClient(async () =>
+      okResponse({ data: [{ embedding: validRow().slice(0, EMBEDDING_DIMENSION - 1) }] }),
+    );
+
+    const result = await client.embed(["alpha"]);
+
+    expect(result).toEqual({ available: false, embeddings: [], retries: 1 });
+  });
+
+  test("a row-count mismatch on the openai format degrades", async () => {
+    const client = openaiClient(async () => okResponse({ data: [{ embedding: validRow() }] }));
+
+    const result = await client.embed(["alpha", "beta"]);
+
+    expect(result).toEqual({ available: false, embeddings: [], retries: 1 });
+  });
+});
+
+describe("HttpEmbeddingsClient empty input", () => {
   test("returns an available empty result without issuing a request", async () => {
     const log: CallLog = { count: 0, lastRequest: undefined };
-    const client = new OllamaEmbeddingsClient(BASE_URL, recordingFetch({ embeddings: [] }, log));
+    const client = new HttpEmbeddingsClient(BASE_URL, recordingFetch({ embeddings: [] }, log));
 
     const result = await client.embed([]);
 
@@ -75,9 +153,9 @@ describe("OllamaEmbeddingsClient empty input", () => {
   });
 });
 
-describe("OllamaEmbeddingsClient typed degradation", () => {
+describe("HttpEmbeddingsClient typed degradation", () => {
   test("a refused connection degrades without throwing", async () => {
-    const client = new OllamaEmbeddingsClient(BASE_URL, async () => {
+    const client = new HttpEmbeddingsClient(BASE_URL, async () => {
       throw new TypeError("connection refused");
     });
 
@@ -87,7 +165,7 @@ describe("OllamaEmbeddingsClient typed degradation", () => {
   });
 
   test("a non-ok response degrades", async () => {
-    const client = new OllamaEmbeddingsClient(BASE_URL, async () => ({
+    const client = new HttpEmbeddingsClient(BASE_URL, async () => ({
       ok: false,
       json: async () => ({ embeddings: [validRow()] }),
     }));
@@ -98,7 +176,7 @@ describe("OllamaEmbeddingsClient typed degradation", () => {
   });
 
   test("a hanging server degrades within the timeout budget", async () => {
-    const client = new OllamaEmbeddingsClient(BASE_URL, (_url, init) => {
+    const client = new HttpEmbeddingsClient(BASE_URL, (_url, init) => {
       return new Promise<EmbeddingsHttpResponse>((_resolve, reject) => {
         init.signal.addEventListener("abort", () => reject(new Error("aborted")));
       });
@@ -113,7 +191,7 @@ describe("OllamaEmbeddingsClient typed degradation", () => {
   });
 
   test("a wrong-dimension row degrades", async () => {
-    const client = new OllamaEmbeddingsClient(BASE_URL, async () =>
+    const client = new HttpEmbeddingsClient(BASE_URL, async () =>
       okResponse({ embeddings: [validRow().slice(0, EMBEDDING_DIMENSION - 1)] }),
     );
 
@@ -125,7 +203,7 @@ describe("OllamaEmbeddingsClient typed degradation", () => {
   test("a non-finite float degrades", async () => {
     const row = validRow();
     row[0] = Number.POSITIVE_INFINITY;
-    const client = new OllamaEmbeddingsClient(BASE_URL, async () => okResponse({ embeddings: [row] }));
+    const client = new HttpEmbeddingsClient(BASE_URL, async () => okResponse({ embeddings: [row] }));
 
     const result = await client.embed(["alpha"]);
 
@@ -133,7 +211,7 @@ describe("OllamaEmbeddingsClient typed degradation", () => {
   });
 
   test("a row-count mismatch degrades", async () => {
-    const client = new OllamaEmbeddingsClient(BASE_URL, async () =>
+    const client = new HttpEmbeddingsClient(BASE_URL, async () =>
       okResponse({ embeddings: [validRow()] }),
     );
 
@@ -143,7 +221,7 @@ describe("OllamaEmbeddingsClient typed degradation", () => {
   });
 });
 
-describe("OllamaEmbeddingsClient per-call retry and timeout overrides", () => {
+describe("HttpEmbeddingsClient per-call retry and timeout overrides", () => {
   function slowThenFastFetch(counter: { calls: number }): FetchImplementation {
     return (_url, init) => {
       counter.calls++;
@@ -158,7 +236,7 @@ describe("OllamaEmbeddingsClient per-call retry and timeout overrides", () => {
 
   test("a single-attempt call fails fast on the first hang", async () => {
     const counter = { calls: 0 };
-    const client = new OllamaEmbeddingsClient(BASE_URL, slowThenFastFetch(counter));
+    const client = new HttpEmbeddingsClient(BASE_URL, slowThenFastFetch(counter));
 
     const result = await client.embed(["alpha"], { timeoutMs: 50, attempts: 1 });
 
@@ -169,7 +247,7 @@ describe("OllamaEmbeddingsClient per-call retry and timeout overrides", () => {
 
   test("a two-attempt call retries past the first hang and succeeds", async () => {
     const counter = { calls: 0 };
-    const client = new OllamaEmbeddingsClient(BASE_URL, slowThenFastFetch(counter));
+    const client = new HttpEmbeddingsClient(BASE_URL, slowThenFastFetch(counter));
 
     const result = await client.embed(["alpha"], { timeoutMs: 50, attempts: 2 });
 
