@@ -8,13 +8,18 @@ silently: you accept, reject, or supersede staged notes yourself, so the corpus 
 memory you approved. Recall fuses full-text and vector search under a token budget and logs its
 candidates so retrieval decisions can be replayed and audited offline.
 
-The binary exposes seven MCP tools over stdio. Five are the memory surface: `remember` (stage a note),
-`recall` (token-budgeted fused retrieval), `staging_list` and `staging_resolve` (review and
+The binary exposes eleven MCP tools over stdio. Five are the memory surface: `remember` (stage a
+note), `recall` (token-budgeted fused retrieval), `staging_list` and `staging_resolve` (review and
 accept/reject/supersede staged notes), and `stats` (reuse and footprint metrics from the event log).
-The other two drive the workflow engine: `workflow_start` opens a run anchored to the current project
-branch, and `workflow_step` is the live executor — it loops directives (recall at phase start, gated
-steps, harvest on close) decided by the reducer, resumes a branch's unfinished run from the event log
-after an interruption, and never silently resumes a run whose branch is gone.
+Two curate the accepted corpus: `notes_list` (one line per live note with anchor health, or one full
+note by id) and `note_retire` (queue a retirement — the decision still travels through the
+`staging_resolve` human gate, and an accepted retire keeps the file as history while recall stops
+seeing it). The remaining four drive the workflow engine: `workflow_start` opens a run anchored to
+the current project branch; `workflow_step` is the live executor — it loops directives (recall at
+phase start, gated steps, harvest on close) decided by the reducer, resumes a branch's unfinished
+run from the event log after an interruption, and never silently resumes a run whose branch is gone;
+`workflow_migrate` converts a spec's gameplan into runnable phase files; and `workflow_abandon`
+records a terminal human refusal of an unfinished run, distinct from failure.
 
 The server ships as a single self-contained compiled binary, distributed through the separate
 `mneme-plugin` repository. This repository is the source; the binary is built from it by the bridge
