@@ -703,3 +703,191 @@ describe("phaseDocumentsFromSpec rejections", () => {
     expect(() => phaseDocumentsFromSpec(specText)).toThrow(PhaseGraphValidationError);
   });
 });
+
+describe("continuation collection and the silent-loss guard", () => {
+  test("the surface-sync empiric fixture: a wrapped task bullet carries BOTH lines into the document", () => {
+    // Verbatim shape of the bullet the truncation bug cut mid-sentence: the phase file carried
+    // "три группы (память / кураторство /" and silently dropped the wrapped remainder.
+    const specText = gameplanSpec(
+      [
+        `### Phase 1: readme tools ${EM_DASH} guard fixture`,
+        "",
+        "- [ ] README.md: абзац про поверхность инструментов — 11, три группы (память / кураторство /",
+        "      workflow), строка про human-gate кураторской пары и про workflow_abandon; вычистить",
+        "      прочие устаревшие упоминания состава.",
+        "",
+        executableBlock("bun test tests/readme-tools.test.ts", "guard suite is green."),
+        "",
+      ].join("\n"),
+    );
+
+    const documents = phaseDocumentsFromSpec(specText);
+
+    expect(documents[0]?.tasks).toEqual([
+      "README.md: абзац про поверхность инструментов — 11, три группы (память / кураторство / " +
+        "workflow), строка про human-gate кураторской пары и про workflow_abandon; вычистить " +
+        "прочие устаревшие упоминания состава.",
+    ]);
+  });
+
+  test("a nested sub-list lands inside its parent item wholesale, never dropped", () => {
+    // The demoted A6 loss: nested sub-bullets vanished. An indented "- sub" line is a continuation
+    // by the marker-width rule, so the legal markdown shape now folds into the parent item; an
+    // error here would punish valid markdown, and silence was the defect — wholesale inclusion is
+    // the fix that loses nothing.
+    const specText = gameplanSpec(
+      [
+        `### Phase 1: nested ${EM_DASH} sublist fixture`,
+        "",
+        "- [ ] top task with a sub-list:",
+        "  - nested subitem one",
+        "  - nested subitem two",
+        "",
+        executableBlock("bun test src/nested.test.ts", "nested suite is green."),
+        "",
+      ].join("\n"),
+    );
+
+    const documents = phaseDocumentsFromSpec(specText);
+
+    expect(documents[0]?.tasks).toEqual([
+      "top task with a sub-list: - nested subitem one - nested subitem two",
+    ]);
+  });
+
+  test("Knowledge bullets collect their wrapped continuation lines", () => {
+    const specText = [
+      "# Knowledge",
+      "",
+      "- first knowledge bullet that wraps",
+      "  onto a second line with content.",
+      "- second bullet stays single.",
+      "",
+      gameplanSpec(
+        phaseBlock(
+          `### Phase 1: alpha ${EM_DASH} one`,
+          ["a"],
+          executableBlock("bun test src/one.test.ts", "one suite is green."),
+        ),
+      ),
+    ].join("\n");
+
+    const documents = phaseDocumentsFromSpec(specText);
+
+    expect(documents[0]?.knowledge).toEqual([
+      "first knowledge bullet that wraps onto a second line with content.",
+      "second bullet stays single.",
+    ]);
+  });
+
+  test("an uncovered prose line inside a phase fails generation naming the lost line", () => {
+    const specText = gameplanSpec(
+      [
+        `### Phase 1: alpha ${EM_DASH} one`,
+        "",
+        "- [ ] a real task",
+        "",
+        "stray prose paragraph that would previously vanish without a trace",
+        "",
+        executableBlock("bun test src/one.test.ts", "one suite is green."),
+        "",
+      ].join("\n"),
+    );
+
+    expect(() => phaseDocumentsFromSpec(specText)).toThrow(PhaseGenerationError);
+    expect(() => phaseDocumentsFromSpec(specText)).toThrow(
+      /stray prose paragraph that would previously vanish/,
+    );
+    expect(() => phaseDocumentsFromSpec(specText)).toThrow(/reformat it as a top-level bullet/);
+  });
+
+  test("an orphan indented line after a blank separator fails generation with the cure", () => {
+    const specText = gameplanSpec(
+      [
+        `### Phase 1: alpha ${EM_DASH} one`,
+        "",
+        "- [ ] a real task",
+        "",
+        "      orphan continuation cut off by the blank line above",
+        "",
+        executableBlock("bun test src/one.test.ts", "one suite is green."),
+        "",
+      ].join("\n"),
+    );
+
+    expect(() => phaseDocumentsFromSpec(specText)).toThrow(/no bullet to continue/);
+    expect(() => phaseDocumentsFromSpec(specText)).toThrow(/orphan continuation cut off/);
+  });
+
+  test("an uncovered line in Knowledge after its first bullet fails generation", () => {
+    const specText = [
+      "# Knowledge",
+      "",
+      "- a bullet",
+      "unattached knowledge prose after the bullets",
+      "",
+      gameplanSpec(
+        phaseBlock(
+          `### Phase 1: alpha ${EM_DASH} one`,
+          ["a"],
+          executableBlock("bun test src/one.test.ts", "one suite is green."),
+        ),
+      ),
+    ].join("\n");
+
+    expect(() => phaseDocumentsFromSpec(specText)).toThrow(PhaseGenerationError);
+    expect(() => phaseDocumentsFromSpec(specText)).toThrow(/unattached knowledge prose/);
+  });
+
+  test("HTML comments and section preambles are the sanctioned skips, pinned here", () => {
+    // The preamble rule: prose BEFORE the first phase heading (or first Knowledge bullet)
+    // describes the section, belongs to no phase, and is skipped by name. Comments are skipped
+    // anywhere — the A11 spec itself ends its gameplan with one.
+    const specText = [
+      "# Knowledge",
+      "",
+      "Knowledge preamble prose before any bullet is legal.",
+      "- a bullet",
+      "",
+      "# Gameplan",
+      "",
+      "Gameplan preamble prose before the first phase heading is legal.",
+      "",
+      `### Phase 1: alpha ${EM_DASH} one`,
+      "",
+      "- [ ] a task",
+      "",
+      "<!--",
+      "  a trailing comment block inside the phase body",
+      "-->",
+      "",
+      executableBlock("bun test src/one.test.ts", "one suite is green."),
+      "",
+    ].join("\n");
+
+    const documents = phaseDocumentsFromSpec(specText);
+
+    expect(documents[0]?.tasks).toEqual(["a task"]);
+    expect(documents[0]?.knowledge).toEqual(["a bullet"]);
+  });
+
+  test("round-trip: a document with a collected multi-line task serializes and parses stably", () => {
+    const specText = gameplanSpec(
+      [
+        `### Phase 1: roundtrip ${EM_DASH} stability`,
+        "",
+        "- [ ] a task that wraps",
+        "      across two source lines.",
+        "",
+        executableBlock("bun test src/rt.test.ts", "rt suite is green."),
+        "",
+      ].join("\n"),
+    );
+    const [document] = phaseDocumentsFromSpec(specText);
+
+    const reparsed = parsePhaseDocument(serializePhaseDocument(document!));
+
+    expect(reparsed.tasks).toEqual(["a task that wraps across two source lines."]);
+    expect(serializePhaseDocument(reparsed)).toBe(serializePhaseDocument(document!));
+  });
+});

@@ -17,6 +17,34 @@ const DONE_WHEN_PREFIX = "**Done when:**";
 const EXECUTABLE_DONE_WHEN_MARKER = "**Done when (EXECUTABLE):**";
 const AGENT_JUDGED_DONE_WHEN_MARKER = "**Done when (AGENT-JUDGED):**";
 const TASK_BULLET_REGEX = /^- \[[ xX]\]\s+(.+)$/;
+const COMMENT_OPENING = "<!--";
+const COMMENT_CLOSING = "-->";
+const UNCOVERED_LINE_CLIP = 80;
+
+// A continuation line belongs to the bullet above it: indented at least the marker's width and
+// non-blank. A blank line, a heading, a marker, or an unindented bullet ends the item — the
+// markdown list semantics the truncation bug ignored.
+function isContinuationLine(line: string): boolean {
+  return /^\s/.test(line) && line.trim() !== "";
+}
+
+function isCommentOpening(line: string): boolean {
+  return line.trim().startsWith(COMMENT_OPENING);
+}
+
+function skipCommentBlock(lines: string[], openingIndex: number): number {
+  for (let index = openingIndex; index < lines.length; index += 1) {
+    if (lineAt(lines, index).includes(COMMENT_CLOSING)) {
+      return index + 1;
+    }
+  }
+  throw new PhaseGenerationError("an HTML comment opened in the spec is never closed");
+}
+
+function clipLine(line: string): string {
+  const trimmed = line.trim();
+  return trimmed.length > UNCOVERED_LINE_CLIP ? `${trimmed.slice(0, UNCOVERED_LINE_CLIP - 3)}...` : trimmed;
+}
 
 interface SpecPhase {
   heading: PhaseHeading;
@@ -59,6 +87,10 @@ function extractGameplanSection(specText: string): string {
   return sectionLines.join("\n");
 }
 
+// Total over its section past the preamble: after the first bullet, every non-blank line must be a
+// bullet, a continuation of the bullet above, or an HTML comment — anything else is a silent-loss
+// candidate and fails generation. Lines BEFORE the first bullet are the section preamble (the same
+// sanctioned skip as the gameplan's).
 function extractKnowledgeSection(specText: string): string[] {
   const lines = specText.split("\n");
   const startIndex = lines.indexOf(KNOWLEDGE_HEADING);
@@ -66,14 +98,34 @@ function extractKnowledgeSection(specText: string): string[] {
     return [];
   }
   const bullets: string[] = [];
-  for (let index = startIndex + 1; index < lines.length; index += 1) {
+  let index = startIndex + 1;
+  while (index < lines.length) {
     const line = lineAt(lines, index);
     if (line.startsWith(LEVEL_ONE_HEADING_PREFIX)) {
       break;
     }
     if (line.startsWith(BULLET_PREFIX)) {
       bullets.push(line.slice(BULLET_PREFIX.length));
+      index += 1;
+      continue;
     }
+    if (isContinuationLine(line) && bullets.length > 0) {
+      bullets[bullets.length - 1] += ` ${line.trim()}`;
+      index += 1;
+      continue;
+    }
+    if (isCommentOpening(line)) {
+      index = skipCommentBlock(lines, index);
+      continue;
+    }
+    if (line.trim() === "" || bullets.length === 0) {
+      index += 1;
+      continue;
+    }
+    throw new PhaseGenerationError(
+      `the # Knowledge section carries a line no rule covers: "${clipLine(line)}". ` +
+        "Reformat it as a top-level bullet or indent it under the bullet it continues.",
+    );
   }
   return bullets;
 }
@@ -92,7 +144,7 @@ function parseSpecPhases(gameplanText: string): SpecPhase[] {
     }
     const current = specPhases[specPhases.length - 1];
     if (current === undefined) {
-      index += 1;
+      index = consumeGameplanPreamble(lines, index);
       continue;
     }
     index = consumePhaseDetail(current, lines, index);
@@ -100,6 +152,21 @@ function parseSpecPhases(gameplanText: string): SpecPhase[] {
   return specPhases;
 }
 
+// The EXPLICIT preamble rule: lines before the FIRST phase heading describe the gameplan, not any
+// phase, and are skipped by name (real fixtures open with a prose line under # Gameplan). Inside a
+// phase the guard is strict — the preamble is the one sanctioned drop, pinned by test.
+function consumeGameplanPreamble(lines: string[], index: number): number {
+  const line = lineAt(lines, index);
+  if (isCommentOpening(line)) {
+    return skipCommentBlock(lines, index);
+  }
+  return index + 1;
+}
+
+// Total over the phase body: every line is consumed by a NAMED rule, and a line no rule covers
+// fails generation instead of vanishing. The truncation bug was exactly the silent fallthrough
+// this structure retires — a continuation line looked like noise and was skipped, leaving a task
+// that read like a task but lied.
 function consumePhaseDetail(specPhase: SpecPhase, lines: string[], index: number): number {
   const line = lineAt(lines, index);
   const taskMatch = TASK_BULLET_REGEX.exec(line);
@@ -109,7 +176,7 @@ function consumePhaseDetail(specPhase: SpecPhase, lines: string[], index: number
       throw new PhaseGenerationError(`task bullet matched without its capture group: ${line}`);
     }
     specPhase.tasks.push(taskText);
-    return index + 1;
+    return collectTaskContinuations(specPhase, lines, index + 1);
   }
   if (line === EXECUTABLE_DONE_WHEN_MARKER) {
     return parseCriteriaBlock(lines, index + 1, specPhase.criteria);
@@ -125,8 +192,38 @@ function consumePhaseDetail(specPhase: SpecPhase, lines: string[], index: number
   }
   if (line.startsWith(DONE_WHEN_PREFIX)) {
     specPhase.acceptanceProse = line.slice(DONE_WHEN_PREFIX.length).trim();
+    return index + 1;
   }
-  return index + 1;
+  if (isCommentOpening(line)) {
+    return skipCommentBlock(lines, index);
+  }
+  if (line.trim() === "") {
+    return index + 1;
+  }
+  if (isContinuationLine(line)) {
+    throw new PhaseGenerationError(
+      `phase "${specPhase.heading.id}" carries an indented line with no bullet to continue: ` +
+        `"${clipLine(line)}". A blank line ended the item above it; ` +
+        "remove the blank line or reformat the text as a top-level bullet.",
+    );
+  }
+  throw new PhaseGenerationError(
+    `phase "${specPhase.heading.id}" carries a line no rule covers: "${clipLine(line)}". ` +
+      "Every content line must be a task bullet, an indented continuation of one, a done-when " +
+      "block, or an HTML comment; reformat it as a top-level bullet or indent it under the " +
+      "bullet it continues.",
+  );
+}
+
+// Collected with a single space (the phase-document grammar renders one line per task), nested
+// sub-bullets included: an indented "- sub" line is a continuation by the marker-width rule, so
+// the once-dropped nested lists now land inside their parent item instead of vanishing.
+function collectTaskContinuations(specPhase: SpecPhase, lines: string[], index: number): number {
+  while (index < lines.length && isContinuationLine(lineAt(lines, index))) {
+    specPhase.tasks[specPhase.tasks.length - 1] += ` ${lineAt(lines, index).trim()}`;
+    index += 1;
+  }
+  return index;
 }
 
 // An agent-judged criterion is a single marker line whose prose IS the criterion: there is no
