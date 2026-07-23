@@ -206,7 +206,7 @@ async function checkEmbeddings(
       : expectedDimension;
   const result = await embedder.embed([probeText]);
   if (!result.available) {
-    return { status: "fail", detail: "embedder is unavailable (Ollama unreachable at probe)" };
+    return { status: "fail", detail: "embedder is unavailable (endpoint unreachable at probe)" };
   }
   const vector = result.embeddings[0];
   if (vector === undefined) {
