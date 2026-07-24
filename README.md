@@ -62,3 +62,32 @@ If the compile fails, the command exits non-zero and leaves the manifest untouch
 validated and the version is stamped only after a successful compile, so a failed build never leaves a
 binary and manifest out of sync. A missing plugin path exits with code 2; a bad plugin path or an
 invalid manifest exits with code 1 before anything is written.
+
+## Releasing
+
+A release is one manual step: bump the version, tag, push the tag.
+
+```sh
+npm version patch        # or edit package.json and commit
+git push && git push --tags
+```
+
+Pushing a `v*` tag triggers `.github/workflows/release.yml`, which runs automatically:
+
+1. The full local gates on a clean runner: `bun run typecheck` and `bun test` — a red suite stops the
+   release before anything is built.
+2. `bun run build-release -- --tag <tag>`: the tag must equal `v<package.json version>` or the build
+   fails; then the four cross-compiled binaries (`bun-darwin-arm64`, `bun-darwin-x64`, `bun-linux-x64`,
+   `bun-linux-arm64`) land in `dist-release/` with `SHA256SUMS` and `dispatch.json`.
+3. `gh release create` publishes the binaries and `SHA256SUMS` as a GitHub Release in
+   `supostat/mneme-plugin` — user-facing artifacts live in the distribution repo.
+4. `gh api .../dispatches` sends the `engine-release` event with `{version, targets, sha256}` so the
+   plugin repo pins the new release.
+
+The workflow uses a single secret, `RELEASE_TOKEN` (a fine-grained PAT with contents:write and
+dispatch access to `mneme-plugin`); `tests/release-workflow.test.ts` pins the workflow's structure,
+including that no other secret is referenced.
+
+If a release fails partway: delete the tag, fix the problem, and re-tag with a NEW version — never
+reuse a tag name. Published release assets are immutable; the plugin repo's pins reference them
+forever, and a rerun under the same tag fails on `gh release create` by design.
