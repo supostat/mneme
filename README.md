@@ -27,8 +27,8 @@ described below.
 
 ## Building the plugin
 
-`scripts/build-plugin.ts` compiles the server from this repository into a plugin distribution repo and
-stamps this repo's version into the plugin manifest.
+`scripts/build-plugin.ts` compiles the server from this repository into a plugin distribution repo.
+It never writes the plugin manifest — the plugin repo owns its own version.
 
 ### Prerequisites
 
@@ -49,19 +49,19 @@ MNEME_PLUGIN_PATH=/path/to/mneme-plugin bun scripts/build-plugin.ts
 
 ### What it does
 
-1. Compiles `src/mcp-server.ts` into `<plugin>/plugin/bin/mneme` — a self-contained binary of roughly 64 MB.
+1. Validates the plugin manifest as a path guard — a directory without a valid
+   `<plugin>/plugin/.claude-plugin/plugin.json` is not a plugin repo and refuses the build. The
+   manifest is never written: the plugin's version is managed by the plugin repo's own automation.
+2. Compiles `src/mcp-server.ts` into `<plugin>/plugin/bin/mneme` — a self-contained binary of roughly 64 MB.
    The plugin repo git-ignores `plugin/bin/`; the binary is reproducible from source and never committed.
-2. Stamps this repository's `package.json` version into `<plugin>/plugin/.claude-plugin/plugin.json`. The
-   version baked into the binary and the version written to the manifest are the same by construction.
+   The engine's `package.json` version is baked into the binary itself.
 3. Prints the output path, version, size (MiB and bytes), and build time.
 
 Re-running the command against the same plugin path is idempotent: the compile is byte-deterministic,
-so an unchanged source tree reproduces a byte-identical binary and an unchanged manifest.
+so an unchanged source tree reproduces a byte-identical binary.
 
-If the compile fails, the command exits non-zero and leaves the manifest untouched — the manifest is
-validated and the version is stamped only after a successful compile, so a failed build never leaves a
-binary and manifest out of sync. A missing plugin path exits with code 2; a bad plugin path or an
-invalid manifest exits with code 1 before anything is written.
+If the compile fails, the command exits non-zero. A missing plugin path exits with code 2; a bad
+plugin path or an invalid manifest exits with code 1 before anything is written.
 
 ## Releasing
 
@@ -77,12 +77,14 @@ Pushing a `v*` tag triggers `.github/workflows/release.yml`, which runs automati
 1. The full local gates on a clean runner: `bun run typecheck` and `bun test` — a red suite stops the
    release before anything is built.
 2. `bun run build-release -- --tag <tag>`: the tag must equal `v<package.json version>` or the build
-   fails; then the four cross-compiled binaries (`bun-darwin-arm64`, `bun-darwin-x64`, `bun-linux-x64`,
-   `bun-linux-arm64`) land in `dist-release/` with `SHA256SUMS` and `dispatch.json`.
+   fails; then the four cross-compiled binaries (`mneme-darwin-arm64`, `mneme-darwin-x64`,
+   `mneme-linux-x64`, `mneme-linux-arm64` — versionless names, the version lives in the release tag)
+   land in `dist-release/` with `SHA256SUMS` and `dispatch.json`.
 3. `gh release create` publishes the binaries and `SHA256SUMS` as a GitHub Release in
-   `supostat/mneme-plugin` — user-facing artifacts live in the distribution repo.
-4. `gh api .../dispatches` sends the `engine-release` event with `{version, targets, sha256}` so the
-   plugin repo pins the new release.
+   `supostat/mneme-plugin` under the namespaced tag `engine-v<version>` — user-facing artifacts live
+   in the distribution repo, and the namespace keeps engine releases clear of the plugin's own `v*` tags.
+4. `gh api .../dispatches` sends the `engine-release` event with `{version, assets, sha256}` — the
+   asset URLs and per-target digests the plugin repo pins into its `release.json`.
 
 The workflow uses a single secret, `RELEASE_TOKEN` (a fine-grained PAT with contents:write and
 dispatch access to `mneme-plugin`); `tests/release-workflow.test.ts` pins the workflow's structure,
