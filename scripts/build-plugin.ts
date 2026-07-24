@@ -68,7 +68,7 @@ function parseManifest(manifestPath: string): Record<string, unknown> {
   return parsed as Record<string, unknown>;
 }
 
-export async function compileServer(binDir: string, outfile: string): Promise<void> {
+export async function compileServer(binDir: string, outfile: string, target?: string): Promise<void> {
   mkdirSync(binDir, { recursive: true });
   // bun build --compile drops .<hash>.bun-build temp files into its cwd and does not clean them up, so it
   // runs in a throwaway dir removed afterward rather than the repo root (they accumulated to gigabytes
@@ -77,8 +77,12 @@ export async function compileServer(binDir: string, outfile: string): Promise<vo
   try {
     // stdout is ignored, not piped: the build writes the binary to --outfile and its diagnostics to
     // stderr, so an unread stdout pipe would only risk the child blocking once it fills the OS buffer.
+    const compileCommand = ["bun", "build", "--compile", SERVER_ENTRY, "--outfile", outfile];
+    if (target !== undefined) {
+      compileCommand.push(`--target=${target}`);
+    }
     const subprocess = Bun.spawn({
-      cmd: ["bun", "build", "--compile", SERVER_ENTRY, "--outfile", outfile],
+      cmd: compileCommand,
       cwd: buildDir,
       stdout: "ignore",
       stderr: "pipe",
