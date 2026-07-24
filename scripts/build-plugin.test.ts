@@ -4,13 +4,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import packageJson from "../package.json";
-import { selectPluginPath, buildPlugin, main, formatBuildReport, stampManifestVersion } from "./build-plugin";
+import { selectPluginPath, buildPlugin, main, formatBuildReport } from "./build-plugin";
 import type { BuildReport } from "./build-plugin";
 
-// A minimal but valid plugin manifest without a version key, matching the real plugin repo's shape:
-// build-plugin stamps the version, so the fixture must start unstamped to prove stamping happens.
+// A minimal but valid plugin manifest carrying the plugin's OWN version, matching the real plugin
+// repo's shape: build-plugin must never write it — the version is owned by the plugin repo.
 const VALID_MANIFEST =
-  JSON.stringify({ name: "mneme", mcpServers: { mneme: { command: "${CLAUDE_PLUGIN_ROOT}/bin/mneme" } } }, null, 2) + "\n";
+  JSON.stringify(
+    { name: "mneme", mcpServers: { mneme: { command: "${CLAUDE_PLUGIN_ROOT}/bin/mneme" } }, version: "0.9.9" },
+    null,
+    2,
+  ) + "\n";
 
 // Every fixture, home, and cwd is a fresh mkdtemp dir tracked here; afterAll removes them all so the
 // ~64 MB binaries each build produces do not accumulate across runs.
@@ -33,8 +37,8 @@ function manifestPathOf(pluginPath: string): string {
   return join(pluginPath, "plugin", ".claude-plugin", "plugin.json");
 }
 
-function readStampedVersion(pluginPath: string): unknown {
-  return JSON.parse(readFileSync(manifestPathOf(pluginPath), "utf8")).version;
+function readManifestContent(pluginPath: string): string {
+  return readFileSync(manifestPathOf(pluginPath), "utf8");
 }
 
 function sha256(filePath: string): string {
@@ -125,31 +129,15 @@ describe("selectPluginPath argument resolution", () => {
   });
 });
 
-describe("buildPlugin stamps and reports", () => {
-  test("stamps this repo's package.json version into the plugin manifest", () => {
+describe("buildPlugin compiles and reports without touching the manifest", () => {
+  test("leaves the plugin manifest byte for byte untouched — its version is the plugin's own", () => {
     expect(sharedReport.version).toBe(packageJson.version);
-    expect(readStampedVersion(sharedPluginPath)).toBe(packageJson.version);
+    expect(readManifestContent(sharedPluginPath)).toBe(VALID_MANIFEST);
   });
 
   test("reports the produced binary's real size", () => {
     expect(sharedReport.outfile).toBe(join(sharedPluginPath, "plugin", "bin", "mneme"));
     expect(sharedReport.sizeBytes).toBeGreaterThan(0);
-  });
-});
-
-describe("stampManifestVersion", () => {
-  test("replaces a pre-existing version in place, preserving key order", () => {
-    const pluginPath = createPluginFixture(
-      JSON.stringify({ name: "mneme", version: "0.0.1", mcpServers: {} }, null, 2) + "\n",
-    );
-    const path = manifestPathOf(pluginPath);
-
-    stampManifestVersion(path, JSON.parse(readFileSync(path, "utf8")), "9.9.9");
-
-    const written = readFileSync(path, "utf8");
-    expect(JSON.parse(written).version).toBe("9.9.9");
-    expect(written.indexOf('"name"')).toBeLessThan(written.indexOf('"version"'));
-    expect(written.indexOf('"version"')).toBeLessThan(written.indexOf('"mcpServers"'));
   });
 });
 
@@ -181,7 +169,7 @@ describe("the compiled binary is a runnable server", () => {
 
 describe("rebuilding is idempotent", () => {
   // bun build --compile is byte-deterministic here (verified: two compiles share one sha256), so the
-  // rebuild must reproduce a byte-identical binary AND a byte-identical stamped manifest.
+  // rebuild must reproduce a byte-identical binary while the manifest stays untouched throughout.
   test("a second build reproduces the binary and manifest byte for byte", async () => {
     const pluginPath = createPluginFixture(VALID_MANIFEST);
 

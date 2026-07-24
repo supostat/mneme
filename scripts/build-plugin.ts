@@ -1,13 +1,13 @@
 #!/usr/bin/env bun
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import packageJson from "../package.json";
 
 // Standalone bridge from this CODE repo into a mneme-plugin distribution repo: compile the MCP server
-// into <plugin>/plugin/bin/mneme and stamp this repo's package.json version into the plugin manifest. The
-// entry is absolute so the spawned compile resolves mcp-server.ts's `import "../package.json"` to the
-// SAME package.json imported here — the baked binary version equals the stamped version by construction.
+// into <plugin>/plugin/bin/mneme. The manifest is parsed as a PATH GUARD only — a directory without a
+// valid plugin manifest is not a plugin repo — and is never written: the plugin's version is owned by
+// the plugin repo's own automation (auto-bump, release-sync), not by this script.
 export const MNEME_PLUGIN_PATH_ENV = "MNEME_PLUGIN_PATH";
 const REPO_ROOT = join(import.meta.dir, "..");
 const SERVER_ENTRY = join(REPO_ROOT, "src", "mcp-server.ts");
@@ -20,7 +20,6 @@ export interface PluginTargets {
   manifestPath: string;
   binDir: string;
   outfile: string;
-  manifest: Record<string, unknown>;
 }
 
 export interface BuildReport {
@@ -41,8 +40,9 @@ export function selectPluginPath(argv: string[], environmentPluginPath: string |
   return pluginPath;
 }
 
-// Validates and parses everything that could fail BEFORE the compile writes anything, so a bad plugin
-// path or malformed manifest never leaves a binary behind without a matching version stamp.
+// Validates everything that could fail BEFORE the compile writes anything: a bad plugin path or a
+// malformed manifest refuses the build early, so a binary never lands in a directory that is not a
+// plugin repo. The parsed manifest is discarded — validation is the guard, writing is not our job.
 export function resolvePluginTargets(pluginPath: string): PluginTargets {
   if (!existsSync(pluginPath) || !statSync(pluginPath).isDirectory()) {
     throw new Error(`plugin path is not an existing directory: ${pluginPath}`);
@@ -51,8 +51,9 @@ export function resolvePluginTargets(pluginPath: string): PluginTargets {
   if (!existsSync(manifestPath)) {
     throw new Error(`plugin manifest not found: ${manifestPath}`);
   }
+  parseManifest(manifestPath);
   const binDir = join(pluginPath, "plugin", "bin");
-  return { manifestPath, binDir, outfile: join(binDir, "mneme"), manifest: parseManifest(manifestPath) };
+  return { manifestPath, binDir, outfile: join(binDir, "mneme") };
 }
 
 function parseManifest(manifestPath: string): Record<string, unknown> {
@@ -100,21 +101,10 @@ export async function compileServer(binDir: string, outfile: string, target?: st
   }
 }
 
-// Idempotent: spreading the already-parsed manifest keeps existing key order and updates (or appends)
-// version in place, so a re-run rewrites byte-identical content.
-export function stampManifestVersion(
-  manifestPath: string,
-  manifest: Record<string, unknown>,
-  version: string,
-): void {
-  writeFileSync(manifestPath, JSON.stringify({ ...manifest, version }, null, 2) + "\n");
-}
-
 export async function buildPlugin(pluginPath: string): Promise<BuildReport> {
   const startedAt = performance.now();
   const targets = resolvePluginTargets(pluginPath);
   await compileServer(targets.binDir, targets.outfile);
-  stampManifestVersion(targets.manifestPath, targets.manifest, MNEME_VERSION);
   return {
     version: MNEME_VERSION,
     outfile: targets.outfile,

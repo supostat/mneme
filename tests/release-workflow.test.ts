@@ -61,6 +61,13 @@ describe("Release workflow", () => {
     expect(commands.some((command) => command.includes("dispatches"))).toBe(true);
   });
 
+  test("the published release tag is namespaced so it never collides with plugin v* tags", () => {
+    const commands = runCommandsOf("release");
+    const publish = commands.find((command) => command.includes("gh release create"));
+    expect(publish).toBeDefined();
+    expect(publish!).toContain("engine-$GITHUB_REF_NAME");
+  });
+
   test("the only secret the workflow touches is RELEASE_TOKEN", () => {
     const source = readFileSync(WORKFLOW_PATH, "utf8");
     const secretReferences = [...source.matchAll(/secrets\.([A-Za-z0-9_]+)/g)].map((match) => match[1]);

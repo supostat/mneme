@@ -9,7 +9,9 @@ import {
   CHECKSUMS_FILE_NAME,
   DISPATCH_FILE_NAME,
   DISPATCH_EVENT_TYPE,
+  PLUGIN_REPOSITORY,
   artifactName,
+  assetUrl,
   checksumsContent,
   parseReleaseArguments,
   requireTagMatchesVersion,
@@ -105,35 +107,55 @@ describe("requireTagMatchesVersion", () => {
   });
 });
 
-describe("artifact naming and checksums format", () => {
-  test("artifact names are deterministic: mneme-<version>-<target>", () => {
-    expect(artifactName("0.1.5", "bun-linux-x64")).toBe("mneme-0.1.5-bun-linux-x64");
+describe("artifact naming, asset URLs and checksums format", () => {
+  test("artifact names are versionless: mneme-<target> — the version lives in the release tag", () => {
+    expect(artifactName("linux-x64")).toBe("mneme-linux-x64");
+  });
+
+  test("asset URLs point into the plugin repo under the namespaced engine-v tag", () => {
+    expect(assetUrl("1.2.3", "darwin-arm64")).toBe(
+      `https://github.com/${PLUGIN_REPOSITORY}/releases/download/engine-v1.2.3/mneme-darwin-arm64`,
+    );
   });
 
   test("SHA256SUMS lines follow shasum -c: digest, two spaces, file name", () => {
     const content = checksumsContent([
-      { target: "bun-linux-x64", fileName: "mneme-1.0.0-bun-linux-x64", sizeBytes: 1, sha256: "a".repeat(64) },
-      { target: "bun-darwin-arm64", fileName: "mneme-1.0.0-bun-darwin-arm64", sizeBytes: 1, sha256: "b".repeat(64) },
+      { target: "linux-x64", fileName: "mneme-linux-x64", sizeBytes: 1, sha256: "a".repeat(64) },
+      { target: "darwin-arm64", fileName: "mneme-darwin-arm64", sizeBytes: 1, sha256: "b".repeat(64) },
     ]);
     expect(content).toBe(
-      `${"a".repeat(64)}  mneme-1.0.0-bun-linux-x64\n${"b".repeat(64)}  mneme-1.0.0-bun-darwin-arm64\n`,
+      `${"a".repeat(64)}  mneme-linux-x64\n${"b".repeat(64)}  mneme-darwin-arm64\n`,
     );
   });
 });
 
 describe("buildRelease over the full matrix", () => {
-  test("produces one artifact per target, in matrix order, under this package's version", async () => {
+  test("produces one versionless artifact per target, in matrix order", async () => {
     const releaseDirectory = join(makeTemporaryDirectory("mneme-release-"), "dist-release");
 
     const report = await buildRelease(releaseDirectory, fakeCompile);
 
     expect(report.version).toBe(packageJson.version);
     expect(report.artifacts.map((artifact) => artifact.fileName)).toEqual(
-      RELEASE_TARGETS.map((target) => artifactName(packageJson.version, target)),
+      RELEASE_TARGETS.map((target) => artifactName(target)),
     );
     for (const artifact of report.artifacts) {
       expect(existsSync(join(releaseDirectory, artifact.fileName))).toBe(true);
     }
+  });
+
+  test("the compiler receives the bun- prefixed target — the prefix never leaks outward", async () => {
+    const releaseDirectory = join(makeTemporaryDirectory("mneme-release-"), "dist-release");
+    const compiledTargets: string[] = [];
+    const recordingCompile: CompileFunction = async (_binDir, outfile, target) => {
+      compiledTargets.push(target);
+      writeFileSync(outfile, `binary for ${target}\n`);
+    };
+
+    const report = await buildRelease(releaseDirectory, recordingCompile);
+
+    expect(compiledTargets).toEqual(RELEASE_TARGETS.map((target) => `bun-${target}`));
+    expect(report.artifacts.map((artifact) => artifact.target)).toEqual([...RELEASE_TARGETS]);
   });
 
   test("SHA256SUMS carries the real digest of every artifact", async () => {
@@ -143,8 +165,7 @@ describe("buildRelease over the full matrix", () => {
 
     const written = readFileSync(join(releaseDirectory, CHECKSUMS_FILE_NAME), "utf8");
     const expectedLines = RELEASE_TARGETS.map(
-      (target) =>
-        `${sha256OfContent(`binary for ${target}\n`)}  ${artifactName(packageJson.version, target)}`,
+      (target) => `${sha256OfContent(`binary for bun-${target}\n`)}  ${artifactName(target)}`,
     );
     expect(written).toBe(expectedLines.join("\n") + "\n");
   });
@@ -160,7 +181,7 @@ describe("buildRelease over the full matrix", () => {
     expect(existsSync(staleFile)).toBe(false);
   });
 
-  test("dispatch.json carries the engine-release contract keyed by target", async () => {
+  test("dispatch.json carries the engine-release contract: version, asset URLs, sha256 by target", async () => {
     const releaseDirectory = join(makeTemporaryDirectory("mneme-release-"), "dist-release");
 
     await buildRelease(releaseDirectory, fakeCompile);
@@ -168,9 +189,17 @@ describe("buildRelease over the full matrix", () => {
     const dispatch = JSON.parse(readFileSync(join(releaseDirectory, DISPATCH_FILE_NAME), "utf8"));
     expect(dispatch.event_type).toBe(DISPATCH_EVENT_TYPE);
     expect(dispatch.client_payload.version).toBe(packageJson.version);
-    expect(dispatch.client_payload.targets).toEqual([...RELEASE_TARGETS]);
+    expect(dispatch.client_payload.assets).toEqual(
+      RELEASE_TARGETS.map((target) => assetUrl(packageJson.version, target)),
+    );
     for (const target of RELEASE_TARGETS) {
-      expect(dispatch.client_payload.sha256[target]).toBe(sha256OfContent(`binary for ${target}\n`));
+      // The pin generator's own matching rule: a sha256 key must have an asset ending /mneme-<target>.
+      const matchingAsset = dispatch.client_payload.assets.find((url: string) =>
+        url.endsWith(`/mneme-${target}`),
+      );
+      expect(matchingAsset).toBeDefined();
+      expect(matchingAsset).toContain(`engine-v${packageJson.version}`);
+      expect(dispatch.client_payload.sha256[target]).toBe(sha256OfContent(`binary for bun-${target}\n`));
     }
   });
 
@@ -192,7 +221,7 @@ describe("formatReleaseReport", () => {
       version: "1.2.3",
       directory: "/tmp/dist-release",
       artifacts: [
-        { target: "bun-linux-x64", fileName: "mneme-1.2.3-bun-linux-x64", sizeBytes: 64_568_930, sha256: "c".repeat(64) },
+        { target: "linux-x64", fileName: "mneme-linux-x64", sizeBytes: 64_568_930, sha256: "c".repeat(64) },
       ],
       buildTimeMs: 150.7,
     };
@@ -200,7 +229,7 @@ describe("formatReleaseReport", () => {
     const rendered = formatReleaseReport(report);
 
     expect(rendered).toContain("Built release 1.2.3 into /tmp/dist-release");
-    expect(rendered).toContain("mneme-1.2.3-bun-linux-x64  61.6 MiB");
+    expect(rendered).toContain("mneme-linux-x64  61.6 MiB");
     expect(rendered).toContain(`sha256:${"c".repeat(64)}`);
     expect(rendered).toContain(`${CHECKSUMS_FILE_NAME}: 1 entries`);
     expect(rendered).toContain("151 ms");

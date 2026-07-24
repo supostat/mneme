@@ -5,18 +5,22 @@ import { join } from "node:path";
 import packageJson from "../package.json";
 import { compileServer } from "./build-plugin";
 
-// Release matrix: every artifact bun can cross-compile from one runner. The list is the contract
-// with the mneme-plugin launcher — a target added or removed here changes release.json downstream.
+// Release matrix in the PLUGIN's target vocabulary (generate-release-pin.mjs / launch.sh): the
+// bun- compiler prefix never leaves this script — it is added only at the compileServer call.
+// A target added or removed here changes the plugin's release.json downstream.
 export const RELEASE_TARGETS = [
-  "bun-darwin-arm64",
-  "bun-darwin-x64",
-  "bun-linux-x64",
-  "bun-linux-arm64",
+  "darwin-arm64",
+  "darwin-x64",
+  "linux-x64",
+  "linux-arm64",
 ] as const;
 
 export const CHECKSUMS_FILE_NAME = "SHA256SUMS";
 export const DISPATCH_FILE_NAME = "dispatch.json";
 export const DISPATCH_EVENT_TYPE = "engine-release";
+// The single source of the release location: assets are published in the plugin repo under the
+// namespaced engine-v<version> tag, so engine releases never collide with the plugin's own v* tags.
+export const PLUGIN_REPOSITORY = "supostat/mneme-plugin";
 const REPO_ROOT = join(import.meta.dir, "..");
 const DEFAULT_RELEASE_DIRECTORY = join(REPO_ROOT, "dist-release");
 const MNEME_VERSION = packageJson.version;
@@ -63,8 +67,14 @@ export function requireTagMatchesVersion(tag: string, version: string): void {
   }
 }
 
-export function artifactName(version: string, target: string): string {
-  return `mneme-${version}-${target}`;
+// The version lives in the release tag, not the file name — the launcher downloads
+// <base_url>/mneme-<target> where base_url already carries engine-v<version>.
+export function artifactName(target: string): string {
+  return `mneme-${target}`;
+}
+
+export function assetUrl(version: string, target: string): string {
+  return `https://github.com/${PLUGIN_REPOSITORY}/releases/download/engine-v${version}/${artifactName(target)}`;
 }
 
 // shasum -c format: two spaces between digest and file name.
@@ -72,8 +82,9 @@ export function checksumsContent(artifacts: ReleaseArtifact[]): string {
   return artifacts.map((artifact) => `${artifact.sha256}  ${artifact.fileName}`).join("\n") + "\n";
 }
 
-// The repository_dispatch body for mneme-plugin's release-sync: {version, targets, sha256} is the
-// cross-repo contract — change it only in lockstep with the plugin's release.json generator.
+// The repository_dispatch body for mneme-plugin's release-sync: {version, assets, sha256} is the
+// cross-repo contract — generate-release-pin.mjs derives base_url from assets[0] and requires an
+// asset URL ending in /mneme-<target> for every sha256 key. Change only in lockstep with the plugin.
 export function dispatchContent(report: ReleaseReport): string {
   return (
     JSON.stringify(
@@ -81,7 +92,7 @@ export function dispatchContent(report: ReleaseReport): string {
         event_type: DISPATCH_EVENT_TYPE,
         client_payload: {
           version: report.version,
-          targets: report.artifacts.map((artifact) => artifact.target),
+          assets: report.artifacts.map((artifact) => assetUrl(report.version, artifact.target)),
           sha256: Object.fromEntries(report.artifacts.map((artifact) => [artifact.target, artifact.sha256])),
         },
       },
@@ -102,9 +113,9 @@ export async function buildRelease(
   mkdirSync(releaseDirectory, { recursive: true });
   const artifacts: ReleaseArtifact[] = [];
   for (const target of RELEASE_TARGETS) {
-    const fileName = artifactName(MNEME_VERSION, target);
+    const fileName = artifactName(target);
     const outfile = join(releaseDirectory, fileName);
-    await compile(releaseDirectory, outfile, target);
+    await compile(releaseDirectory, outfile, `bun-${target}`);
     artifacts.push({
       target,
       fileName,
