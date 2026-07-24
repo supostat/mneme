@@ -7,6 +7,8 @@ import packageJson from "../package.json";
 import {
   RELEASE_TARGETS,
   CHECKSUMS_FILE_NAME,
+  DISPATCH_FILE_NAME,
+  DISPATCH_EVENT_TYPE,
   artifactName,
   checksumsContent,
   parseReleaseArguments,
@@ -110,8 +112,8 @@ describe("artifact naming and checksums format", () => {
 
   test("SHA256SUMS lines follow shasum -c: digest, two spaces, file name", () => {
     const content = checksumsContent([
-      { fileName: "mneme-1.0.0-bun-linux-x64", sizeBytes: 1, sha256: "a".repeat(64) },
-      { fileName: "mneme-1.0.0-bun-darwin-arm64", sizeBytes: 1, sha256: "b".repeat(64) },
+      { target: "bun-linux-x64", fileName: "mneme-1.0.0-bun-linux-x64", sizeBytes: 1, sha256: "a".repeat(64) },
+      { target: "bun-darwin-arm64", fileName: "mneme-1.0.0-bun-darwin-arm64", sizeBytes: 1, sha256: "b".repeat(64) },
     ]);
     expect(content).toBe(
       `${"a".repeat(64)}  mneme-1.0.0-bun-linux-x64\n${"b".repeat(64)}  mneme-1.0.0-bun-darwin-arm64\n`,
@@ -158,7 +160,21 @@ describe("buildRelease over the full matrix", () => {
     expect(existsSync(staleFile)).toBe(false);
   });
 
-  test("a failed target rejects the build and writes no SHA256SUMS", async () => {
+  test("dispatch.json carries the engine-release contract keyed by target", async () => {
+    const releaseDirectory = join(makeTemporaryDirectory("mneme-release-"), "dist-release");
+
+    await buildRelease(releaseDirectory, fakeCompile);
+
+    const dispatch = JSON.parse(readFileSync(join(releaseDirectory, DISPATCH_FILE_NAME), "utf8"));
+    expect(dispatch.event_type).toBe(DISPATCH_EVENT_TYPE);
+    expect(dispatch.client_payload.version).toBe(packageJson.version);
+    expect(dispatch.client_payload.targets).toEqual([...RELEASE_TARGETS]);
+    for (const target of RELEASE_TARGETS) {
+      expect(dispatch.client_payload.sha256[target]).toBe(sha256OfContent(`binary for ${target}\n`));
+    }
+  });
+
+  test("a failed target rejects the build and writes no SHA256SUMS and no dispatch.json", async () => {
     const releaseDirectory = join(makeTemporaryDirectory("mneme-release-"), "dist-release");
 
     expect(buildRelease(releaseDirectory, failingOn("bun-linux-x64"))).rejects.toThrow(
@@ -166,6 +182,7 @@ describe("buildRelease over the full matrix", () => {
     );
 
     expect(existsSync(join(releaseDirectory, CHECKSUMS_FILE_NAME))).toBe(false);
+    expect(existsSync(join(releaseDirectory, DISPATCH_FILE_NAME))).toBe(false);
   });
 });
 
@@ -175,7 +192,7 @@ describe("formatReleaseReport", () => {
       version: "1.2.3",
       directory: "/tmp/dist-release",
       artifacts: [
-        { fileName: "mneme-1.2.3-bun-linux-x64", sizeBytes: 64_568_930, sha256: "c".repeat(64) },
+        { target: "bun-linux-x64", fileName: "mneme-1.2.3-bun-linux-x64", sizeBytes: 64_568_930, sha256: "c".repeat(64) },
       ],
       buildTimeMs: 150.7,
     };

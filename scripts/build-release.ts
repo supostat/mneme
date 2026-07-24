@@ -15,6 +15,8 @@ export const RELEASE_TARGETS = [
 ] as const;
 
 export const CHECKSUMS_FILE_NAME = "SHA256SUMS";
+export const DISPATCH_FILE_NAME = "dispatch.json";
+export const DISPATCH_EVENT_TYPE = "engine-release";
 const REPO_ROOT = join(import.meta.dir, "..");
 const DEFAULT_RELEASE_DIRECTORY = join(REPO_ROOT, "dist-release");
 const MNEME_VERSION = packageJson.version;
@@ -28,6 +30,7 @@ export interface ReleaseArguments {
 }
 
 export interface ReleaseArtifact {
+  target: string;
   fileName: string;
   sizeBytes: number;
   sha256: string;
@@ -69,6 +72,25 @@ export function checksumsContent(artifacts: ReleaseArtifact[]): string {
   return artifacts.map((artifact) => `${artifact.sha256}  ${artifact.fileName}`).join("\n") + "\n";
 }
 
+// The repository_dispatch body for mneme-plugin's release-sync: {version, targets, sha256} is the
+// cross-repo contract — change it only in lockstep with the plugin's release.json generator.
+export function dispatchContent(report: ReleaseReport): string {
+  return (
+    JSON.stringify(
+      {
+        event_type: DISPATCH_EVENT_TYPE,
+        client_payload: {
+          version: report.version,
+          targets: report.artifacts.map((artifact) => artifact.target),
+          sha256: Object.fromEntries(report.artifacts.map((artifact) => [artifact.target, artifact.sha256])),
+        },
+      },
+      null,
+      2,
+    ) + "\n"
+  );
+}
+
 // SHA256SUMS is written only after EVERY target compiled: a failed target rejects before the write,
 // so a partial artifact directory never carries a checksums file that vouches for it.
 export async function buildRelease(
@@ -84,18 +106,21 @@ export async function buildRelease(
     const outfile = join(releaseDirectory, fileName);
     await compile(releaseDirectory, outfile, target);
     artifacts.push({
+      target,
       fileName,
       sizeBytes: statSync(outfile).size,
       sha256: createHash("sha256").update(readFileSync(outfile)).digest("hex"),
     });
   }
   writeFileSync(join(releaseDirectory, CHECKSUMS_FILE_NAME), checksumsContent(artifacts));
-  return {
+  const report: ReleaseReport = {
     version: MNEME_VERSION,
     directory: releaseDirectory,
     artifacts,
     buildTimeMs: performance.now() - startedAt,
   };
+  writeFileSync(join(releaseDirectory, DISPATCH_FILE_NAME), dispatchContent(report));
+  return report;
 }
 
 export function formatReleaseReport(report: ReleaseReport): string {
