@@ -238,6 +238,17 @@ const noteReanchorResolvedEvent = z.object({
   commit: z.string().nullable(),
 });
 
+// One batch-stager pass over the corpus: what it staged and what it only reported. The per-request
+// detail lives in the note_reanchor_staged events the pass emitted alongside.
+const anchorSweepEvent = z.object({
+  type: z.literal("anchor_sweep"),
+  ...envelope,
+  staged_n: z.number().int(),
+  ambiguous_n: z.number().int(),
+  no_successor_n: z.number().int(),
+  skipped_neutral_n: z.number().int(),
+});
+
 // marker is the offending token findForbiddenMarkup named; the log is same-UID data, never agent
 // context, so recording it verbatim is safe and is what makes the rejection debuggable.
 const bundleNoteRejectedEvent = z.object({
@@ -417,6 +428,7 @@ export const eventSchema = z.discriminatedUnion("type", [
   noteRetireResolvedEvent,
   noteReanchorStagedEvent,
   noteReanchorResolvedEvent,
+  anchorSweepEvent,
   bundleNoteRejectedEvent,
   rebuildEvent,
   sessionStartEvent,

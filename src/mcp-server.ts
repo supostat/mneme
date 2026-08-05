@@ -26,6 +26,7 @@ import { computeStats, formatStats } from "./stats";
 import { computeFriction, formatFriction } from "./stats-friction";
 import { computeFootprint, formatFootprint } from "./stats-footprint";
 import type { StagingDeps, ResolveDecision } from "./staging";
+import { anchorSweep } from "./anchor-repair";
 import {
   formatNoteShow,
   formatNotesList,
@@ -33,6 +34,7 @@ import {
   formatRemember,
   formatResolve,
   formatStagingList,
+  formatSweepReport,
   textResult,
 } from "./mcp-rendering";
 import {
@@ -99,6 +101,13 @@ const ANCHOR_REPAIR_DESCRIPTION =
   "the new git-tracked path in the note's frontmatter (the body never changes) and the note " +
   "re-enters recall ranking on rebuild.";
 const ANCHOR_REPAIR_INPUT = { id: z.string(), old_anchor: z.string(), new_anchor: z.string() };
+const ANCHOR_SWEEP_DESCRIPTION =
+  "Batch-stage anchor repairs across the corpus: trace renames in the project's git history and " +
+  "stage a re-anchor request for every missing anchor with a single confident successor (rename " +
+  "score at or above the pinned floor). Ambiguous candidates and outright deletions are only " +
+  "REPORTED, never decided; every staged request still awaits the human via staging_resolve, and " +
+  "anchor-neutral note types (pattern, antipattern) are skipped. A second sweep over a repaired " +
+  "corpus stages nothing and reports silence.";
 const RECALL_INPUT = { query: z.string(), budget: z.number().int().positive().optional() };
 const STAGING_RESOLVE_INPUT = {
   id: z.string(),
@@ -200,6 +209,9 @@ function registerTools(
   );
   server.registerTool("anchor_repair", { description: ANCHOR_REPAIR_DESCRIPTION, inputSchema: ANCHOR_REPAIR_INPUT }, (args) =>
     dispatch(context, "anchor_repair", (current) => anchorRepairTool(buildStagingDeps(current), args)),
+  );
+  server.registerTool("anchor_sweep", { description: ANCHOR_SWEEP_DESCRIPTION, inputSchema: {} }, () =>
+    dispatch(context, "anchor_sweep", (current) => anchorSweepTool(buildStagingDeps(current))),
   );
   server.registerTool("staging_resolve", { description: STAGING_RESOLVE_DESCRIPTION, inputSchema: STAGING_RESOLVE_INPUT }, (args) =>
     dispatch(context, "staging_resolve", (current) => stagingResolveTool(buildStagingDeps(current), args)),
@@ -304,6 +316,10 @@ async function notesListTool(
     limit: args.limit,
   });
   return textResult(formatNotesList(result));
+}
+
+async function anchorSweepTool(stagingDeps: StagingDeps): Promise<CallToolResult> {
+  return textResult(formatSweepReport(await anchorSweep(stagingDeps)));
 }
 
 async function anchorRepairTool(

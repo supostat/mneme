@@ -2,6 +2,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { RememberResult, StagingEntry, ResolveResult } from "./staging";
 import type { RecalledNote } from "./recall";
 import type { NotesListResult, ReanchorRequest, RetireRequest } from "./curation";
+import type { SweepReport, ScoredCandidate } from "./anchor-repair";
 import type { DedupSummary } from "./dedup-sidecar";
 import type { Note } from "./note";
 import type { StagedAnchor } from "./anchor-liveness";
@@ -144,6 +145,53 @@ export function formatResolve(result: ResolveResult): string {
     return `Rejected the re-anchor request for note ${result.noteId}; the anchor stays as it is.`;
   }
   return `Superseded ${result.supersededId} with note ${result.noteId}; committed ${result.commit}.`;
+}
+
+// The sweep report is the batch protocol's numbers plus one ACTIONABLE line per finding: staged
+// requests point at staging_list, ambiguity lists the candidates for a manual anchor_repair, and a
+// no-successor note carries a ready note_retire command with the id filled in — the reason is the
+// only thing left for the human to write.
+export function formatSweepReport(report: SweepReport): string {
+  const total =
+    report.staged.length + report.ambiguous.length + report.noSuccessor.length + report.skippedNeutralN;
+  if (total === 0) {
+    return "Anchor sweep: no missing anchors to repair. Nothing was staged.";
+  }
+  const lines = [
+    `Anchor sweep: staged ${report.staged.length} · ambiguous ${report.ambiguous.length} · ` +
+      `no successor ${report.noSuccessor.length} · skipped anchor-neutral ${report.skippedNeutralN}`,
+    `notes with missing anchors by type: ${Object.entries(report.missingByType)
+      .map(([type, count]) => `${type} ${count}`)
+      .join(" · ")}`,
+  ];
+  if (report.staged.length > 0) {
+    lines.push("staged (review with staging_list, decide via staging_resolve):");
+    for (const entry of report.staged) {
+      lines.push(
+        `  ${entry.noteId} [${entry.type}]: ${entry.oldAnchor} -> ${entry.newAnchor} ` +
+          `(rename score ${entry.score}%) — request ${entry.requestId}`,
+      );
+    }
+  }
+  if (report.ambiguous.length > 0) {
+    lines.push("ambiguous (pick the path yourself with anchor_repair):");
+    for (const entry of report.ambiguous) {
+      lines.push(`  ${entry.noteId} [${entry.type}]: ${entry.oldAnchor} — candidates: ${candidateList(entry.candidates)}`);
+    }
+  }
+  if (report.noSuccessor.length > 0) {
+    lines.push("no successor (deleted outright — the knowledge may be gone with the file):");
+    for (const entry of report.noSuccessor) {
+      lines.push(
+        `  ${entry.noteId} [${entry.type}]: ${entry.oldAnchor} — consider note_retire { id: "${entry.noteId}", reason: "<...>" }`,
+      );
+    }
+  }
+  return lines.join("\n");
+}
+
+function candidateList(candidates: ScoredCandidate[]): string {
+  return candidates.map((candidate) => `${candidate.path} (${candidate.score}%)`).join(", ");
 }
 
 export function formatNotesList(result: NotesListResult): string {
