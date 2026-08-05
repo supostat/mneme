@@ -207,8 +207,8 @@ export function workflowAbandonTool(deps: StagingDeps, args: WorkflowAbandonArgs
 
 // A thin entry over the 12a persistence library: read the spec, generate its phase documents, plan
 // the writes into this project's corpus, and either render the plan (dry-run, the safe default) or
-// apply it. All classification, atomicity and conflict policy stay in migration.ts.
-export function workflowMigrateTool(deps: StagingDeps, args: WorkflowMigrateArgs): CallToolResult {
+// apply it. All classification, atomicity, conflict and archive policy stay in migration.ts.
+export async function workflowMigrateTool(deps: StagingDeps, args: WorkflowMigrateArgs): Promise<CallToolResult> {
   const specPath = resolve(deps.projectRoot, args.spec_path);
   const documents = phaseDocumentsFromSpec(readSpec(specPath));
   const plan = planMigration(documents, deps.corpus.corpusDir, specSlug(specPath));
@@ -216,7 +216,8 @@ export function workflowMigrateTool(deps: StagingDeps, args: WorkflowMigrateArgs
     return textResult(renderMigrationDryRun(plan, documents));
   }
   requireNoConflictingPhases(plan);
-  return textResult(renderMigrationApplied(plan, applyMigration(plan), documents));
+  const report = await applyMigration(plan, { specPath, corpus: deps.corpus });
+  return textResult(renderMigrationApplied(plan, report, documents));
 }
 
 function readSpec(specPath: string): string {

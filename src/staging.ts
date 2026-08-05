@@ -2,8 +2,8 @@ import { existsSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSyn
 import { join } from "node:path";
 import type { MnemeConfig } from "./config";
 import type { Corpus } from "./corpus";
+import { commitPaths } from "./corpus-git";
 import { runGit } from "./git";
-import type { GitResult } from "./git";
 import type { EmbeddingsClient } from "./embeddings";
 import type { EventWriter } from "./events";
 import { serializeNote, parseNote, isNoteId } from "./note";
@@ -71,7 +71,6 @@ export type ResolveResult =
   | { outcome: "retire_rejected"; requestId: string; noteId: string };
 
 const NOTE_EXTENSION = ".md";
-const COMMIT_AUTHOR_ARGS = ["-c", "user.email=mneme@localhost", "-c", "user.name=mneme"];
 
 function notePath(directory: string, id: string): string {
   return join(directory, `${id}${NOTE_EXTENSION}`);
@@ -212,9 +211,9 @@ async function resolveRetireRequest(
     return { outcome: "retire_rejected", requestId: request.requestId, noteId: request.targetId };
   }
   markNoteRetired(deps.corpus, request.targetId);
-  const commit = await commitResolved(
+  const commit = await commitPaths(
     deps.corpus,
-    notesRelPath(request.targetId),
+    [notesRelPath(request.targetId)],
     `Retire note ${shortId(request.targetId)}`,
   );
   removeRetireRequest(deps.corpus, request.requestId);
@@ -234,7 +233,7 @@ function markNoteRetired(corpus: Corpus, targetId: string): void {
 
 async function acceptNote(deps: StagingDeps, id: string): Promise<ResolveResult> {
   moveStagedToNotes(deps.corpus, id, (frontmatter) => frontmatter);
-  const commit = await commitResolved(deps.corpus, notesRelPath(id), `Add note ${shortId(id)}`);
+  const commit = await commitPaths(deps.corpus, [notesRelPath(id)], `Add note ${shortId(id)}`);
   appendStagingResolve(deps, id, "accept", { commit, superseded_id: null, suggested: null });
   removeSidecar(deps.corpus, id);
   await rebuild(rebuildDeps(deps));
@@ -245,7 +244,7 @@ async function supersedeNote(deps: StagingDeps, id: string, target: string): Pro
   validateSupersedeTarget(deps.corpus, id, target);
   const suggested = readSidecar(deps.corpus, id)?.nearest_id === target;
   moveStagedToNotes(deps.corpus, id, (frontmatter) => ({ ...frontmatter, supersedes: target }));
-  const commit = await commitResolved(deps.corpus, notesRelPath(id), `Supersede ${shortId(target)} with ${shortId(id)}`);
+  const commit = await commitPaths(deps.corpus, [notesRelPath(id)], `Supersede ${shortId(target)} with ${shortId(id)}`);
   appendStagingResolve(deps, id, "supersede", { commit, superseded_id: target, suggested });
   removeSidecar(deps.corpus, id);
   await rebuild(rebuildDeps(deps));
@@ -289,24 +288,6 @@ function moveStagedToNotes(corpus: Corpus, id: string, transform: (frontmatter: 
   const serialized = serializeNote({ frontmatter: transform(note.frontmatter), body: note.body });
   writeFileSync(notePath(corpus.notesDir, id), serialized);
   rmSync(stagingPath, { force: true });
-}
-
-async function commitResolved(corpus: Corpus, relativePath: string, subject: string): Promise<string> {
-  await runGitOrThrow(corpus.corpusDir, ["add"], [relativePath]);
-  const staged = await runGit(corpus.corpusDir, ["diff", "--cached", "--quiet"], [relativePath]);
-  if (staged.exitCode !== 0) {
-    await runGitOrThrow(corpus.corpusDir, [...COMMIT_AUTHOR_ARGS, "commit", "-q", "-m", subject]);
-  }
-  const head = await runGitOrThrow(corpus.corpusDir, ["rev-parse", "HEAD"]);
-  return head.stdout.trim();
-}
-
-async function runGitOrThrow(repoDir: string, args: string[], pathArgs: string[] = []): Promise<GitResult> {
-  const result = await runGit(repoDir, args, pathArgs);
-  if (result.exitCode !== 0) {
-    throw new StagingError(`git ${args.join(" ")} failed: ${result.stderr.trim()}`);
-  }
-  return result;
 }
 
 function rebuildDeps(deps: StagingDeps): RebuildDeps {

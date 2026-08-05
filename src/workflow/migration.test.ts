@@ -1,11 +1,25 @@
-import { test, expect, describe, afterAll } from "bun:test";
+import { test, expect, describe, afterAll, setDefaultTimeout } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { canonicalize, mungePath } from "../corpus";
+import { canonicalize, corpusPaths, mungePath } from "../corpus";
+import type { Corpus } from "../corpus";
+import { CorpusGitError } from "../corpus-git";
+import { initRepo, runGit } from "../git";
 import { serializePhaseDocument } from "./phase-document";
 import type { PhaseDocument } from "./phase-document";
-import { WORKFLOW_PHASE_DIR, MigrationError, planMigration, applyMigration, specSlug } from "./migration";
+import {
+  SPEC_ARCHIVE_DIR,
+  WORKFLOW_PHASE_DIR,
+  MigrationError,
+  planMigration,
+  applyMigration,
+  specSlug,
+} from "./migration";
+
+// These tests spawn real git repositories plus end-to-end bun subprocesses; under machine load the
+// slowest cases exceed bun's 5s default per-test timeout and fail the suite spuriously.
+setDefaultTimeout(30_000);
 
 const SPEC_SLUG = "sample-spec";
 
@@ -41,6 +55,39 @@ function workflowFile(corpusDir: string, id: string, slug: string = SPEC_SLUG): 
 
 const relativeOf = (id: string, slug: string = SPEC_SLUG): string =>
   join(WORKFLOW_PHASE_DIR, slug, `phase-${id}.md`);
+
+function archiveFile(corpusDir: string, slug: string = SPEC_SLUG): string {
+  return join(corpusDir, SPEC_ARCHIVE_DIR, `${slug}.md`);
+}
+
+// A corpus whose directory is a real git repository, as resolveCorpus guarantees in production.
+async function gitCorpus(prefix: string): Promise<Corpus> {
+  const corpusDir = tempDir(prefix);
+  await initRepo(corpusDir);
+  return { canonicalRoot: tempDir(`${prefix}root-`), ...corpusPaths(corpusDir) };
+}
+
+// A corpus over a plain directory with NO git repository — the git-failure fixture.
+function bareCorpus(prefix: string): Corpus {
+  return { canonicalRoot: tempDir(`${prefix}root-`), ...corpusPaths(tempDir(prefix)) };
+}
+
+function specFile(prefix: string, content: string | Buffer): string {
+  const specPath = join(tempDir(prefix), "source-spec.md");
+  writeFileSync(specPath, content);
+  return specPath;
+}
+
+async function commitCount(corpusDir: string): Promise<number> {
+  const counted = await runGit(corpusDir, ["rev-list", "--count", "HEAD"]);
+  return counted.exitCode === 0 ? Number(counted.stdout.trim()) : 0;
+}
+
+async function lastCommit(corpusDir: string): Promise<{ subject: string; files: string[] }> {
+  const shown = await runGit(corpusDir, ["show", "--name-only", "--format=%s", "HEAD"]);
+  const lines = shown.stdout.trim().split("\n").filter((line) => line !== "");
+  return { subject: lines[0] ?? "", files: lines.slice(1) };
+}
 
 describe("specSlug", () => {
   test("strips the directory and extension and lowercases", () => {
@@ -87,56 +134,144 @@ describe("planMigration", () => {
 });
 
 describe("applyMigration", () => {
-  test("creates the phase file, keeps every path inside the spec-slug dir, leaves no temp files", () => {
-    const corpusDir = tempDir("mneme-mig-apply-");
-    const plan = planMigration([phase("alpha"), phase("beta")], corpusDir, SPEC_SLUG);
+  test("creates the phase file, keeps every path inside the spec-slug dir, leaves no temp files", async () => {
+    const corpus = await gitCorpus("mneme-mig-apply-");
+    const specPath = specFile("mneme-mig-apply-spec-", "# source\n");
+    const plan = planMigration([phase("alpha"), phase("beta")], corpus.corpusDir, SPEC_SLUG);
 
-    const report = applyMigration(plan);
+    const report = await applyMigration(plan, { specPath, corpus });
 
     expect(report.created.sort()).toEqual([relativeOf("alpha"), relativeOf("beta")]);
-    const workflowDir = join(corpusDir, WORKFLOW_PHASE_DIR, SPEC_SLUG);
+    const workflowDir = join(corpus.corpusDir, WORKFLOW_PHASE_DIR, SPEC_SLUG);
     for (const write of plan.writes) {
       expect(write.absolutePath.startsWith(workflowDir + "/")).toBe(true);
     }
-    expect(readFileSync(workflowFile(corpusDir, "alpha"), "utf8")).toBe(serializePhaseDocument(phase("alpha")));
+    expect(readFileSync(workflowFile(corpus.corpusDir, "alpha"), "utf8")).toBe(serializePhaseDocument(phase("alpha")));
     expect(readdirSync(workflowDir).some((name) => name.endsWith(".mneme-tmp"))).toBe(false);
   });
 
-  test("the same phase id from two different specs lands in separate subfolders without colliding", () => {
-    const corpusDir = tempDir("mneme-mig-collide-");
+  test("the same phase id from two different specs lands in separate subfolders without colliding", async () => {
+    const corpus = await gitCorpus("mneme-mig-collide-");
+    const specPath = specFile("mneme-mig-collide-spec-", "# source\n");
 
-    const first = applyMigration(planMigration([phase("shared")], corpusDir, "spec-a"));
-    const second = applyMigration(planMigration([phase("shared")], corpusDir, "spec-b"));
+    const first = await applyMigration(planMigration([phase("shared")], corpus.corpusDir, "spec-a"), { specPath, corpus });
+    const second = await applyMigration(planMigration([phase("shared")], corpus.corpusDir, "spec-b"), { specPath, corpus });
 
     expect(first.created).toEqual([relativeOf("shared", "spec-a")]);
     expect(second.created).toEqual([relativeOf("shared", "spec-b")]);
-    expect(existsSync(workflowFile(corpusDir, "shared", "spec-a"))).toBe(true);
-    expect(existsSync(workflowFile(corpusDir, "shared", "spec-b"))).toBe(true);
+    expect(existsSync(workflowFile(corpus.corpusDir, "shared", "spec-a"))).toBe(true);
+    expect(existsSync(workflowFile(corpus.corpusDir, "shared", "spec-b"))).toBe(true);
+    expect(existsSync(archiveFile(corpus.corpusDir, "spec-a"))).toBe(true);
+    expect(existsSync(archiveFile(corpus.corpusDir, "spec-b"))).toBe(true);
   });
 
-  test("a byte-identical re-run skips idempotently and writes nothing new", () => {
-    const corpusDir = tempDir("mneme-mig-idem-");
-    applyMigration(planMigration([phase("alpha")], corpusDir, SPEC_SLUG));
+  test("a byte-identical re-run skips idempotently and writes nothing new", async () => {
+    const corpus = await gitCorpus("mneme-mig-idem-");
+    const specPath = specFile("mneme-mig-idem-spec-", "# source\n");
+    await applyMigration(planMigration([phase("alpha")], corpus.corpusDir, SPEC_SLUG), { specPath, corpus });
 
-    const secondPlan = planMigration([phase("alpha")], corpusDir, SPEC_SLUG);
+    const secondPlan = planMigration([phase("alpha")], corpus.corpusDir, SPEC_SLUG);
     expect(secondPlan.writes[0]!.action).toBe("identical");
-    const report = applyMigration(secondPlan);
+    const report = await applyMigration(secondPlan, { specPath, corpus });
 
     expect(report.created).toEqual([]);
     expect(report.skipped).toEqual([relativeOf("alpha")]);
   });
 
-  test("a divergent existing file is a conflict that refuses apply and never clobbers the human edit", () => {
-    const corpusDir = tempDir("mneme-mig-conflict-");
-    const workflowDir = join(corpusDir, WORKFLOW_PHASE_DIR, SPEC_SLUG);
+  test("a divergent existing file is a conflict that refuses apply and never clobbers the human edit", async () => {
+    const corpus = await gitCorpus("mneme-mig-conflict-");
+    const specPath = specFile("mneme-mig-conflict-spec-", "# source\n");
+    const workflowDir = join(corpus.corpusDir, WORKFLOW_PHASE_DIR, SPEC_SLUG);
     mkdirSync(workflowDir, { recursive: true });
     const humanEdit = "--- human edit, do not clobber ---\n";
-    writeFileSync(workflowFile(corpusDir, "alpha"), humanEdit);
+    writeFileSync(workflowFile(corpus.corpusDir, "alpha"), humanEdit);
 
-    const plan = planMigration([phase("alpha")], corpusDir, SPEC_SLUG);
+    const plan = planMigration([phase("alpha")], corpus.corpusDir, SPEC_SLUG);
     expect(plan.writes[0]!.action).toBe("conflict");
-    expect(() => applyMigration(plan)).toThrow(MigrationError);
-    expect(readFileSync(workflowFile(corpusDir, "alpha"), "utf8")).toBe(humanEdit);
+    await expect(applyMigration(plan, { specPath, corpus })).rejects.toThrow(MigrationError);
+    expect(readFileSync(workflowFile(corpus.corpusDir, "alpha"), "utf8")).toBe(humanEdit);
+  });
+});
+
+describe("applyMigration spec archive and commit", () => {
+  test("apply archives the spec byte-for-byte and commits phases plus archive in ONE commit", async () => {
+    const corpus = await gitCorpus("mneme-mig-arch-");
+    const specBytes = Buffer.from(`# spec ${EM_DASH} source\r\nsecond line, no trailing newline`, "utf8");
+    const specPath = specFile("mneme-mig-arch-spec-", specBytes);
+    const plan = planMigration([phase("alpha"), phase("beta")], corpus.corpusDir, SPEC_SLUG);
+
+    const report = await applyMigration(plan, { specPath, corpus });
+
+    expect(readFileSync(archiveFile(corpus.corpusDir)).equals(specBytes)).toBe(true);
+    expect(await commitCount(corpus.corpusDir)).toBe(1);
+    const committed = await lastCommit(corpus.corpusDir);
+    expect(committed.subject).toBe(`Migrate ${SPEC_SLUG}: 2 phases`);
+    expect(committed.files.sort()).toEqual([
+      join(SPEC_ARCHIVE_DIR, `${SPEC_SLUG}.md`),
+      relativeOf("alpha"),
+      relativeOf("beta"),
+    ]);
+    expect(report.commit).toMatch(/^[0-9a-f]{40}$/);
+  });
+
+  test("a byte-identical re-apply mints no new commit and returns the same sha", async () => {
+    const corpus = await gitCorpus("mneme-mig-samesha-");
+    const specPath = specFile("mneme-mig-samesha-spec-", "# stable source\n");
+    const first = await applyMigration(planMigration([phase("alpha")], corpus.corpusDir, SPEC_SLUG), { specPath, corpus });
+
+    const second = await applyMigration(planMigration([phase("alpha")], corpus.corpusDir, SPEC_SLUG), { specPath, corpus });
+
+    expect(second.commit).toBe(first.commit);
+    expect(await commitCount(corpus.corpusDir)).toBe(1);
+  });
+
+  test("a changed spec re-apply overwrites the archive and the new commit carries its diff", async () => {
+    const corpus = await gitCorpus("mneme-mig-respec-");
+    const specPath = specFile("mneme-mig-respec-spec-", "# source v1\n");
+    const first = await applyMigration(planMigration([phase("alpha")], corpus.corpusDir, SPEC_SLUG), { specPath, corpus });
+
+    writeFileSync(specPath, "# source v1\nan appended clarification\n");
+    const second = await applyMigration(planMigration([phase("alpha")], corpus.corpusDir, SPEC_SLUG), { specPath, corpus });
+
+    expect(second.commit).not.toBe(first.commit);
+    expect(await commitCount(corpus.corpusDir)).toBe(2);
+    expect(readFileSync(archiveFile(corpus.corpusDir), "utf8")).toBe("# source v1\nan appended clarification\n");
+    const committed = await lastCommit(corpus.corpusDir);
+    expect(committed.files).toEqual([join(SPEC_ARCHIVE_DIR, `${SPEC_SLUG}.md`)]);
+  });
+
+  test("planMigration alone touches neither the archive nor git — the dry-run stays clean", async () => {
+    const corpus = await gitCorpus("mneme-mig-dryclean-");
+    planMigration([phase("alpha")], corpus.corpusDir, SPEC_SLUG);
+
+    expect(existsSync(join(corpus.corpusDir, WORKFLOW_PHASE_DIR))).toBe(false);
+    expect(existsSync(join(corpus.corpusDir, SPEC_ARCHIVE_DIR))).toBe(false);
+    expect(await commitCount(corpus.corpusDir)).toBe(0);
+  });
+
+  test("a conflict refuses apply before anything lands: no phases, no archive, no commit", async () => {
+    const corpus = await gitCorpus("mneme-mig-confclean-");
+    const specPath = specFile("mneme-mig-confclean-spec-", "# source\n");
+    const workflowDir = join(corpus.corpusDir, WORKFLOW_PHASE_DIR, SPEC_SLUG);
+    mkdirSync(workflowDir, { recursive: true });
+    writeFileSync(workflowFile(corpus.corpusDir, "alpha"), "--- human edit ---\n");
+
+    const plan = planMigration([phase("alpha")], corpus.corpusDir, SPEC_SLUG);
+    await expect(applyMigration(plan, { specPath, corpus })).rejects.toThrow(MigrationError);
+
+    expect(existsSync(join(corpus.corpusDir, SPEC_ARCHIVE_DIR))).toBe(false);
+    expect(await commitCount(corpus.corpusDir)).toBe(0);
+  });
+
+  test("a git failure leaves the written files on disk and surfaces a clear error", async () => {
+    const corpus = bareCorpus("mneme-mig-gitfail-");
+    const specPath = specFile("mneme-mig-gitfail-spec-", "# source\n");
+    const plan = planMigration([phase("alpha")], corpus.corpusDir, SPEC_SLUG);
+
+    await expect(applyMigration(plan, { specPath, corpus })).rejects.toThrow(CorpusGitError);
+
+    expect(existsSync(workflowFile(corpus.corpusDir, "alpha"))).toBe(true);
+    expect(existsSync(archiveFile(corpus.corpusDir))).toBe(true);
   });
 });
 
@@ -242,6 +377,9 @@ describe("scripts/migrate.ts end-to-end", () => {
     expect(applied.code).toBe(0);
     const written = readdirSync(workflowDir).filter((name) => name.endsWith(".md"));
     expect(written.length).toBe(3);
+    // The applied spec is archived byte-for-byte into the corpus beside the phases it generated.
+    const archivedSpec = join(tempHome, ".mneme", mungePath(canonicalize(projectCwd)), SPEC_ARCHIVE_DIR, "sample-spec.md");
+    expect(readFileSync(archivedSpec, "utf8")).toBe(MIGRATION_SAMPLE_SPEC);
     // --apply prints each created file's absolute path plus, for a multi-phase plan, the whole spec
     // DIRECTORY as the /mneme:dev launch target. The launch line is matched exactly: a substring
     // check would also accept a phase-file path, which carries the directory as a prefix.

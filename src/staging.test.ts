@@ -1,4 +1,4 @@
-import { test, expect, describe } from "bun:test";
+import { test, expect, describe, setDefaultTimeout } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,6 +14,10 @@ import { EMBEDDING_DIMENSION } from "./embeddings";
 import { dumpIndex } from "./index-db";
 import { remember, stagingList, stagingResolve, StagingError } from "./staging";
 import type { StagingDeps } from "./staging";
+
+// These tests spawn real git repositories and dozens of git subprocesses per case; under machine
+// load the slowest cases exceed bun's 5s default per-test timeout and fail the suite spuriously.
+setDefaultTimeout(30_000);
 
 const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 

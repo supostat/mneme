@@ -1,5 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, parse } from "node:path";
+import type { Corpus } from "../corpus";
+import { commitPaths } from "../corpus-git";
 import { isPhaseId, serializePhaseDocument } from "./phase-document";
 import type { PhaseDocument } from "./phase-document";
 
@@ -12,10 +14,18 @@ import type { PhaseDocument } from "./phase-document";
 // on any invalid document before a byte is written), atomic per file (temp + rename), idempotent (a
 // byte-identical target skips, a divergent target is a conflict that refuses the whole apply — a
 // human edit is never clobbered).
+//
+// Provenance: apply also archives the SOURCE spec byte-for-byte into <corpusDir>/specs/<slug>.md and
+// records phases + archive in ONE corpus commit, so the corpus history answers "these phases were
+// generated from THIS text". The archive deliberately sits outside the create/identical/conflict
+// classification: a re-migrated spec OVERWRITES its archive, and the commit carries the spec's diff —
+// that history is the point. A conflict refuses apply before any write, so neither phases nor archive
+// land; a git failure after the writes leaves the files on disk and surfaces the error unswallowed.
 
 export class MigrationError extends Error {}
 
 export const WORKFLOW_PHASE_DIR = "workflow";
+export const SPEC_ARCHIVE_DIR = "specs";
 const TEMP_SUFFIX = ".mneme-tmp";
 
 // A slug is a single safe path component: lowercase alphanumerics separated by single dashes, no
@@ -51,12 +61,20 @@ export interface PlannedWrite {
 
 export interface MigrationPlan {
   workflowDir: string;
+  specSlug: string;
   writes: PlannedWrite[];
 }
 
 export interface MigrationReport {
   created: string[];
   skipped: string[];
+  commit: string;
+}
+
+// The spec file the phases were generated from, and the corpus whose git history records the apply.
+export interface SpecArchive {
+  specPath: string;
+  corpus: Corpus;
 }
 
 export function planMigration(phases: PhaseDocument[], corpusDir: string, specSlug: string): MigrationPlan {
@@ -64,10 +82,10 @@ export function planMigration(phases: PhaseDocument[], corpusDir: string, specSl
   const workflowDir = join(corpusDir, WORKFLOW_PHASE_DIR, specSlug);
   assertUniqueIds(phases);
   const writes = phases.map((phase) => planOne(phase, specSlug, workflowDir));
-  return { workflowDir, writes };
+  return { workflowDir, specSlug, writes };
 }
 
-export function applyMigration(plan: MigrationPlan): MigrationReport {
+export async function applyMigration(plan: MigrationPlan, archive: SpecArchive): Promise<MigrationReport> {
   requireNoConflicts(plan.writes);
   // TOCTOU narrowing: the target state may have changed since planning, so re-classify against the
   // current disk and refuse if anything now diverges — before writing a single byte.
@@ -94,7 +112,38 @@ export function applyMigration(plan: MigrationPlan): MigrationReport {
       rmSync(temporaryPath, { force: true });
     }
   }
-  return { created, skipped };
+  const archiveRelativePath = writeSpecArchive(plan, archive);
+  const commit = await commitPaths(
+    archive.corpus,
+    [...plan.writes.map((write) => write.relativePath), archiveRelativePath],
+    `Migrate ${plan.specSlug}: ${plan.writes.length} phases`,
+  );
+  return { created, skipped, commit };
+}
+
+function writeSpecArchive(plan: MigrationPlan, archive: SpecArchive): string {
+  const content = readSpecBytes(archive.specPath);
+  const specsDir = join(archive.corpus.corpusDir, SPEC_ARCHIVE_DIR);
+  mkdirSync(specsDir, { recursive: true });
+  const absolutePath = join(specsDir, `${plan.specSlug}.md`);
+  const temporaryPath = absolutePath + TEMP_SUFFIX;
+  try {
+    writeFileSync(temporaryPath, content);
+    renameSync(temporaryPath, absolutePath);
+  } finally {
+    rmSync(temporaryPath, { force: true });
+  }
+  return join(SPEC_ARCHIVE_DIR, `${plan.specSlug}.md`);
+}
+
+// Bytes, never a decode/re-encode round-trip: the archive is provenance, so it must be the exact
+// file the phases were generated from.
+function readSpecBytes(specPath: string): Buffer {
+  try {
+    return readFileSync(specPath);
+  } catch {
+    throw new MigrationError(`cannot read the spec for archiving: ${specPath}`);
+  }
 }
 
 function planOne(phase: PhaseDocument, specSlug: string, workflowDir: string): PlannedWrite {

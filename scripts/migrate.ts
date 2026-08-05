@@ -75,7 +75,7 @@ export async function main(argv: string[]): Promise<number> {
       process.stderr.write(`refusing to apply: ${conflicts} conflict(s)\n`);
       return 1;
     }
-    const report = applyMigration(plan);
+    const report = await applyMigration(plan, { specPath: args.specPath, corpus });
     writeLine(`wrote ${report.created.length}, skipped ${report.skipped.length} in ${plan.workflowDir}`);
     const createdPaths = createdAbsolutePaths(plan, report);
     if (createdPaths.length > 0) {
