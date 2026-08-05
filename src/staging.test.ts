@@ -553,7 +553,7 @@ describe("stagingList untracked-anchor warnings", () => {
     const deps = await makeDeps(projectRoot, offlineClient(), sequentialIds());
     await remember(deps, { type: "pattern", body: "anchored to a build artifact", anchors: ["dist/out.js"], source: "mcp" });
 
-    const rendered = formatStagingList(await stagingList(deps), []);
+    const rendered = formatStagingList(await stagingList(deps), [], []);
 
     expect(rendered).toContain(
       "warning: anchor dist/out.js is not tracked by the project's git, so this note will sink in recall ranking; fix the anchor before accepting it",
@@ -565,7 +565,7 @@ describe("stagingList untracked-anchor warnings", () => {
     const deps = await makeDeps(projectRoot, offlineClient(), sequentialIds());
     await remember(deps, { type: "pattern", body: "anchored to a deleted file", anchors: ["src/gone.ts"], source: "mcp" });
 
-    const rendered = formatStagingList(await stagingList(deps), []);
+    const rendered = formatStagingList(await stagingList(deps), [], []);
 
     expect(rendered).toContain(`${WARNING_PREFIX} src/gone.ts is not tracked`);
   });
@@ -575,7 +575,7 @@ describe("stagingList untracked-anchor warnings", () => {
     const deps = await makeDeps(projectRoot, offlineClient(), sequentialIds());
     await remember(deps, { type: "pattern", body: "anchored to committed code", anchors: ["src/a.ts"], source: "mcp" });
 
-    const rendered = formatStagingList(await stagingList(deps), []);
+    const rendered = formatStagingList(await stagingList(deps), [], []);
 
     expect(rendered).not.toContain(WARNING_PREFIX);
   });

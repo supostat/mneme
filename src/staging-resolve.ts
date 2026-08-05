@@ -1,7 +1,8 @@
 import { readEvents } from "./events";
 import type { StoredEvent } from "./events";
 import { isStagingEvent } from "./event-dialect";
-import { DEDUP_OUTCOMES, RESOLVE_DECISIONS, RETIRE_DECISIONS } from "./event-schema";
+import { DEDUP_OUTCOMES, REANCHOR_DECISIONS, RESOLVE_DECISIONS, RETIRE_DECISIONS } from "./event-schema";
+import type { ReanchorSource } from "./event-schema";
 import type { DedupThresholds } from "./dedup";
 import type { StagedClassification } from "./dedup-sidecar";
 import type { StagingDeps, RememberInput } from "./staging";
@@ -81,6 +82,43 @@ export function appendRetireResolved(
 ): void {
   deps.eventWriter.append({
     type: "note_retire_resolved",
+    request_id: requestId,
+    target_id: targetId,
+    decision,
+    commit,
+  });
+}
+
+export interface ReanchorStagedPayload {
+  requestId: string;
+  targetId: string;
+  oldAnchor: string;
+  newAnchor: string;
+  score: number | null;
+  source: ReanchorSource;
+}
+
+export function appendReanchorStaged(deps: StagingDeps, payload: ReanchorStagedPayload): void {
+  deps.eventWriter.append({
+    type: "note_reanchor_staged",
+    request_id: payload.requestId,
+    target_id: payload.targetId,
+    old_anchor: payload.oldAnchor,
+    new_anchor: payload.newAnchor,
+    score: payload.score,
+    source: payload.source,
+  });
+}
+
+export function appendReanchorResolved(
+  deps: StagingDeps,
+  requestId: string,
+  targetId: string,
+  decision: (typeof REANCHOR_DECISIONS)[number],
+  commit: string | null,
+): void {
+  deps.eventWriter.append({
+    type: "note_reanchor_resolved",
     request_id: requestId,
     target_id: targetId,
     decision,

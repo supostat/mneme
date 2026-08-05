@@ -2,20 +2,25 @@ import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "no
 import { join } from "node:path";
 import { resolveAnchorLiveness } from "./anchor-liveness";
 import type { Corpus } from "./corpus";
+import { REANCHOR_SOURCES } from "./event-schema";
+import type { ReanchorSource } from "./event-schema";
 import { readActiveNotes } from "./index-db";
-import { isNoteId, parseNote } from "./note";
+import { isNoteId, parseNote, validateAnchor } from "./note";
 import type { Note, NoteType } from "./note";
-import { appendRetireStaged } from "./staging-resolve";
+import { isTracked } from "./staleness";
+import { appendReanchorStaged, appendRetireStaged } from "./staging-resolve";
 import type { StagingDeps } from "./staging";
 
 // Curation of ACCEPTED notes: list them with anchor health, show one in full, and queue a retire
-// decision. Retire never bypasses the human gate: note_retire only STAGES a request; the decision
-// travels through staging_resolve exactly like an acceptance, and only that resolution rewrites the
-// note (retired: true) — the file stays in notes/ as history, recall excludes it via rebuild.
+// or re-anchor decision. Neither bypasses the human gate: note_retire and noteReanchor only STAGE
+// a request; the decision travels through staging_resolve exactly like an acceptance, and only
+// that resolution rewrites the note (retired: true / anchors old -> new) — the file stays in
+// notes/ as history, recall picks the change up via rebuild.
 
 export class CurationError extends Error {}
 
 const RETIRE_EXTENSION = ".retire.json";
+const REANCHOR_EXTENSION = ".reanchor.json";
 
 export const DEFAULT_NOTES_LIST_LIMIT = 50;
 
@@ -151,6 +156,141 @@ function requireRetireRequest(corpus: Corpus, requestId: string): RetireRequest 
 
 function retirePath(corpus: Corpus, requestId: string): string {
   return join(corpus.stagingDir, `${requestId}${RETIRE_EXTENSION}`);
+}
+
+export interface ReanchorRequest {
+  requestId: string;
+  targetId: string;
+  oldAnchor: string;
+  newAnchor: string;
+  score: number | null;
+  source: ReanchorSource;
+}
+
+export interface StagedReanchor {
+  requestId: string;
+  targetId: string;
+}
+
+// Stages an anchor replacement for the human gate. Repair is for MISSING anchors only: a tracked
+// anchor needs no repair and an untracked-exists one is a fresh uncommitted file, not a loss — both
+// refuse, which is what makes a re-run over a repaired corpus silent instead of noisy.
+export async function noteReanchor(
+  deps: StagingDeps,
+  targetId: string,
+  oldAnchor: string,
+  newAnchor: string,
+  score: number | null,
+  source: ReanchorSource,
+): Promise<StagedReanchor> {
+  const target = showNote(deps.corpus, targetId);
+  if (target.frontmatter.retired === true) {
+    throw new CurationError(`note ${targetId} is retired; a retired note is not re-anchored`);
+  }
+  if (!target.frontmatter.anchors.includes(oldAnchor)) {
+    throw new CurationError(`note ${targetId} does not anchor ${oldAnchor}`);
+  }
+  validateAnchor(newAnchor);
+  const [oldLiveness] = await resolveAnchorLiveness(deps.projectRoot, [oldAnchor]);
+  if (oldLiveness!.liveness !== "missing") {
+    throw new CurationError(
+      `anchor ${oldAnchor} is ${oldLiveness!.liveness}, not missing; only a missing anchor is repaired`,
+    );
+  }
+  if (!(await isTracked(deps.projectRoot, newAnchor))) {
+    throw new CurationError(`new anchor ${newAnchor} is not tracked by the project's git`);
+  }
+  const pending = listReanchorRequests(deps.corpus).find(
+    (request) => request.targetId === targetId && request.oldAnchor === oldAnchor,
+  );
+  if (pending !== undefined) {
+    throw new CurationError(
+      `note ${targetId} already has a pending re-anchor request ${pending.requestId} for ${oldAnchor}; resolve it first`,
+    );
+  }
+  const requestId = deps.idFactory();
+  if (!isNoteId(requestId)) {
+    throw new CurationError(`idFactory produced an invalid request id: ${requestId}`);
+  }
+  writeFileSync(
+    reanchorPath(deps.corpus, requestId),
+    JSON.stringify(
+      { request_id: requestId, target_id: targetId, old_anchor: oldAnchor, new_anchor: newAnchor, score, source },
+      null,
+      2,
+    ) + "\n",
+  );
+  appendReanchorStaged(deps, { requestId, targetId, oldAnchor, newAnchor, score, source });
+  return { requestId, targetId };
+}
+
+export function listReanchorRequests(corpus: Corpus): ReanchorRequest[] {
+  return readdirSync(corpus.stagingDir)
+    .filter((name) => name.endsWith(REANCHOR_EXTENSION))
+    .sort()
+    .map((name) => requireReanchorRequest(corpus, name.slice(0, -REANCHOR_EXTENSION.length)));
+}
+
+export function readReanchorRequest(corpus: Corpus, requestId: string): ReanchorRequest | undefined {
+  if (!existsSync(reanchorPath(corpus, requestId))) {
+    return undefined;
+  }
+  return requireReanchorRequest(corpus, requestId);
+}
+
+export function removeReanchorRequest(corpus: Corpus, requestId: string): void {
+  rmSync(reanchorPath(corpus, requestId), { force: true });
+}
+
+export function countReanchorRequests(corpus: Corpus): number {
+  return readdirSync(corpus.stagingDir).filter((name) => name.endsWith(REANCHOR_EXTENSION)).length;
+}
+
+// Fail-closed read, the requireRetireRequest discipline: a request file that lost its shape is a
+// named error, never a silently skipped queue entry.
+function requireReanchorRequest(corpus: Corpus, requestId: string): ReanchorRequest {
+  const parsed: unknown = JSON.parse(readFileSync(reanchorPath(corpus, requestId), "utf8"));
+  if (typeof parsed !== "object" || parsed === null) {
+    throw new CurationError(`re-anchor request ${requestId} is not a JSON object`);
+  }
+  const record = parsed as {
+    request_id?: unknown;
+    target_id?: unknown;
+    old_anchor?: unknown;
+    new_anchor?: unknown;
+    score?: unknown;
+    source?: unknown;
+  };
+  if (record.request_id !== requestId) {
+    throw new CurationError(`re-anchor request ${requestId} names a different request_id`);
+  }
+  if (typeof record.target_id !== "string" || !isNoteId(record.target_id)) {
+    throw new CurationError(`re-anchor request ${requestId} has an invalid target_id`);
+  }
+  if (typeof record.old_anchor !== "string" || record.old_anchor.length === 0) {
+    throw new CurationError(`re-anchor request ${requestId} has an invalid old_anchor`);
+  }
+  if (typeof record.new_anchor !== "string" || record.new_anchor.length === 0) {
+    throw new CurationError(`re-anchor request ${requestId} has an invalid new_anchor`);
+  }
+  if (record.score !== null && typeof record.score !== "number") {
+    throw new CurationError(`re-anchor request ${requestId} has an invalid score`);
+  }
+  if (typeof record.source !== "string" || !(REANCHOR_SOURCES as readonly string[]).includes(record.source)) {
+    throw new CurationError(`re-anchor request ${requestId} has an invalid source`);
+  }
+  return {
+    requestId,
+    targetId: record.target_id,
+    oldAnchor: record.old_anchor,
+    newAnchor: record.new_anchor,
+    score: record.score,
+    source: record.source as ReanchorSource,
+  };
+}
+
+function reanchorPath(corpus: Corpus, requestId: string): string {
+  return join(corpus.stagingDir, `${requestId}${REANCHOR_EXTENSION}`);
 }
 
 function requireCleanReason(reason: string): void {

@@ -14,7 +14,16 @@ import { parseNote, serializeNote } from "./note";
 import type { NoteFrontmatter, NoteType } from "./note";
 import { stagingResolve, countStagedNotes, StagingError } from "./staging";
 import type { StagingDeps } from "./staging";
-import { CurationError, listRetireRequests, noteRetire, notesList, showNote } from "./curation";
+import {
+  CurationError,
+  listReanchorRequests,
+  listRetireRequests,
+  noteReanchor,
+  noteRetire,
+  notesList,
+  showNote,
+} from "./curation";
+import { formatStagingList } from "./mcp-rendering";
 
 const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
@@ -103,6 +112,16 @@ async function makeDeps(specs: AcceptedNoteSpec[], liveFiles: string[]): Promise
 
 function eventsOfType(corpus: Corpus, type: string): StoredEvent[] {
   return readEvents(corpus.eventsDir).filter((event) => event.type === type);
+}
+
+// Renames a committed project file the way a refactoring would, so the old path turns missing while
+// git history carries the rename edge.
+async function renameInProject(projectRoot: string, from: string, to: string): Promise<void> {
+  await runGit(projectRoot, ["mv", from, to]);
+  const committed = await runGit(projectRoot, [
+    "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", `rename ${from}`,
+  ]);
+  if (committed.exitCode !== 0) throw new Error(committed.stderr);
 }
 
 function noteOnDisk(corpus: Corpus, id: string) {
@@ -263,5 +282,153 @@ describe("note_retire through staging", () => {
 
     noteRetire(deps, ulid(0), "first request");
     expect(() => noteRetire(deps, ulid(0), "second request")).toThrow(/pending retire request/);
+  });
+});
+
+describe("anchor_repair through staging", () => {
+  test("reanchor stages a request and only an accept rewrites the anchors, commits, and re-indexes", async () => {
+    const deps = await makeDeps(
+      [{ id: ulid(0), body: "note whose anchor moved", anchors: ["src/old.ts", "src/a.ts"] }],
+      ["src/old.ts", "src/a.ts"],
+    );
+    await renameInProject(deps.projectRoot, "src/old.ts", "src/new.ts");
+
+    const staged = await noteReanchor(deps, ulid(0), "src/old.ts", "src/new.ts", 97, "sweep");
+
+    expect(staged.targetId).toBe(ulid(0));
+    expect(countStagedNotes(deps.corpus)).toBe(1);
+    expect(listReanchorRequests(deps.corpus)).toEqual([
+      {
+        requestId: staged.requestId,
+        targetId: ulid(0),
+        oldAnchor: "src/old.ts",
+        newAnchor: "src/new.ts",
+        score: 97,
+        source: "sweep",
+      },
+    ]);
+    const stagedEvents = eventsOfType(deps.corpus, "note_reanchor_staged");
+    expect(stagedEvents.length).toBe(1);
+    expect(stagedEvents[0]!.old_anchor).toBe("src/old.ts");
+    expect(stagedEvents[0]!.new_anchor).toBe("src/new.ts");
+    expect(stagedEvents[0]!.score).toBe(97);
+    expect(stagedEvents[0]!.source).toBe("sweep");
+    // Nothing changes until the human decides.
+    expect(noteOnDisk(deps.corpus, ulid(0)).frontmatter.anchors).toEqual(["src/old.ts", "src/a.ts"]);
+    const rendered = formatStagingList([], [], listReanchorRequests(deps.corpus));
+    expect(rendered).toContain(`re-anchor request for note ${ulid(0)} (accept or reject only)`);
+    expect(rendered).toContain("anchor: src/old.ts -> src/new.ts (rename score 97%)");
+
+    const result = await stagingResolve(deps, staged.requestId, "accept");
+
+    expect(result.outcome).toBe("reanchored");
+    if (result.outcome === "reanchored") {
+      expect(result.oldAnchor).toBe("src/old.ts");
+      expect(result.newAnchor).toBe("src/new.ts");
+      expect(result.commit).toMatch(/^[0-9a-f]{40}$/);
+    }
+    expect(noteOnDisk(deps.corpus, ulid(0)).frontmatter.anchors).toEqual(["src/new.ts", "src/a.ts"]);
+    expect(countStagedNotes(deps.corpus)).toBe(0);
+    const resolved = eventsOfType(deps.corpus, "note_reanchor_resolved");
+    expect(resolved.length).toBe(1);
+    expect(resolved[0]!.decision).toBe("accept");
+    expect(resolved[0]!.target_id).toBe(ulid(0));
+    expect(resolved[0]!.commit).toMatch(/^[0-9a-f]{40}$/);
+    const indexed = JSON.parse(dumpIndex(deps.corpus.indexPath)) as Array<{ id: string }>;
+    expect(indexed.map((row) => row.id)).toEqual([ulid(0)]);
+  });
+
+  test("a rejected re-anchor request leaves the note unchanged and logs the refusal", async () => {
+    const deps = await makeDeps(
+      [{ id: ulid(0), body: "note kept as is", anchors: ["src/old.ts"] }],
+      ["src/old.ts", "src/a.ts"],
+    );
+    await renameInProject(deps.projectRoot, "src/old.ts", "src/new.ts");
+    const staged = await noteReanchor(deps, ulid(0), "src/old.ts", "src/new.ts", null, "manual");
+
+    const result = await stagingResolve(deps, staged.requestId, "reject");
+
+    expect(result.outcome).toBe("reanchor_rejected");
+    expect(noteOnDisk(deps.corpus, ulid(0)).frontmatter.anchors).toEqual(["src/old.ts"]);
+    expect(listReanchorRequests(deps.corpus)).toEqual([]);
+    const resolved = eventsOfType(deps.corpus, "note_reanchor_resolved");
+    expect(resolved.length).toBe(1);
+    expect(resolved[0]!.decision).toBe("reject");
+    expect(resolved[0]!.commit).toBeNull();
+  });
+
+  test("a re-anchor request refuses the supersede decision", async () => {
+    const deps = await makeDeps(
+      [{ id: ulid(0), body: "note", anchors: ["src/old.ts"] }],
+      ["src/old.ts", "src/a.ts"],
+    );
+    await renameInProject(deps.projectRoot, "src/old.ts", "src/new.ts");
+    const staged = await noteReanchor(deps, ulid(0), "src/old.ts", "src/new.ts", null, "manual");
+
+    expect(stagingResolve(deps, staged.requestId, { supersede: ulid(0) })).rejects.toThrow(StagingError);
+  });
+
+  test("reanchor refuses a live old anchor, an untracked new anchor, retired notes, foreign anchors, and duplicates", async () => {
+    const deps = await makeDeps(
+      [
+        { id: ulid(0), body: "live note", anchors: ["src/old.ts", "src/a.ts"] },
+        { id: ulid(2), body: "already retired", anchors: ["src/old.ts"], retired: true },
+      ],
+      ["src/old.ts", "src/a.ts"],
+    );
+    await renameInProject(deps.projectRoot, "src/old.ts", "src/new.ts");
+
+    // src/a.ts is tracked, not missing — nothing to repair.
+    await expect(noteReanchor(deps, ulid(0), "src/a.ts", "src/new.ts", null, "manual")).rejects.toThrow(/not missing/);
+    // src/gone.ts is not tracked by the project's git — an invalid destination.
+    await expect(noteReanchor(deps, ulid(0), "src/old.ts", "src/gone.ts", null, "manual")).rejects.toThrow(/not tracked/);
+    await expect(noteReanchor(deps, ulid(2), "src/old.ts", "src/new.ts", null, "manual")).rejects.toThrow(/retired/);
+    await expect(noteReanchor(deps, ulid(0), "src/other.ts", "src/new.ts", null, "manual")).rejects.toThrow(/does not anchor/);
+    await expect(noteReanchor(deps, ulid(9), "src/old.ts", "src/new.ts", null, "manual")).rejects.toThrow(/no note/);
+
+    await noteReanchor(deps, ulid(0), "src/old.ts", "src/new.ts", null, "manual");
+    await expect(noteReanchor(deps, ulid(0), "src/old.ts", "src/new.ts", null, "manual")).rejects.toThrow(
+      /pending re-anchor request/,
+    );
+  });
+
+  test("accept re-validates the new anchor and keeps the request queued on failure", async () => {
+    const deps = await makeDeps(
+      [{ id: ulid(0), body: "note whose successor vanished", anchors: ["src/old.ts"] }],
+      ["src/old.ts", "src/a.ts"],
+    );
+    await renameInProject(deps.projectRoot, "src/old.ts", "src/new.ts");
+    const staged = await noteReanchor(deps, ulid(0), "src/old.ts", "src/new.ts", null, "manual");
+    // The tree moves between staging and the decision: the successor is deleted outright.
+    await runGit(deps.projectRoot, ["rm", "-q", "src/new.ts"]);
+    await runGit(deps.projectRoot, [
+      "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "delete successor",
+    ]);
+
+    await expect(stagingResolve(deps, staged.requestId, "accept")).rejects.toThrow(/no longer tracked/);
+
+    expect(listReanchorRequests(deps.corpus).map((request) => request.requestId)).toEqual([staged.requestId]);
+    expect(noteOnDisk(deps.corpus, ulid(0)).frontmatter.anchors).toEqual(["src/old.ts"]);
+  });
+
+  test("accept converges after a crash that rewrote the anchors before committing", async () => {
+    const deps = await makeDeps(
+      [{ id: ulid(0), body: "crash between rewrite and commit", anchors: ["src/old.ts"] }],
+      ["src/old.ts", "src/a.ts"],
+    );
+    await renameInProject(deps.projectRoot, "src/old.ts", "src/new.ts");
+    const staged = await noteReanchor(deps, ulid(0), "src/old.ts", "src/new.ts", null, "manual");
+    // Simulate the crash: the note file already carries the new anchor, the request still stands.
+    const note = noteOnDisk(deps.corpus, ulid(0));
+    writeFileSync(
+      join(deps.corpus.notesDir, `${ulid(0)}.md`),
+      serializeNote({ frontmatter: { ...note.frontmatter, anchors: ["src/new.ts"] }, body: note.body }),
+    );
+
+    const result = await stagingResolve(deps, staged.requestId, "accept");
+
+    expect(result.outcome).toBe("reanchored");
+    expect(noteOnDisk(deps.corpus, ulid(0)).frontmatter.anchors).toEqual(["src/new.ts"]);
+    expect(listReanchorRequests(deps.corpus)).toEqual([]);
   });
 });

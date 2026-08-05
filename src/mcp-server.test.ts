@@ -119,7 +119,7 @@ function expectNonceFences(text: string): void {
 // createServer draws the session id from idFactory first, so the first staged note is ulid(1).
 
 describe("mcp-server tool surface", () => {
-  test("exposes exactly the eleven mneme tools", async () => {
+  test("exposes exactly the twelve mneme tools", async () => {
     const client = await connect({
       projectRoot: await buildProjectRepo(),
       corpusHome: corpusHomeDir(),
@@ -131,6 +131,7 @@ describe("mcp-server tool surface", () => {
     const tools = await client.listTools();
 
     expect(tools.tools.map((tool) => tool.name).sort()).toEqual([
+      "anchor_repair",
       "note_retire",
       "notes_list",
       "recall",

@@ -1,7 +1,7 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { RememberResult, StagingEntry, ResolveResult } from "./staging";
 import type { RecalledNote } from "./recall";
-import type { NotesListResult, RetireRequest } from "./curation";
+import type { NotesListResult, ReanchorRequest, RetireRequest } from "./curation";
 import type { DedupSummary } from "./dedup-sidecar";
 import type { Note } from "./note";
 import type { StagedAnchor } from "./anchor-liveness";
@@ -55,14 +55,19 @@ export function formatRecall(notes: RecalledNote[], degraded: boolean): string {
   return `${header}\n${blocks.join("\n")}`;
 }
 
-export function formatStagingList(entries: StagingEntry[], retireRequests: RetireRequest[]): string {
-  if (entries.length === 0 && retireRequests.length === 0) {
+export function formatStagingList(
+  entries: StagingEntry[],
+  retireRequests: RetireRequest[],
+  reanchorRequests: ReanchorRequest[],
+): string {
+  if (entries.length === 0 && retireRequests.length === 0 && reanchorRequests.length === 0) {
     return "The staging queue is empty. Nothing to review.";
   }
   const fence = makeFence();
   const blocks = [
     ...entries.map((entry) => formatStagingEntry(entry, fence)),
     ...retireRequests.map((request) => formatRetireRequest(request, fence)),
+    ...reanchorRequests.map((request) => formatReanchorRequest(request, fence)),
   ];
   return `${RETRIEVED_DATA_NOTICE}\n${blocks.join("\n")}\nAsk the human to decide accept, reject, or supersede for each, then call staging_resolve.`;
 }
@@ -73,6 +78,18 @@ function formatRetireRequest(request: RetireRequest, fence: NoteFence): string {
     `id: ${request.requestId}`,
     `retire request for note ${request.targetId} (accept or reject only)`,
     `reason: ${request.reason}`,
+    fence.end,
+  ].join("\n");
+}
+
+function formatReanchorRequest(request: ReanchorRequest, fence: NoteFence): string {
+  const score = request.score === null ? "" : ` (rename score ${request.score}%)`;
+  return [
+    fence.begin,
+    `id: ${request.requestId}`,
+    `re-anchor request for note ${request.targetId} (accept or reject only)`,
+    `anchor: ${request.oldAnchor} -> ${request.newAnchor}${score}`,
+    `source: ${request.source}`,
     fence.end,
   ].join("\n");
 }
@@ -119,6 +136,12 @@ export function formatResolve(result: ResolveResult): string {
   }
   if (result.outcome === "retire_rejected") {
     return `Rejected the retire request for note ${result.noteId}; the note stays live.`;
+  }
+  if (result.outcome === "reanchored") {
+    return `Re-anchored note ${result.noteId}: ${result.oldAnchor} -> ${result.newAnchor}; committed ${result.commit}.`;
+  }
+  if (result.outcome === "reanchor_rejected") {
+    return `Rejected the re-anchor request for note ${result.noteId}; the anchor stays as it is.`;
   }
   return `Superseded ${result.supersededId} with note ${result.noteId}; committed ${result.commit}.`;
 }

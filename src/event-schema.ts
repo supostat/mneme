@@ -41,11 +41,20 @@ import { z } from "zod";
 //  10 — bundle hygiene: bundle_note_rejected {note_id, marker} — a note whose body fails the
 //       write-path curator set at bundle compilation (accepted before a tightening, or hand-edited
 //       on disk) is excluded from the recall bundle LOUDLY, never silently.
-export const SCHEMA_VERSION = 10;
+//  11 — anchor repair: note_reanchor_staged {request_id, target_id, old_anchor, new_anchor, score,
+//       source} queues an anchor replacement for the human gate; note_reanchor_resolved
+//       {request_id, target_id, decision, commit} applies it. An accepted repair rewrites the
+//       note's anchors (old -> new) in place — the address changes, the body never does — and
+//       anchor_sweep {…counts} records one batch-stager pass over the corpus.
+export const SCHEMA_VERSION = 11;
 
 export const DEDUP_OUTCOMES = ["add", "supersede_suggest", "noop"] as const;
 export const RESOLVE_DECISIONS = ["accept", "reject", "supersede"] as const;
 export const RETIRE_DECISIONS = ["accept", "reject"] as const;
+export const REANCHOR_DECISIONS = ["accept", "reject"] as const;
+// Who staged a re-anchor request: the batch sweep's rename tracing or a manual anchor_repair call.
+export const REANCHOR_SOURCES = ["sweep", "manual"] as const;
+export type ReanchorSource = (typeof REANCHOR_SOURCES)[number];
 export const ANCHOR_LIVENESS = ["tracked", "untracked-exists", "missing"] as const;
 export const RECALL_MODES = ["fused", "fts_only", "vector_only", "none"] as const;
 export const RECALL_CANDIDATE_WINDOW = 20;
@@ -203,6 +212,29 @@ const noteRetireResolvedEvent = z.object({
   request_id: z.string(),
   target_id: z.string(),
   decision: z.enum(RETIRE_DECISIONS),
+  commit: z.string().nullable(),
+});
+
+// score is the git rename-similarity percentage for a sweep-traced candidate and null for a manual
+// repair (no tracing ran); source names who staged the request.
+const noteReanchorStagedEvent = z.object({
+  type: z.literal("note_reanchor_staged"),
+  ...envelope,
+  request_id: z.string(),
+  target_id: z.string(),
+  old_anchor: z.string(),
+  new_anchor: z.string(),
+  score: z.number().nullable(),
+  source: z.enum(REANCHOR_SOURCES),
+});
+
+// commit is null for a rejected repair (nothing was written to the corpus repo).
+const noteReanchorResolvedEvent = z.object({
+  type: z.literal("note_reanchor_resolved"),
+  ...envelope,
+  request_id: z.string(),
+  target_id: z.string(),
+  decision: z.enum(REANCHOR_DECISIONS),
   commit: z.string().nullable(),
 });
 
@@ -383,6 +415,8 @@ export const eventSchema = z.discriminatedUnion("type", [
   stagingListedEvent,
   noteRetireStagedEvent,
   noteRetireResolvedEvent,
+  noteReanchorStagedEvent,
+  noteReanchorResolvedEvent,
   bundleNoteRejectedEvent,
   rebuildEvent,
   sessionStartEvent,

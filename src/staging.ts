@@ -16,9 +16,10 @@ import { resolveAnchorLiveness } from "./anchor-liveness";
 import type { StagedAnchor } from "./anchor-liveness";
 import { sidecarFor, writeSidecar, readSidecar, removeSidecar, dedupSummary } from "./dedup-sidecar";
 import type { StagedClassification, DedupSummary } from "./dedup-sidecar";
-import { emitRemember, dedupPayload, dedupFromClassification, appendRetireResolved, appendStagingResolve } from "./staging-resolve";
-import { countRetireRequests, readRetireRequest, removeRetireRequest } from "./curation";
-import type { RetireRequest } from "./curation";
+import { emitRemember, dedupPayload, dedupFromClassification, appendReanchorResolved, appendRetireResolved, appendStagingResolve } from "./staging-resolve";
+import { countReanchorRequests, countRetireRequests, readReanchorRequest, readRetireRequest, removeReanchorRequest, removeRetireRequest } from "./curation";
+import type { ReanchorRequest, RetireRequest } from "./curation";
+import { isTracked } from "./staleness";
 
 export class StagingError extends Error {}
 
@@ -68,7 +69,9 @@ export type ResolveResult =
   | { outcome: "rejected"; noteId: string }
   | { outcome: "superseded"; noteId: string; supersededId: string; commit: string; suggested: boolean }
   | { outcome: "retired"; requestId: string; noteId: string; commit: string }
-  | { outcome: "retire_rejected"; requestId: string; noteId: string };
+  | { outcome: "retire_rejected"; requestId: string; noteId: string }
+  | { outcome: "reanchored"; requestId: string; noteId: string; oldAnchor: string; newAnchor: string; commit: string }
+  | { outcome: "reanchor_rejected"; requestId: string; noteId: string };
 
 const NOTE_EXTENSION = ".md";
 
@@ -137,11 +140,11 @@ function stageNote(deps: StagingDeps, noteId: string, commit: string, input: Rem
 }
 
 // The cheap read the workflow boundary needs: how many decisions await review — staged notes AND
-// queued retire requests — with no liveness resolution, no sidecar reads and no staging_listed
-// event; listing stays the reviewed act.
+// queued retire/re-anchor requests — with no liveness resolution, no sidecar reads and no
+// staging_listed event; listing stays the reviewed act.
 export function countStagedNotes(corpus: Corpus): number {
   const stagedNotes = readdirSync(corpus.stagingDir).filter((name) => name.endsWith(NOTE_EXTENSION)).length;
-  return stagedNotes + countRetireRequests(corpus);
+  return stagedNotes + countRetireRequests(corpus) + countReanchorRequests(corpus);
 }
 
 export async function stagingList(deps: StagingDeps): Promise<StagingEntry[]> {
@@ -185,6 +188,10 @@ export async function stagingResolve(deps: StagingDeps, id: string, decision: Re
   if (retireRequest !== undefined) {
     return resolveRetireRequest(deps, retireRequest, decision);
   }
+  const reanchorRequest = readReanchorRequest(deps.corpus, id);
+  if (reanchorRequest !== undefined) {
+    return resolveReanchorRequest(deps, reanchorRequest, decision);
+  }
   if (decision === "reject") {
     return rejectNote(deps, id);
   }
@@ -220,6 +227,66 @@ async function resolveRetireRequest(
   appendRetireResolved(deps, request.requestId, request.targetId, "accept", commit);
   await rebuild(rebuildDeps(deps));
   return { outcome: "retired", requestId: request.requestId, noteId: request.targetId, commit };
+}
+
+// The re-anchor decision resolves like a retire: accept re-checks the new path is still tracked
+// (the tree may have moved between staging and the decision — a failure keeps the request queued),
+// rewrites the note's anchors in place, commits the corpus, and rebuilds; reject drops the request.
+async function resolveReanchorRequest(
+  deps: StagingDeps,
+  request: ReanchorRequest,
+  decision: ResolveDecision,
+): Promise<ResolveResult> {
+  if (decision !== "accept" && decision !== "reject") {
+    throw new StagingError(`a re-anchor request resolves with accept or reject only: ${request.requestId}`);
+  }
+  if (decision === "reject") {
+    removeReanchorRequest(deps.corpus, request.requestId);
+    appendReanchorResolved(deps, request.requestId, request.targetId, "reject", null);
+    return { outcome: "reanchor_rejected", requestId: request.requestId, noteId: request.targetId };
+  }
+  if (!(await isTracked(deps.projectRoot, request.newAnchor))) {
+    throw new StagingError(
+      `new anchor ${request.newAnchor} is no longer tracked by the project's git; ` +
+        `request ${request.requestId} stays queued — restore the path or reject the request`,
+    );
+  }
+  markNoteReanchored(deps.corpus, request);
+  const commit = await commitPaths(
+    deps.corpus,
+    [notesRelPath(request.targetId)],
+    `Re-anchor note ${shortId(request.targetId)}`,
+  );
+  removeReanchorRequest(deps.corpus, request.requestId);
+  appendReanchorResolved(deps, request.requestId, request.targetId, "accept", commit);
+  await rebuild(rebuildDeps(deps));
+  return {
+    outcome: "reanchored",
+    requestId: request.requestId,
+    noteId: request.targetId,
+    oldAnchor: request.oldAnchor,
+    newAnchor: request.newAnchor,
+    commit,
+  };
+}
+
+// Retry-convergent, the resolve non-atomicity discipline: a crash after the rewrite but before the
+// commit re-runs cleanly — anchors already carrying the new path skip the write, and commitPaths
+// returns the existing HEAD on an empty diff.
+function markNoteReanchored(corpus: Corpus, request: ReanchorRequest): void {
+  const path = notePath(corpus.notesDir, request.targetId);
+  if (!existsSync(path)) {
+    throw new StagingError(`no note to re-anchor: ${request.targetId}`);
+  }
+  const note = parseNote(readFileSync(path, "utf8"));
+  if (!note.frontmatter.anchors.includes(request.oldAnchor)) {
+    if (note.frontmatter.anchors.includes(request.newAnchor)) return;
+    throw new StagingError(`note ${request.targetId} does not anchor ${request.oldAnchor}`);
+  }
+  const anchors = [
+    ...new Set(note.frontmatter.anchors.map((anchor) => (anchor === request.oldAnchor ? request.newAnchor : anchor))),
+  ];
+  writeFileSync(path, serializeNote({ frontmatter: { ...note.frontmatter, anchors }, body: note.body }));
 }
 
 function markNoteRetired(corpus: Corpus, targetId: string): void {

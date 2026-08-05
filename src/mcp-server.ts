@@ -21,7 +21,7 @@ import { recall } from "./recall";
 import { NOTE_TYPES } from "./note";
 import type { NoteType } from "./note";
 import { remember, stagingList, stagingResolve } from "./staging";
-import { listRetireRequests, noteRetire, notesList, showNote } from "./curation";
+import { listReanchorRequests, listRetireRequests, noteReanchor, noteRetire, notesList, showNote } from "./curation";
 import { computeStats, formatStats } from "./stats";
 import { computeFriction, formatFriction } from "./stats-friction";
 import { computeFootprint, formatFootprint } from "./stats-footprint";
@@ -92,6 +92,13 @@ const NOTES_LIST_INPUT = {
   limit: z.number().int().positive().optional(),
 };
 const NOTE_RETIRE_INPUT = { id: z.string(), reason: z.string() };
+const ANCHOR_REPAIR_DESCRIPTION =
+  "Queue an anchor repair for an accepted note whose anchor path is MISSING (deleted or renamed in " +
+  "the project). This does NOT change the note; it only stages a re-anchor request — the human " +
+  "decides via staging_resolve (accept or reject). An accepted repair replaces the old anchor with " +
+  "the new git-tracked path in the note's frontmatter (the body never changes) and the note " +
+  "re-enters recall ranking on rebuild.";
+const ANCHOR_REPAIR_INPUT = { id: z.string(), old_anchor: z.string(), new_anchor: z.string() };
 const RECALL_INPUT = { query: z.string(), budget: z.number().int().positive().optional() };
 const STAGING_RESOLVE_INPUT = {
   id: z.string(),
@@ -191,6 +198,9 @@ function registerTools(
   server.registerTool("note_retire", { description: NOTE_RETIRE_DESCRIPTION, inputSchema: NOTE_RETIRE_INPUT }, (args) =>
     dispatch(context, "note_retire", (current) => noteRetireTool(buildStagingDeps(current), args)),
   );
+  server.registerTool("anchor_repair", { description: ANCHOR_REPAIR_DESCRIPTION, inputSchema: ANCHOR_REPAIR_INPUT }, (args) =>
+    dispatch(context, "anchor_repair", (current) => anchorRepairTool(buildStagingDeps(current), args)),
+  );
   server.registerTool("staging_resolve", { description: STAGING_RESOLVE_DESCRIPTION, inputSchema: STAGING_RESOLVE_INPUT }, (args) =>
     dispatch(context, "staging_resolve", (current) => stagingResolveTool(buildStagingDeps(current), args)),
   );
@@ -276,7 +286,9 @@ async function recallTool(
 
 async function stagingListTool(stagingDeps: StagingDeps): Promise<CallToolResult> {
   const entries = await stagingList(stagingDeps);
-  return textResult(formatStagingList(entries, listRetireRequests(stagingDeps.corpus)));
+  return textResult(
+    formatStagingList(entries, listRetireRequests(stagingDeps.corpus), listReanchorRequests(stagingDeps.corpus)),
+  );
 }
 
 async function notesListTool(
@@ -292,6 +304,19 @@ async function notesListTool(
     limit: args.limit,
   });
   return textResult(formatNotesList(result));
+}
+
+async function anchorRepairTool(
+  stagingDeps: StagingDeps,
+  args: { id: string; old_anchor: string; new_anchor: string },
+): Promise<CallToolResult> {
+  const staged = await noteReanchor(stagingDeps, args.id, args.old_anchor, args.new_anchor, null, "manual");
+  return textResult(
+    [
+      `Staged re-anchor request ${staged.requestId} for note ${staged.targetId}. Nothing is changed yet.`,
+      "Ask the human to review it with staging_list and decide accept or reject via staging_resolve.",
+    ].join("\n"),
+  );
 }
 
 function noteRetireTool(stagingDeps: StagingDeps, args: { id: string; reason: string }): CallToolResult {
