@@ -72,6 +72,19 @@ async function renameInProject(projectRoot: string, from: string, to: string): P
   await commitProject(projectRoot, `rename ${from}`);
 }
 
+async function checkout(projectRoot: string, args: string[]): Promise<void> {
+  const result = await runGit(projectRoot, ["checkout", "-q", ...args]);
+  if (result.exitCode !== 0) throw new Error(`git checkout failed: ${result.stderr}`);
+}
+
+// Adds a branch carrying one extra committed file, then returns the worktree to main.
+async function parkFileOnBranch(projectRoot: string, branch: string, path: string): Promise<void> {
+  await checkout(projectRoot, ["-b", branch]);
+  writeFileSync(join(projectRoot, path), fileContent(path));
+  await commitProject(projectRoot, `add ${path} on ${branch}`);
+  await checkout(projectRoot, ["main"]);
+}
+
 interface AcceptedNoteSpec {
   id: string;
   body: string;
@@ -280,6 +293,67 @@ describe("anchorSweep staging", () => {
     expect(candidate.path).toBe("src/new.ts");
     expect(candidate.score).toBeLessThan(RENAME_SCORE_FLOOR);
     expect(formatSweepReport(report)).toContain(`src/new.ts (${candidate.score}%)`);
+  });
+
+  test("an anchor parked on another branch is report-only: no stage, no retire line, branch named", async () => {
+    const deps = await makeDeps(
+      [{ id: ulid(0), body: "knowledge parked on a feature branch", anchors: ["src/parked.ts"] }],
+      ["src/a.ts"],
+    );
+    await parkFileOnBranch(deps.projectRoot, "feature", "src/parked.ts");
+
+    const report = await anchorSweep(deps);
+
+    expect(report.parked).toEqual([
+      { noteId: ulid(0), type: "decision", oldAnchor: "src/parked.ts", branches: ["feature"] },
+    ]);
+    expect(report.staged).toEqual([]);
+    expect(report.noSuccessor).toEqual([]);
+    expect(report.unknownToGit).toEqual([]);
+    expect(listReanchorRequests(deps.corpus)).toEqual([]);
+    expect(report.branchesChecked).toBe(2);
+    const rendered = formatSweepReport(report);
+    expect(rendered).toContain("Anchor sweep (checked against 2 local branches):");
+    expect(rendered).toContain(`${ulid(0)} [decision]: src/parked.ts — lives on: feature`);
+    expect(rendered).not.toContain("note_retire");
+    const swept = eventsOfType(deps.corpus, "anchor_sweep");
+    expect(swept[0]!.parked_n).toBe(1);
+  });
+
+  test("a concept anchor git never saw lands in unknown-to-git without a retire line", async () => {
+    const deps = await makeDeps(
+      [{ id: ulid(0), body: "anchored to a concept, not a path", anchors: ["MultiSelect"] }],
+      ["src/a.ts"],
+    );
+
+    const report = await anchorSweep(deps);
+
+    expect(report.unknownToGit).toEqual([{ noteId: ulid(0), type: "decision", oldAnchor: "MultiSelect" }]);
+    expect(report.noSuccessor).toEqual([]);
+    expect(listReanchorRequests(deps.corpus)).toEqual([]);
+    const rendered = formatSweepReport(report);
+    expect(rendered).toContain("unknown to git (likely a concept, not a path");
+    expect(rendered).toContain(`${ulid(0)} [decision]: MultiSelect`);
+    expect(rendered).not.toContain("note_retire");
+    const swept = eventsOfType(deps.corpus, "anchor_sweep");
+    expect(swept[0]!.unknown_to_git_n).toBe(1);
+  });
+
+  test("a re-run over parked and unknown anchors renders a byte-identical report", async () => {
+    const deps = await makeDeps(
+      [
+        { id: ulid(0), body: "parked note", anchors: ["src/parked.ts"] },
+        { id: ulid(1), body: "concept note", anchors: ["soft-delete"] },
+      ],
+      ["src/a.ts"],
+    );
+    await parkFileOnBranch(deps.projectRoot, "feature", "src/parked.ts");
+
+    const first = formatSweepReport(await anchorSweep(deps));
+    const second = formatSweepReport(await anchorSweep(deps));
+
+    expect(second).toBe(first);
+    expect(listReanchorRequests(deps.corpus)).toEqual([]);
   });
 
   test("a partially repaired corpus mentions only the still-missing anchor and a re-run stays silent", async () => {

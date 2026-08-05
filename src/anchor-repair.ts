@@ -1,4 +1,4 @@
-import { createLivenessContext, resolveAnchorLiveness } from "./anchor-liveness";
+import { createLivenessContext, pathEverExisted, resolveAnchorLiveness } from "./anchor-liveness";
 import { listReanchorRequests, noteReanchor } from "./curation";
 import { runGit } from "./git";
 import { readActiveNotes } from "./index-db";
@@ -134,12 +134,22 @@ export interface SweepNoSuccessor {
   oldAnchor: string;
 }
 
+export interface SweepParked {
+  noteId: string;
+  type: NoteType;
+  oldAnchor: string;
+  branches: string[];
+}
+
 export interface SweepReport {
   staged: SweepStaged[];
   ambiguous: SweepAmbiguous[];
+  parked: SweepParked[];
+  unknownToGit: SweepNoSuccessor[];
   noSuccessor: SweepNoSuccessor[];
   skippedNeutralN: number;
   missingByType: Record<NoteType, number>;
+  branchesChecked: number;
 }
 
 // Liveness checks and staging stay strictly sequential: unbounded parallel git spawns are a named
@@ -155,14 +165,20 @@ export async function anchorSweep(deps: StagingDeps): Promise<SweepReport> {
   const report: SweepReport = {
     staged: [],
     ambiguous: [],
+    parked: [],
+    unknownToGit: [],
     noSuccessor: [],
     skippedNeutralN: 0,
     missingByType: emptyTypeCounts(),
+    branchesChecked: context.branches.length,
   };
   for (const note of readActiveNotes(deps.corpus.notesDir)) {
     const anchors = await resolveAnchorLiveness(context, note.frontmatter.anchors);
+    // A parked anchor (alive on another branch's tip) is REPORT-ONLY: never repaired, never
+    // retire-advised — the merge brings it back. Only truly missing anchors enter repair.
+    const parked = anchors.filter((anchor) => anchor.liveness === "known-elsewhere");
     const missing = anchors.filter((anchor) => anchor.liveness === "missing");
-    if (missing.length === 0) continue;
+    if (parked.length === 0 && missing.length === 0) continue;
     const noteId = note.frontmatter.id;
     const type = note.frontmatter.type;
     report.missingByType[type] += 1;
@@ -170,11 +186,18 @@ export async function anchorSweep(deps: StagingDeps): Promise<SweepReport> {
       report.skippedNeutralN += 1;
       continue;
     }
+    for (const anchor of parked) {
+      report.parked.push({ noteId, type, oldAnchor: anchor.path, branches: anchor.branches ?? [] });
+    }
     for (const anchor of missing) {
       if (pending.has(pendingKey(noteId, anchor.path))) continue;
       const classified = await classifyMissingAnchor(deps.projectRoot, renames, anchor.path);
       if (classified.kind === "none") {
-        report.noSuccessor.push({ noteId, type, oldAnchor: anchor.path });
+        if (await pathEverExisted(deps.projectRoot, anchor.path)) {
+          report.noSuccessor.push({ noteId, type, oldAnchor: anchor.path });
+        } else {
+          report.unknownToGit.push({ noteId, type, oldAnchor: anchor.path });
+        }
       } else if (classified.kind === "ambiguous") {
         report.ambiguous.push({ noteId, type, oldAnchor: anchor.path, candidates: classified.candidates });
       } else {
@@ -195,6 +218,8 @@ export async function anchorSweep(deps: StagingDeps): Promise<SweepReport> {
     type: "anchor_sweep",
     staged_n: report.staged.length,
     ambiguous_n: report.ambiguous.length,
+    parked_n: report.parked.length,
+    unknown_to_git_n: report.unknownToGit.length,
     no_successor_n: report.noSuccessor.length,
     skipped_neutral_n: report.skippedNeutralN,
   });

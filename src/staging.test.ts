@@ -507,7 +507,7 @@ describe("stagingList anchor liveness", () => {
 
     expect(entries[0]!.anchors).toEqual([
       { path: "src/a.ts", liveness: "tracked" },
-      { path: "src/gone.ts", liveness: "missing" },
+      { path: "src/gone.ts", liveness: "missing", everExisted: false },
     ]);
   });
 
@@ -535,7 +535,7 @@ describe("stagingList anchor liveness", () => {
         id: ulid(0),
         anchors: [
           { path: "src/a.ts", liveness: "tracked" },
-          { path: "src/gone.ts", liveness: "missing" },
+          { path: "src/gone.ts", liveness: "missing", everExisted: false },
         ],
       },
     ]);
@@ -560,14 +560,46 @@ describe("stagingList untracked-anchor warnings", () => {
     );
   });
 
-  test("a nonexistent anchor carries the same warning", async () => {
+  test("a deleted-from-history anchor keeps the classic sink warning", async () => {
     const projectRoot = await buildProjectRepo();
+    await runGit(projectRoot, ["rm", "-q", "src/a.ts"]);
+    await runGit(projectRoot, ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "delete a"]);
     const deps = await makeDeps(projectRoot, offlineClient(), sequentialIds());
-    await remember(deps, { type: "pattern", body: "anchored to a deleted file", anchors: ["src/gone.ts"], source: "mcp" });
+    await remember(deps, { type: "pattern", body: "anchored to a deleted file", anchors: ["src/a.ts"], source: "mcp" });
 
     const rendered = formatStagingList(await stagingList(deps), [], []);
 
-    expect(rendered).toContain(`${WARNING_PREFIX} src/gone.ts is not tracked`);
+    expect(rendered).toContain(`${WARNING_PREFIX} src/a.ts is not tracked`);
+  });
+
+  test("a concept anchor git never saw warns with the never-known wording", async () => {
+    const projectRoot = await buildProjectRepo();
+    const deps = await makeDeps(projectRoot, offlineClient(), sequentialIds());
+    await remember(deps, { type: "pattern", body: "anchored to a concept", anchors: ["MultiSelect"], source: "mcp" });
+
+    const rendered = formatStagingList(await stagingList(deps), [], []);
+
+    expect(rendered).toContain(
+      "warning: anchor MultiSelect was never known to the project's git — likely a concept, not a " +
+        "file path; anchor to a real tracked file or the note will sink in recall ranking",
+    );
+  });
+
+  test("an anchor parked on another branch warns with the branch name and the moderate penalty", async () => {
+    const projectRoot = await buildProjectRepo();
+    await runGit(projectRoot, ["checkout", "-q", "-b", "feature"]);
+    writeFileSync(join(projectRoot, "src/parked.ts"), "parked content\n");
+    await runGit(projectRoot, ["add", "-A"]);
+    await runGit(projectRoot, ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "park"]);
+    await runGit(projectRoot, ["checkout", "-q", "main"]);
+    const deps = await makeDeps(projectRoot, offlineClient(), sequentialIds());
+    await remember(deps, { type: "pattern", body: "anchored to a parked file", anchors: ["src/parked.ts"], source: "mcp" });
+
+    const rendered = formatStagingList(await stagingList(deps), [], []);
+
+    expect(rendered).toContain(
+      "warning: anchor src/parked.ts lives on branch feature, not here; the note takes a moderate ranking penalty until the merge",
+    );
   });
 
   test("a note whose anchors are all tracked renders without warning noise", async () => {

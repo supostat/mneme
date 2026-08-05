@@ -12,7 +12,7 @@ import { assertCleanNoteBody } from "./sanitize-body";
 import { classifyCandidate } from "./dedup";
 import { rebuild } from "./index-db";
 import type { RebuildDeps } from "./index-db";
-import { createLivenessContext, resolveAnchorLiveness } from "./anchor-liveness";
+import { createLivenessContext, pathEverExisted, resolveAnchorLiveness } from "./anchor-liveness";
 import type { LivenessContext, StagedAnchor } from "./anchor-liveness";
 import { sidecarFor, writeSidecar, readSidecar, removeSidecar, dedupSummary } from "./dedup-sidecar";
 import type { StagedClassification, DedupSummary } from "./dedup-sidecar";
@@ -172,9 +172,21 @@ async function stagingEntry(corpus: Corpus, context: LivenessContext, file: stri
     id,
     type: note.frontmatter.type,
     digest: firstLine(note.body),
-    anchors: await resolveAnchorLiveness(context, note.frontmatter.anchors),
+    anchors: await probeMissingAnchors(context, await resolveAnchorLiveness(context, note.frontmatter.anchors)),
     dedup: dedupSummary(readSidecar(corpus, id)),
   };
+}
+
+// The intake concept-anchor probe runs ONLY for missing anchors of staged notes (a handful at
+// most): a path git never saw earns the "likely a concept, not a file" warning downstream.
+async function probeMissingAnchors(context: LivenessContext, anchors: StagedAnchor[]): Promise<StagedAnchor[]> {
+  return Promise.all(
+    anchors.map(async (anchor) =>
+      anchor.liveness === "missing"
+        ? { ...anchor, everExisted: await pathEverExisted(context.projectRoot, anchor.path) }
+        : anchor,
+    ),
+  );
 }
 
 function firstLine(body: string): string {

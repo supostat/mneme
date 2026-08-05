@@ -120,11 +120,13 @@ const dedupOutcome = z.object({
   degraded: z.boolean(),
 });
 
-// branches is present only for known-elsewhere: the local branch tips carrying the path.
+// branches is present only for known-elsewhere (the local branch tips carrying the path);
+// everExisted only for probed missing anchors (false = git never saw the path — a concept).
 const anchorLiveness = z.object({
   path: z.string(),
   liveness: z.enum(ANCHOR_LIVENESS),
   branches: z.array(z.string()).optional(),
+  everExisted: z.boolean().optional(),
 });
 
 // One pre-budget-cutoff candidate in fused order. type/fts_rank/vector_rank/cosine/token_est are
@@ -250,6 +252,8 @@ const anchorSweepEvent = z.object({
   ...envelope,
   staged_n: z.number().int(),
   ambiguous_n: z.number().int(),
+  parked_n: z.number().int(),
+  unknown_to_git_n: z.number().int(),
   no_successor_n: z.number().int(),
   skipped_neutral_n: z.number().int(),
 });

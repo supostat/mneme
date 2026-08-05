@@ -108,15 +108,29 @@ function formatStagingEntry(entry: StagingEntry, fence: NoteFence): string {
   ].join("\n");
 }
 
-// Trackedness here is the same predicate stalenessBoost ranks by, so the warning tells the curator
-// exactly what recall will do to the note. Information, never a blocker: acceptance stays allowed.
+// The warnings derive from the same four-state classification stalenessBoost ranks by, so each one
+// tells the curator exactly what recall will do to the note. Information, never a blocker:
+// acceptance stays allowed for every state.
 function anchorWarnings(anchors: StagedAnchor[]): string[] {
   return anchors
     .filter((anchor) => anchor.liveness !== "tracked")
-    .map(
-      (anchor) =>
-        `warning: anchor ${anchor.path} is not tracked by the project's git, so this note will sink in recall ranking; fix the anchor before accepting it`,
+    .map((anchor) => anchorWarning(anchor));
+}
+
+function anchorWarning(anchor: StagedAnchor): string {
+  if (anchor.liveness === "known-elsewhere") {
+    return (
+      `warning: anchor ${anchor.path} lives on branch ${branchList(anchor.branches ?? [])}, not here; ` +
+      "the note takes a moderate ranking penalty until the merge"
     );
+  }
+  if (anchor.liveness === "missing" && anchor.everExisted === false) {
+    return (
+      `warning: anchor ${anchor.path} was never known to the project's git — likely a concept, not a ` +
+      "file path; anchor to a real tracked file or the note will sink in recall ranking"
+    );
+  }
+  return `warning: anchor ${anchor.path} is not tracked by the project's git, so this note will sink in recall ranking; fix the anchor before accepting it`;
 }
 
 function formatDedup(dedup: DedupSummary): string {
@@ -153,12 +167,19 @@ export function formatResolve(result: ResolveResult): string {
 // only thing left for the human to write.
 export function formatSweepReport(report: SweepReport): string {
   const total =
-    report.staged.length + report.ambiguous.length + report.noSuccessor.length + report.skippedNeutralN;
+    report.staged.length +
+    report.ambiguous.length +
+    report.parked.length +
+    report.unknownToGit.length +
+    report.noSuccessor.length +
+    report.skippedNeutralN;
   if (total === 0) {
     return "Anchor sweep: no missing anchors to repair. Nothing was staged.";
   }
   const lines = [
-    `Anchor sweep: staged ${report.staged.length} · ambiguous ${report.ambiguous.length} · ` +
+    `Anchor sweep (checked against ${report.branchesChecked} local branches): ` +
+      `staged ${report.staged.length} · ambiguous ${report.ambiguous.length} · ` +
+      `parked ${report.parked.length} · unknown ${report.unknownToGit.length} · ` +
       `no successor ${report.noSuccessor.length} · skipped anchor-neutral ${report.skippedNeutralN}`,
     `notes with missing anchors by type: ${Object.entries(report.missingByType)
       .map(([type, count]) => `${type} ${count}`)
@@ -179,6 +200,18 @@ export function formatSweepReport(report: SweepReport): string {
       lines.push(`  ${entry.noteId} [${entry.type}]: ${entry.oldAnchor} — candidates: ${candidateList(entry.candidates)}`);
     }
   }
+  if (report.parked.length > 0) {
+    lines.push("parked in a branch (alive — the merge brings it back; do not repair, do not retire):");
+    for (const entry of report.parked) {
+      lines.push(`  ${entry.noteId} [${entry.type}]: ${entry.oldAnchor} — lives on: ${branchList(entry.branches)}`);
+    }
+  }
+  if (report.unknownToGit.length > 0) {
+    lines.push("unknown to git (likely a concept, not a path — rebind manually with anchor_repair; the knowledge is alive):");
+    for (const entry of report.unknownToGit) {
+      lines.push(`  ${entry.noteId} [${entry.type}]: ${entry.oldAnchor}`);
+    }
+  }
   if (report.noSuccessor.length > 0) {
     lines.push("no successor (deleted outright — the knowledge may be gone with the file):");
     for (const entry of report.noSuccessor) {
@@ -192,6 +225,26 @@ export function formatSweepReport(report: SweepReport): string {
 
 function candidateList(candidates: ScoredCandidate[]): string {
   return candidates.map((candidate) => `${candidate.path} (${candidate.score}%)`).join(", ");
+}
+
+// Branch names are git refnames and may legally carry line/paragraph separators or control bytes
+// that break MCP JSON-RPC framing; strip them explicitly before rendering (never rely on trim()).
+// The pattern is built from code points so no raw invisible byte lands in this file.
+const BRANCH_NAME_FORBIDDEN = new RegExp(
+  "[" +
+    String.fromCharCode(0x2028) +
+    String.fromCharCode(0x2029) +
+    String.fromCharCode(0x0085) +
+    "\\x00-\\x1f\\x7f]",
+  "g",
+);
+
+function cleanBranchName(branch: string): string {
+  return branch.replace(BRANCH_NAME_FORBIDDEN, "");
+}
+
+function branchList(branches: string[]): string {
+  return branches.map(cleanBranchName).join(", ");
 }
 
 export function formatNotesList(result: NotesListResult): string {

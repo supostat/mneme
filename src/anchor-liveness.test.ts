@@ -77,6 +77,7 @@ describe("four-state anchor liveness", () => {
     const context = await createLivenessContext(repoDir);
 
     expect(context.branchPaths.size).toBe(0);
+    expect(context.branches).toEqual([]);
     const [anchor] = await resolveAnchorLiveness(context, ["src/ghost.ts"]);
     expect(anchor!.liveness).toBe("missing");
   });
@@ -91,6 +92,7 @@ describe("liveness context is the single map source", () => {
     const context: LivenessContext = {
       projectRoot: repoDir,
       branchPaths: new Map([["src/ghost.ts", ["imaginary-branch"]]]),
+      branches: ["imaginary-branch"],
     };
 
     const anchor = await livenessOf(context, "src/ghost.ts");

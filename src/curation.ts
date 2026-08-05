@@ -195,6 +195,12 @@ export async function noteReanchor(
   validateAnchor(newAnchor);
   const context = await createLivenessContext(deps.projectRoot);
   const [oldLiveness] = await resolveAnchorLiveness(context, [oldAnchor]);
+  if (oldLiveness!.liveness === "known-elsewhere") {
+    throw new CurationError(
+      `anchor ${oldAnchor} lives on branch ${(oldLiveness!.branches ?? []).join(", ")} — ` +
+        "wait for the merge, there is nothing to repair",
+    );
+  }
   if (oldLiveness!.liveness !== "missing") {
     throw new CurationError(
       `anchor ${oldAnchor} is ${oldLiveness!.liveness}, not missing; only a missing anchor is repaired`,

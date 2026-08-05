@@ -392,6 +392,22 @@ describe("anchor_repair through staging", () => {
     );
   });
 
+  test("reanchor refuses an anchor parked on another branch, naming the branch", async () => {
+    const deps = await makeDeps(
+      [{ id: ulid(0), body: "note parked on a branch", anchors: ["src/parked.ts"] }],
+      ["src/a.ts"],
+    );
+    await runGit(deps.projectRoot, ["checkout", "-q", "-b", "feature"]);
+    writeFileSync(join(deps.projectRoot, "src/parked.ts"), "parked content\n");
+    await runGit(deps.projectRoot, ["add", "-A"]);
+    await runGit(deps.projectRoot, ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "park"]);
+    await runGit(deps.projectRoot, ["checkout", "-q", "main"]);
+
+    await expect(noteReanchor(deps, ulid(0), "src/parked.ts", "src/a.ts", null, "manual")).rejects.toThrow(
+      /lives on branch feature — wait for the merge/,
+    );
+  });
+
   test("accept re-validates the new anchor and keeps the request queued on failure", async () => {
     const deps = await makeDeps(
       [{ id: ulid(0), body: "note whose successor vanished", anchors: ["src/old.ts"] }],
