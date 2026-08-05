@@ -206,6 +206,23 @@ describe("anchorSweep staging", () => {
     expect(report.staged[0]!.newAnchor).toBe("src/a3.ts");
   });
 
+  test("a rename cycle stages the live path instead of reading as deletion", async () => {
+    const deps = await makeDeps(
+      [{ id: ulid(0), body: "anchored to the cycle's middle name", anchors: ["src/b.ts"] }],
+      ["src/a.ts"],
+    );
+    await renameInProject(deps.projectRoot, "src/a.ts", "src/b.ts");
+    await renameInProject(deps.projectRoot, "src/b.ts", "src/a.ts");
+
+    const report = await anchorSweep(deps);
+
+    expect(report.noSuccessor).toEqual([]);
+    expect(report.ambiguous).toEqual([]);
+    expect(report.staged.length).toBe(1);
+    expect(report.staged[0]!.oldAnchor).toBe("src/b.ts");
+    expect(report.staged[0]!.newAnchor).toBe("src/a.ts");
+  });
+
   test("anchor-neutral notes are skipped but counted in the type breakdown", async () => {
     const deps = await makeDeps(
       [

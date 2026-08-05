@@ -65,7 +65,10 @@ export type MissingAnchorClassification =
 
 // Follows the rename chain from a missing anchor. A fork (two renames out of one path) is ambiguous
 // at the fork's own targets; a chain carries the MINIMUM score of its hops (the weakest link is the
-// honest confidence); an endpoint that is itself gone means no successor.
+// honest confidence); an endpoint that is itself gone means no successor. The rename map is
+// time-agnostic, so a rename cycle (a -> b -> a: a prefix added and later removed) revisits a path;
+// the chain stops at the last new path and the liveness check decides, or a live successor would
+// read as an outright deletion.
 export async function classifyMissingAnchor(
   projectRoot: string,
   renames: Map<string, RenameEdge[]>,
@@ -87,7 +90,7 @@ export async function classifyMissingAnchor(
     }
     const edge = edges[0]!;
     if (visited.has(edge.to)) {
-      return { kind: "none" };
+      break;
     }
     visited.add(edge.to);
     chainScore = combineScores(chainScore, edge.score);
