@@ -12,8 +12,8 @@ import { assertCleanNoteBody } from "./sanitize-body";
 import { classifyCandidate } from "./dedup";
 import { rebuild } from "./index-db";
 import type { RebuildDeps } from "./index-db";
-import { resolveAnchorLiveness } from "./anchor-liveness";
-import type { StagedAnchor } from "./anchor-liveness";
+import { createLivenessContext, resolveAnchorLiveness } from "./anchor-liveness";
+import type { LivenessContext, StagedAnchor } from "./anchor-liveness";
 import { sidecarFor, writeSidecar, readSidecar, removeSidecar, dedupSummary } from "./dedup-sidecar";
 import type { StagedClassification, DedupSummary } from "./dedup-sidecar";
 import { emitRemember, dedupPayload, dedupFromClassification, appendReanchorResolved, appendRetireResolved, appendStagingResolve } from "./staging-resolve";
@@ -152,8 +152,10 @@ export async function stagingList(deps: StagingDeps): Promise<StagingEntry[]> {
     .filter((name) => name.endsWith(NOTE_EXTENSION))
     .sort();
   const entries: StagingEntry[] = [];
+  // The branch-tips context is built ONCE for the listing, never per staged note.
+  const context = await createLivenessContext(deps.projectRoot);
   for (const file of files) {
-    entries.push(await stagingEntry(deps.corpus, deps.projectRoot, file));
+    entries.push(await stagingEntry(deps.corpus, context, file));
   }
   deps.eventWriter.append({
     type: "staging_listed",
@@ -163,14 +165,14 @@ export async function stagingList(deps: StagingDeps): Promise<StagingEntry[]> {
   return entries;
 }
 
-async function stagingEntry(corpus: Corpus, projectRoot: string, file: string): Promise<StagingEntry> {
+async function stagingEntry(corpus: Corpus, context: LivenessContext, file: string): Promise<StagingEntry> {
   const id = file.slice(0, -NOTE_EXTENSION.length);
   const note = parseNote(readFileSync(join(corpus.stagingDir, file), "utf8"));
   return {
     id,
     type: note.frontmatter.type,
     digest: firstLine(note.body),
-    anchors: await resolveAnchorLiveness(projectRoot, note.frontmatter.anchors),
+    anchors: await resolveAnchorLiveness(context, note.frontmatter.anchors),
     dedup: dedupSummary(readSidecar(corpus, id)),
   };
 }

@@ -13,6 +13,7 @@ import { formatStagingList, formatSweepReport } from "../src/mcp-rendering";
 import { parseNote, serializeNote } from "../src/note";
 import type { NoteFrontmatter } from "../src/note";
 import { DEAD_ANCHOR_SINK, stalenessBoost } from "../src/staleness";
+import { createLivenessContext } from "../src/anchor-liveness";
 import { countStagedNotes, stagingList, stagingResolve } from "../src/staging";
 import type { StagingDeps } from "../src/staging";
 import { listReanchorRequests, listRetireRequests } from "../src/curation";
@@ -98,7 +99,9 @@ test("rename -> sweep -> staging surface -> accept repairs the anchor, and the r
   // The refactoring: the anchored file moves, the note's address dies.
   await runGit(deps.projectRoot, ["mv", "src/old.ts", "src/new.ts"]);
   await commitProject(deps.projectRoot, "rename old to new");
-  expect(await stalenessBoost(deps.projectRoot, ["src/old.ts"], noteCommit)).toBe(DEAD_ANCHOR_SINK);
+  expect(
+    await stalenessBoost(await createLivenessContext(deps.projectRoot), ["src/old.ts"], noteCommit),
+  ).toBe(DEAD_ANCHOR_SINK);
 
   // The sweep traces the rename and stages exactly one confident repair.
   const report = await anchorSweep(deps);
@@ -130,7 +133,11 @@ test("rename -> sweep -> staging surface -> accept repairs the anchor, and the r
   expect(indexed.map((row) => row.id)).toEqual([NOTE_ID]);
 
   // The sink is lifted: the repaired note scores above the dead-anchor floor.
-  const boost = await stalenessBoost(deps.projectRoot, repaired.frontmatter.anchors, noteCommit);
+  const boost = await stalenessBoost(
+    await createLivenessContext(deps.projectRoot),
+    repaired.frontmatter.anchors,
+    noteCommit,
+  );
   expect(boost).toBeGreaterThan(DEAD_ANCHOR_SINK);
 
   // Idempotency: a second sweep over the repaired corpus reports silence and stages nothing.

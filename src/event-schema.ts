@@ -46,7 +46,10 @@ import { z } from "zod";
 //       {request_id, target_id, decision, commit} applies it. An accepted repair rewrites the
 //       note's anchors (old -> new) in place — the address changes, the body never does — and
 //       anchor_sweep {…counts} records one batch-stager pass over the corpus.
-export const SCHEMA_VERSION = 11;
+//  12 — branch-aware liveness: the staging_listed liveness enum gains known-elsewhere (the path
+//       lives on another local branch's tip) with optional branches[]; anchor_sweep gains
+//       parked_n and unknown_to_git_n for the two report classes that stage nothing.
+export const SCHEMA_VERSION = 12;
 
 export const DEDUP_OUTCOMES = ["add", "supersede_suggest", "noop"] as const;
 export const RESOLVE_DECISIONS = ["accept", "reject", "supersede"] as const;
@@ -55,7 +58,7 @@ export const REANCHOR_DECISIONS = ["accept", "reject"] as const;
 // Who staged a re-anchor request: the batch sweep's rename tracing or a manual anchor_repair call.
 export const REANCHOR_SOURCES = ["sweep", "manual"] as const;
 export type ReanchorSource = (typeof REANCHOR_SOURCES)[number];
-export const ANCHOR_LIVENESS = ["tracked", "untracked-exists", "missing"] as const;
+export const ANCHOR_LIVENESS = ["tracked", "untracked-exists", "known-elsewhere", "missing"] as const;
 export const RECALL_MODES = ["fused", "fts_only", "vector_only", "none"] as const;
 export const RECALL_CANDIDATE_WINDOW = 20;
 
@@ -117,9 +120,11 @@ const dedupOutcome = z.object({
   degraded: z.boolean(),
 });
 
+// branches is present only for known-elsewhere: the local branch tips carrying the path.
 const anchorLiveness = z.object({
   path: z.string(),
   liveness: z.enum(ANCHOR_LIVENESS),
+  branches: z.array(z.string()).optional(),
 });
 
 // One pre-budget-cutoff candidate in fused order. type/fts_rank/vector_rank/cosine/token_est are

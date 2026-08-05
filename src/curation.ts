@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { resolveAnchorLiveness } from "./anchor-liveness";
+import { createLivenessContext, resolveAnchorLiveness } from "./anchor-liveness";
 import type { Corpus } from "./corpus";
 import { REANCHOR_SOURCES } from "./event-schema";
 import type { ReanchorSource } from "./event-schema";
@@ -51,8 +51,10 @@ export async function notesList(deps: StagingDeps, filters: NotesListFilters): P
   );
   const entries: NotesListEntry[] = [];
   // Liveness checks stay strictly sequential: unbounded parallel git spawns are a named debt.
+  // The branch-tips context is built ONCE for the listing, never inside the loop.
+  const context = await createLivenessContext(deps.projectRoot);
   for (const note of notes) {
-    const anchors = await resolveAnchorLiveness(deps.projectRoot, note.frontmatter.anchors);
+    const anchors = await resolveAnchorLiveness(context, note.frontmatter.anchors);
     entries.push({
       id: note.frontmatter.id,
       type: note.frontmatter.type,
@@ -191,7 +193,8 @@ export async function noteReanchor(
     throw new CurationError(`note ${targetId} does not anchor ${oldAnchor}`);
   }
   validateAnchor(newAnchor);
-  const [oldLiveness] = await resolveAnchorLiveness(deps.projectRoot, [oldAnchor]);
+  const context = await createLivenessContext(deps.projectRoot);
+  const [oldLiveness] = await resolveAnchorLiveness(context, [oldAnchor]);
   if (oldLiveness!.liveness !== "missing") {
     throw new CurationError(
       `anchor ${oldAnchor} is ${oldLiveness!.liveness}, not missing; only a missing anchor is repaired`,

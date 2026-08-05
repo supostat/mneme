@@ -1,21 +1,75 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { isTracked } from "./staleness";
+import { runGit } from "./git";
 
-export type AnchorLiveness = "tracked" | "untracked-exists" | "missing";
+// The single home of anchor liveness: the trackedness probe, the branch-tips path map, and the
+// four-state classification every consumer (staleness ranking, staging warnings, the sweep) reads
+// through. One predicate, one map — the warning and the sink can never disagree.
+
+export type AnchorLiveness = "tracked" | "untracked-exists" | "known-elsewhere" | "missing";
 
 export interface StagedAnchor {
   path: string;
   liveness: AnchorLiveness;
+  branches?: string[];
 }
 
-export function resolveAnchorLiveness(projectRoot: string, anchors: string[]): Promise<StagedAnchor[]> {
-  return Promise.all(anchors.map(async (path) => ({ path, liveness: await livenessOf(projectRoot, path) })));
+// One trackedness probe for the whole engine: git ls-files in the CURRENT worktree. Re-exported
+// through staleness.ts so historical importers keep their path.
+export async function isTracked(projectRoot: string, anchor: string): Promise<boolean> {
+  const result = await runGit(projectRoot, ["ls-files", "--error-unmatch"], [anchor]);
+  return result.exitCode === 0;
 }
 
-async function livenessOf(projectRoot: string, anchor: string): Promise<AnchorLiveness> {
-  if (await isTracked(projectRoot, anchor)) {
-    return "tracked";
+export interface LivenessContext {
+  projectRoot: string;
+  branchPaths: Map<string, string[]>;
+}
+
+// The branch-tips path map: one for-each-ref plus one ls-tree PER BRANCH — O(branches) git calls
+// for a whole pass, never per anchor. Build it ONCE per operation and thread it as context; the
+// map is a snapshot of branch TIPS now, it renders no verdicts from history.
+export async function createLivenessContext(projectRoot: string): Promise<LivenessContext> {
+  const branchPaths = new Map<string, string[]>();
+  const refs = await runGit(projectRoot, ["for-each-ref", "refs/heads", "--format=%(refname:short)"]);
+  if (refs.exitCode === 0) {
+    for (const branch of branchNames(refs.stdout)) {
+      const tree = await runGit(projectRoot, ["ls-tree", "-r", "--name-only", branch]);
+      if (tree.exitCode !== 0) continue;
+      for (const path of tree.stdout.split("\n")) {
+        if (path === "") continue;
+        const branches = branchPaths.get(path) ?? [];
+        branches.push(branch);
+        branchPaths.set(path, branches);
+      }
+    }
   }
-  return existsSync(join(projectRoot, anchor)) ? "untracked-exists" : "missing";
+  return { projectRoot, branchPaths };
+}
+
+function branchNames(refsOutput: string): string[] {
+  return refsOutput
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "");
+}
+
+export function resolveAnchorLiveness(context: LivenessContext, anchors: string[]): Promise<StagedAnchor[]> {
+  return Promise.all(anchors.map((path) => livenessOf(context, path)));
+}
+
+// The order is semantic: a file on disk this session is HERE (untracked-exists), never "elsewhere";
+// only a path absent from both the index and the disk asks the branch map.
+export async function livenessOf(context: LivenessContext, anchor: string): Promise<StagedAnchor> {
+  if (await isTracked(context.projectRoot, anchor)) {
+    return { path: anchor, liveness: "tracked" };
+  }
+  if (existsSync(join(context.projectRoot, anchor))) {
+    return { path: anchor, liveness: "untracked-exists" };
+  }
+  const branches = context.branchPaths.get(anchor);
+  if (branches !== undefined) {
+    return { path: anchor, liveness: "known-elsewhere", branches };
+  }
+  return { path: anchor, liveness: "missing" };
 }

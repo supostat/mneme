@@ -1,4 +1,4 @@
-import { resolveAnchorLiveness } from "./anchor-liveness";
+import { createLivenessContext, resolveAnchorLiveness } from "./anchor-liveness";
 import { listReanchorRequests, noteReanchor } from "./curation";
 import { runGit } from "./git";
 import { readActiveNotes } from "./index-db";
@@ -147,6 +147,8 @@ export interface SweepReport {
 // plus repairing missing anchors only, is what keeps a re-run over a repaired corpus quiet.
 export async function anchorSweep(deps: StagingDeps): Promise<SweepReport> {
   const renames = await traceRenames(deps.projectRoot);
+  // The branch-tips context is built ONCE for the whole sweep, never per note or per anchor.
+  const context = await createLivenessContext(deps.projectRoot);
   const pending = new Set(
     listReanchorRequests(deps.corpus).map((request) => pendingKey(request.targetId, request.oldAnchor)),
   );
@@ -158,7 +160,7 @@ export async function anchorSweep(deps: StagingDeps): Promise<SweepReport> {
     missingByType: emptyTypeCounts(),
   };
   for (const note of readActiveNotes(deps.corpus.notesDir)) {
-    const anchors = await resolveAnchorLiveness(deps.projectRoot, note.frontmatter.anchors);
+    const anchors = await resolveAnchorLiveness(context, note.frontmatter.anchors);
     const missing = anchors.filter((anchor) => anchor.liveness === "missing");
     if (missing.length === 0) continue;
     const noteId = note.frontmatter.id;

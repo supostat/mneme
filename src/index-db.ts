@@ -6,6 +6,7 @@ import { parseNote } from "./note";
 import type { Note } from "./note";
 import { isAnchorNeutral } from "./note";
 import { stalenessBoost, DEAD_ANCHOR_SINK } from "./staleness";
+import { createLivenessContext } from "./anchor-liveness";
 import { EMBEDDING_MODEL, cosineSimilarity, floatsFromBlob } from "./embeddings";
 import type { EmbeddingsClient } from "./embeddings";
 import type { EventInput, EventWriter } from "./events";
@@ -122,11 +123,13 @@ export function readActiveNotes(notesDir: string): Note[] {
 const ANCHOR_NEUTRAL_STALENESS_BOOST = 0;
 
 async function insertFtsAndMeta(database: Database, notes: Note[], projectRoot: string): Promise<number[]> {
+  // The branch-tips map is built ONCE for the whole rebuild; per-note scoring only does lookups.
+  const context = await createLivenessContext(projectRoot);
   const boosts = await Promise.all(
     notes.map((note) =>
       isAnchorNeutral(note.frontmatter.type)
         ? ANCHOR_NEUTRAL_STALENESS_BOOST
-        : stalenessBoost(projectRoot, note.frontmatter.anchors, note.frontmatter.commit),
+        : stalenessBoost(context, note.frontmatter.anchors, note.frontmatter.commit),
     ),
   );
   const insertFts = database.query("INSERT INTO fts(id, body) VALUES (?, ?)");

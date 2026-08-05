@@ -3,7 +3,14 @@ import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { runGit, initRepo } from "./git";
-import { stalenessBoost, DEAD_ANCHOR_SINK, DRIFT_PENALTY_CAP } from "./staleness";
+import {
+  stalenessBoost,
+  DEAD_ANCHOR_SINK,
+  DRIFT_PENALTY_CAP,
+  KNOWN_ELSEWHERE_PENALTY,
+} from "./staleness";
+import { createLivenessContext } from "./anchor-liveness";
+import type { LivenessContext } from "./anchor-liveness";
 
 async function makeRepo(): Promise<string> {
   const repoDir = mkdtempSync(join(tmpdir(), "mneme-staleness-"));
@@ -39,12 +46,21 @@ async function head(repoDir: string): Promise<string> {
   return (await runGit(repoDir, ["rev-parse", "HEAD"])).stdout.trim();
 }
 
+function contextOf(repoDir: string): Promise<LivenessContext> {
+  return createLivenessContext(repoDir);
+}
+
+async function checkout(repoDir: string, args: string[]): Promise<void> {
+  const result = await runGit(repoDir, ["checkout", "-q", ...args]);
+  if (result.exitCode !== 0) throw new Error(`git checkout failed: ${result.stderr}`);
+}
+
 describe("stalenessBoost live anchors", () => {
   test("a live, un-drifted anchor scores 0", async () => {
     const repoDir = await makeRepo();
     const commit = await commitFile(repoDir, "src/live.ts", "v0", "add live");
 
-    expect(await stalenessBoost(repoDir, ["src/live.ts"], commit)).toBe(0);
+    expect(await stalenessBoost(await contextOf(repoDir), ["src/live.ts"], commit)).toBe(0);
   });
 
   test("drift after the note commit accrues -0.001 per commit", async () => {
@@ -54,7 +70,7 @@ describe("stalenessBoost live anchors", () => {
     await commitFile(repoDir, "src/live.ts", "v2", "drift 2");
     await commitFile(repoDir, "src/live.ts", "v3", "drift 3");
 
-    expect(await stalenessBoost(repoDir, ["src/live.ts"], commit)).toBeCloseTo(-0.003, 6);
+    expect(await stalenessBoost(await contextOf(repoDir), ["src/live.ts"], commit)).toBeCloseTo(-0.003, 6);
   });
 
   test("drift is floored at the cap beyond ten commits", async () => {
@@ -64,7 +80,7 @@ describe("stalenessBoost live anchors", () => {
       await commitFile(repoDir, "src/live.ts", `v${index}`, `drift ${index}`);
     }
 
-    expect(await stalenessBoost(repoDir, ["src/live.ts"], commit)).toBe(DRIFT_PENALTY_CAP);
+    expect(await stalenessBoost(await contextOf(repoDir), ["src/live.ts"], commit)).toBe(DRIFT_PENALTY_CAP);
   });
 
   test("commits that do not touch the anchor do not accrue drift", async () => {
@@ -73,7 +89,7 @@ describe("stalenessBoost live anchors", () => {
     await commitFile(repoDir, "src/other.ts", "o1", "unrelated 1");
     await commitFile(repoDir, "src/other.ts", "o2", "unrelated 2");
 
-    expect(await stalenessBoost(repoDir, ["src/live.ts"], commit)).toBe(0);
+    expect(await stalenessBoost(await contextOf(repoDir), ["src/live.ts"], commit)).toBe(0);
   });
 });
 
@@ -82,14 +98,14 @@ describe("stalenessBoost dead anchors and robustness", () => {
     const repoDir = await makeRepo();
     const commit = await commitFile(repoDir, "src/live.ts", "v0", "add live");
 
-    expect(await stalenessBoost(repoDir, ["src/ghost.ts"], commit)).toBe(DEAD_ANCHOR_SINK);
+    expect(await stalenessBoost(await contextOf(repoDir), ["src/ghost.ts"], commit)).toBe(DEAD_ANCHOR_SINK);
   });
 
   test("worst anchor wins: one live, one dead sinks the whole note", async () => {
     const repoDir = await makeRepo();
     const commit = await commitFile(repoDir, "src/live.ts", "v0", "add live");
 
-    expect(await stalenessBoost(repoDir, ["src/live.ts", "src/ghost.ts"], commit)).toBe(
+    expect(await stalenessBoost(await contextOf(repoDir), ["src/live.ts", "src/ghost.ts"], commit)).toBe(
       DEAD_ANCHOR_SINK,
     );
   });
@@ -98,7 +114,7 @@ describe("stalenessBoost dead anchors and robustness", () => {
     const plainDir = mkdtempSync(join(tmpdir(), "mneme-norepo-"));
     writeFileSync(join(plainDir, "file.ts"), "content");
 
-    expect(await stalenessBoost(plainDir, ["file.ts"], "abc1234")).toBe(DEAD_ANCHOR_SINK);
+    expect(await stalenessBoost(await contextOf(plainDir), ["file.ts"], "abc1234")).toBe(DEAD_ANCHOR_SINK);
   });
 
   test("a live anchor with a rewritten/unknown commit yields the dead sink, not a throw", async () => {
@@ -106,7 +122,7 @@ describe("stalenessBoost dead anchors and robustness", () => {
     await commitFile(repoDir, "src/live.ts", "v0", "add live");
 
     expect(
-      await stalenessBoost(repoDir, ["src/live.ts"], "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"),
+      await stalenessBoost(await contextOf(repoDir), ["src/live.ts"], "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"),
     ).toBe(DEAD_ANCHOR_SINK);
   });
 
@@ -114,6 +130,52 @@ describe("stalenessBoost dead anchors and robustness", () => {
     const repoDir = await makeRepo();
     const commit = await commitFile(repoDir, "-x", "v0", "add dashed path");
 
-    expect(await stalenessBoost(repoDir, ["-x"], commit)).toBe(0);
+    expect(await stalenessBoost(await contextOf(repoDir), ["-x"], commit)).toBe(0);
+  });
+});
+
+describe("stalenessBoost known-elsewhere", () => {
+  // main carries src/live.ts; the feature branch additionally carries src/parked.ts; the worktree
+  // sits back on main so parked.ts is absent here but alive on the branch tip.
+  async function repoWithParkedBranch(): Promise<{ repoDir: string; commit: string }> {
+    const repoDir = await makeRepo();
+    const commit = await commitFile(repoDir, "src/live.ts", "v0", "add live");
+    await checkout(repoDir, ["-b", "feature"]);
+    await commitFile(repoDir, "src/parked.ts", "parked", "add parked");
+    await checkout(repoDir, ["main"]);
+    return { repoDir, commit };
+  }
+
+  test("an anchor parked on another branch earns the pinned penalty, not the sink", async () => {
+    const { repoDir, commit } = await repoWithParkedBranch();
+
+    expect(await stalenessBoost(await contextOf(repoDir), ["src/parked.ts"], commit)).toBe(
+      KNOWN_ELSEWHERE_PENALTY,
+    );
+  });
+
+  // Directional, never exact-value: fresh above parked, parked above missing (the formula stays a
+  // pinned design point; this is a semantic EXTENSION, not tuning).
+  test("directional order: fresh 0 above parked, parked above the dead sink", async () => {
+    const { repoDir, commit } = await repoWithParkedBranch();
+    const context = await contextOf(repoDir);
+
+    const fresh = await stalenessBoost(context, ["src/live.ts"], commit);
+    const parked = await stalenessBoost(context, ["src/parked.ts"], commit);
+    const missing = await stalenessBoost(context, ["src/ghost.ts"], commit);
+
+    expect(fresh).toBe(0);
+    expect(fresh).toBeGreaterThan(parked);
+    expect(parked).toBeGreaterThanOrEqual(DRIFT_PENALTY_CAP);
+    expect(parked).toBeGreaterThan(missing);
+    expect(missing).toBe(DEAD_ANCHOR_SINK);
+  });
+
+  test("worst anchor wins across the new state: parked plus missing still sinks the note", async () => {
+    const { repoDir, commit } = await repoWithParkedBranch();
+
+    expect(
+      await stalenessBoost(await contextOf(repoDir), ["src/parked.ts", "src/ghost.ts"], commit),
+    ).toBe(DEAD_ANCHOR_SINK);
   });
 });
