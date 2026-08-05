@@ -22,7 +22,7 @@ async function anchorBoost(projectRoot: string, anchor: string, commit: string):
   return driftPenalty(projectRoot, anchor, commit);
 }
 
-async function isTracked(projectRoot: string, anchor: string): Promise<boolean> {
+export async function isTracked(projectRoot: string, anchor: string): Promise<boolean> {
   const result = await runGit(projectRoot, ["ls-files", "--error-unmatch"], [anchor]);
   return result.exitCode === 0;
 }

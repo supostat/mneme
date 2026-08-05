@@ -14,6 +14,7 @@ import { EMBEDDING_DIMENSION } from "./embeddings";
 import { dumpIndex } from "./index-db";
 import { remember, stagingList, stagingResolve, StagingError } from "./staging";
 import type { StagingDeps } from "./staging";
+import { formatStagingList } from "./mcp-rendering";
 
 // These tests spawn real git repositories and dozens of git subprocesses per case; under machine
 // load the slowest cases exceed bun's 5s default per-test timeout and fail the suite spuriously.
@@ -538,6 +539,58 @@ describe("stagingList anchor liveness", () => {
         ],
       },
     ]);
+  });
+});
+
+describe("stagingList untracked-anchor warnings", () => {
+  const WARNING_PREFIX = "warning: anchor";
+
+  test("a gitignored anchor carries a warning naming the path, the ranking consequence and the cure", async () => {
+    const projectRoot = await buildProjectRepo();
+    writeFileSync(join(projectRoot, ".gitignore"), "dist/\n");
+    mkdirSync(join(projectRoot, "dist"), { recursive: true });
+    writeFileSync(join(projectRoot, "dist/out.js"), "built artifact\n");
+    const deps = await makeDeps(projectRoot, offlineClient(), sequentialIds());
+    await remember(deps, { type: "pattern", body: "anchored to a build artifact", anchors: ["dist/out.js"], source: "mcp" });
+
+    const rendered = formatStagingList(await stagingList(deps), []);
+
+    expect(rendered).toContain(
+      "warning: anchor dist/out.js is not tracked by the project's git, so this note will sink in recall ranking; fix the anchor before accepting it",
+    );
+  });
+
+  test("a nonexistent anchor carries the same warning", async () => {
+    const projectRoot = await buildProjectRepo();
+    const deps = await makeDeps(projectRoot, offlineClient(), sequentialIds());
+    await remember(deps, { type: "pattern", body: "anchored to a deleted file", anchors: ["src/gone.ts"], source: "mcp" });
+
+    const rendered = formatStagingList(await stagingList(deps), []);
+
+    expect(rendered).toContain(`${WARNING_PREFIX} src/gone.ts is not tracked`);
+  });
+
+  test("a note whose anchors are all tracked renders without warning noise", async () => {
+    const projectRoot = await buildProjectRepo();
+    const deps = await makeDeps(projectRoot, offlineClient(), sequentialIds());
+    await remember(deps, { type: "pattern", body: "anchored to committed code", anchors: ["src/a.ts"], source: "mcp" });
+
+    const rendered = formatStagingList(await stagingList(deps), []);
+
+    expect(rendered).not.toContain(WARNING_PREFIX);
+  });
+
+  test("accepting a warned note is not blocked and commits exactly as before", async () => {
+    const projectRoot = await buildProjectRepo();
+    const deps = await makeDeps(projectRoot, offlineClient(), sequentialIds());
+    await remember(deps, { type: "pattern", body: "accepted despite the warning", anchors: ["src/gone.ts"], source: "mcp" });
+
+    const result = await stagingResolve(deps, ulid(0), "accept");
+
+    expect(result.outcome).toBe("accepted");
+    if (result.outcome === "accepted") {
+      expect(result.commit).toMatch(/^[0-9a-f]{40}$/);
+    }
   });
 });
 

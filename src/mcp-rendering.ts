@@ -84,9 +84,21 @@ function formatStagingEntry(entry: StagingEntry, fence: NoteFence): string {
     `type: ${entry.type}`,
     formatDedup(entry.dedup),
     formatAnchors(entry.anchors),
+    ...anchorWarnings(entry.anchors),
     entry.digest,
     fence.end,
   ].join("\n");
+}
+
+// Trackedness here is the same predicate stalenessBoost ranks by, so the warning tells the curator
+// exactly what recall will do to the note. Information, never a blocker: acceptance stays allowed.
+function anchorWarnings(anchors: StagedAnchor[]): string[] {
+  return anchors
+    .filter((anchor) => anchor.liveness !== "tracked")
+    .map(
+      (anchor) =>
+        `warning: anchor ${anchor.path} is not tracked by the project's git, so this note will sink in recall ranking; fix the anchor before accepting it`,
+    );
 }
 
 function formatDedup(dedup: DedupSummary): string {

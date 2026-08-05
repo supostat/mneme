@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { runGit } from "./git";
+import { isTracked } from "./staleness";
 
 export type AnchorLiveness = "tracked" | "untracked-exists" | "missing";
 
@@ -14,8 +14,7 @@ export function resolveAnchorLiveness(projectRoot: string, anchors: string[]): P
 }
 
 async function livenessOf(projectRoot: string, anchor: string): Promise<AnchorLiveness> {
-  const tracked = await runGit(projectRoot, ["ls-files", "--error-unmatch"], [anchor]);
-  if (tracked.exitCode === 0) {
+  if (await isTracked(projectRoot, anchor)) {
     return "tracked";
   }
   return existsSync(join(projectRoot, anchor)) ? "untracked-exists" : "missing";
