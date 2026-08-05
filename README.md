@@ -8,13 +8,17 @@ silently: you accept, reject, or supersede staged notes yourself, so the corpus 
 memory you approved. Recall fuses full-text and vector search under a token budget and logs its
 candidates so retrieval decisions can be replayed and audited offline.
 
-The binary exposes eleven MCP tools over stdio. Five are the memory surface: `remember` (stage a
+The binary exposes thirteen MCP tools over stdio. Five are the memory surface: `remember` (stage a
 note), `recall` (token-budgeted fused retrieval), `staging_list` and `staging_resolve` (review and
 accept/reject/supersede staged notes), and `stats` (reuse and footprint metrics from the event log).
-Two curate the accepted corpus: `notes_list` (one line per live note with anchor health, or one full
-note by id) and `note_retire` (queue a retirement — the decision still travels through the
+Four curate the accepted corpus: `notes_list` (one line per live note with anchor health, or one full
+note by id), `note_retire` (queue a retirement — the decision still travels through the
 `staging_resolve` human gate, and an accepted retire keeps the file as history while recall stops
-seeing it). The remaining four drive the workflow engine: `workflow_start` opens a run anchored to
+seeing it), `anchor_repair` (queue an anchor replacement for a note whose anchor path went missing —
+same gate, and an accepted repair rewrites the address while the body stays immutable), and
+`anchor_sweep` (batch-stage repairs by tracing renames in the project's git history: a single
+confident successor is staged, ambiguity and outright deletions are only reported, and a repaired
+corpus sweeps to silence). The remaining four drive the workflow engine: `workflow_start` opens a run anchored to
 the current project branch; `workflow_step` is the live executor — it loops directives (recall at
 phase start, gated steps, harvest on close) decided by the reducer, resumes a branch's unfinished
 run from the event log after an interruption, and never silently resumes a run whose branch is gone;
