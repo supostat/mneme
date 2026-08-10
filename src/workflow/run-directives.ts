@@ -255,28 +255,36 @@ export function describePending(directive: Directive): string {
   return `the run is terminal: ${directive.kind}`;
 }
 
-// Replays the fail-vote remarks of the matching failed gate run into the directive of the IMMEDIATE
-// retry (same phase, same step, attempt N+1), so the rework is done against WHAT the reviewers found
-// wrong. A rewind never matches: rewindTo resets the attempt counters, so the return to the failed
-// step arrives as attempt 1 again. Remarks are agent-authored free text read back from the event
-// log, so they are stripped like every other unvalidated log field.
+// Replays the fail-vote remarks of EVERY recorded failed gate run into the directive of the
+// IMMEDIATE retry (same phase, same step, attempt = last failure + 1), ascending by attempt, each
+// under its own provenance header — the rework must see the whole trajectory, or it fixes the
+// newest complaint while re-breaking what an earlier attempt already cured. A rewind never
+// matches: rewindTo resets the attempt counters, so the return to the failed step arrives as
+// attempt 1 again. Remarks are agent-authored free text read back from the event log, so they are
+// stripped like every other unvalidated log field.
 function failedReviewSection(active: ReadableRun, directive: ExecuteStepDirective): string[] {
-  const record = active.lastFailedGates;
+  const history = active.failedGatesHistory;
+  const last = history[history.length - 1];
   if (
-    record === null ||
-    record.phaseId !== directive.phaseId ||
-    record.stepId !== directive.stepId ||
-    directive.attempt !== record.attempt + 1 ||
-    record.failRemarks.length === 0
+    last === undefined ||
+    last.phaseId !== directive.phaseId ||
+    last.stepId !== directive.stepId ||
+    directive.attempt !== last.attempt + 1
   ) {
     return [];
   }
-  const lines = [`review remarks from failed attempt ${record.attempt}:`];
-  for (const failed of record.failRemarks) {
-    for (const remark of failed.remarks) {
-      lines.push(
-        `- [${stripUnrenderableCharacters(failed.criterionDescription)}] ${stripUnrenderableCharacters(remark)}`,
-      );
+  const lines: string[] = [];
+  for (const record of history) {
+    if (record.failRemarks.length === 0) {
+      continue;
+    }
+    lines.push(`review remarks from failed attempt ${record.attempt}:`);
+    for (const failed of record.failRemarks) {
+      for (const remark of failed.remarks) {
+        lines.push(
+          `- [${stripUnrenderableCharacters(failed.criterionDescription)}] ${stripUnrenderableCharacters(remark)}`,
+        );
+      }
     }
   }
   return lines;

@@ -190,6 +190,92 @@ describe("restoreRuns folds a genuine log", () => {
   });
 });
 
+function retryingDefinition(phases: PhaseDocument[]): RunDefinition {
+  return {
+    graph: buildPhaseGraph(phases),
+    steps: [{ id: "implement", maxAttempts: 3, onFail: { action: "escalate" } }],
+    maxIterations: 10,
+  };
+}
+
+function failedJudgedGates(criterion: string, remark: string): GateReport {
+  return {
+    passed: false,
+    criterionResults: [
+      { kind: "agent-judged", description: criterion, passed: false, votes: [{ vote: "fail", remarks: remark }] },
+    ],
+    executableCount: 0,
+    agentJudgedCount: 1,
+  };
+}
+
+const PASSED_JUDGED_GATES: GateReport = {
+  passed: true,
+  criterionResults: [{ kind: "agent-judged", description: "review approves", passed: true, votes: [{ vote: "pass" }] }],
+  executableCount: 0,
+  agentJudgedCount: 1,
+};
+
+function executeFailure(phaseId: string, stepId: string, attempt: number): StepApplication {
+  return application({ kind: "execute_step", phaseId, stepId, outcome: "failure" }, attempt);
+}
+
+// The fold ACCUMULATES failed-gates records — one per failed gated attempt — and a pass clears the
+// whole history: the retry directive must replay every earlier attempt's remarks, not only the
+// newest failure's.
+describe("restoreRuns accumulates the failed-gates history", () => {
+  test("two gated failures restore as two history records in attempt order", () => {
+    const log = makeLog();
+    const definition = retryingDefinition([phaseDocument("phase-one")]);
+    appendStarted(log, RUN_ID, "main", definition);
+    appendApplied(log, RUN_ID, "main", application({ kind: "recall", phaseId: "phase-one" }));
+    appendApplied(log, RUN_ID, "main", { ...executeFailure("phase-one", "implement", 1), gates: failedJudgedGates("review approves", "the parser drops the last line") });
+    appendApplied(log, RUN_ID, "main", { ...executeFailure("phase-one", "implement", 2), gates: failedJudgedGates("standards hold", "the helper name abbreviates") });
+
+    const run = onlyRun(log);
+
+    expect(run.failedGatesHistory).toEqual([
+      {
+        phaseId: "phase-one",
+        stepId: "implement",
+        attempt: 1,
+        failRemarks: [{ criterionDescription: "review approves", remarks: ["the parser drops the last line"] }],
+      },
+      {
+        phaseId: "phase-one",
+        stepId: "implement",
+        attempt: 2,
+        failRemarks: [{ criterionDescription: "standards hold", remarks: ["the helper name abbreviates"] }],
+      },
+    ]);
+  });
+
+  test("a passed gate clears the accumulated history whole", () => {
+    const log = makeLog();
+    const definition = retryingDefinition([phaseDocument("phase-one")]);
+    appendStarted(log, RUN_ID, "main", definition);
+    appendApplied(log, RUN_ID, "main", application({ kind: "recall", phaseId: "phase-one" }));
+    appendApplied(log, RUN_ID, "main", { ...executeFailure("phase-one", "implement", 1), gates: failedJudgedGates("review approves", "the parser drops the last line") });
+    appendApplied(log, RUN_ID, "main", { ...executeSuccess("phase-one", "implement", 2), gates: PASSED_JUDGED_GATES });
+
+    const run = onlyRun(log);
+
+    expect(run.failedGatesHistory).toEqual([]);
+  });
+
+  test("a gated failure missing its attempt records nothing rather than half a record", () => {
+    const log = makeLog();
+    const definition = retryingDefinition([phaseDocument("phase-one")]);
+    appendStarted(log, RUN_ID, "main", definition);
+    appendApplied(log, RUN_ID, "main", application({ kind: "recall", phaseId: "phase-one" }));
+    appendApplied(log, RUN_ID, "main", { ...executeFailure("phase-one", "implement", 1), attempt: null, gates: failedJudgedGates("review approves", "the parser drops the last line") });
+
+    const run = onlyRun(log);
+
+    expect(run.failedGatesHistory).toEqual([]);
+  });
+});
+
 describe("restoreRuns yields unreadable, never a crash", () => {
   const definition = makeDefinition([phaseDocument("phase-one")]);
 

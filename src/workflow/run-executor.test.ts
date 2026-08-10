@@ -17,9 +17,10 @@ import { buildPhaseGraph } from "./phase-graph";
 import type { PhaseDocument } from "./phase-document";
 import { initialRun } from "./reducer";
 import type { ExecuteStepDirective, HarvestDirective, RunDefinition } from "./reducer";
-import { pendingDirectiveOf } from "./run-events";
+import { pendingDirectiveOf, restoreRuns } from "./run-events";
 import type { ReadableRun } from "./run-events";
 import { applyGatedFinalStep, applyHarvest, runEngineSteps } from "./run-executor";
+import { runStartedPayload } from "./run-payloads";
 
 const fixedClock = () => new Date("2026-07-06T10:00:00.000Z");
 
@@ -108,7 +109,7 @@ function activeRunFrom(definition: RunDefinition): ReadableRun {
     retrieval: { recallBudget: 2000, recallAnchors: {} },
     run: initialRun(definition),
     startedTs: "2026-07-06T10:00:00.000Z",
-    lastFailedGates: null,
+    failedGatesHistory: [],
   };
 }
 
@@ -290,6 +291,70 @@ describe("applyHarvest on the last phase reaches a terminal, not a boundary", ()
 
     expect(pendingDirectiveOf(active).kind).toBe("run_complete");
     expect(recallEventCount(deps)).toBe(1);
+  });
+});
+
+// The live executor and the restore fold are the ONLY two writers of the failed-gates history and
+// must stay symmetric: what the executor accumulates in this process, a fresh session must rebuild
+// from the log alone.
+describe("applyGatedFinalStep mirrors the failed-gates history", () => {
+  function judgedDefinition(): RunDefinition {
+    return {
+      graph: buildPhaseGraph([
+        {
+          ...phase("only-phase"),
+          doneWhen: [...GREEN, { kind: "agent-judged", description: "review approves" }],
+        },
+      ]),
+      steps: [{ id: "implement", maxAttempts: 3, onFail: { action: "escalate" } }],
+      maxIterations: 20,
+    };
+  }
+
+  test("each failed gate appends a record, a passed gate clears the history whole", async () => {
+    const { projectRoot } = await buildProjectRepo();
+    const deps = await makeDeps(projectRoot);
+    const active = activeRunFrom(judgedDefinition());
+    await runEngineSteps(deps, active);
+
+    await applyGatedFinalStep(deps, active, pendingDirectiveOf(active) as ExecuteStepDirective, [
+      [{ vote: "fail", remarks: "the parser drops the last line" }],
+    ]);
+    expect(active.failedGatesHistory.map((record) => record.attempt)).toEqual([1]);
+
+    await applyGatedFinalStep(deps, active, pendingDirectiveOf(active) as ExecuteStepDirective, [
+      [{ vote: "fail", remarks: "the helper name abbreviates" }],
+    ]);
+    expect(active.failedGatesHistory.map((record) => record.attempt)).toEqual([1, 2]);
+    expect(active.failedGatesHistory[0]!.failRemarks).toEqual([
+      { criterionDescription: "review approves", remarks: ["the parser drops the last line"] },
+    ]);
+
+    await applyGatedFinalStep(deps, active, pendingDirectiveOf(active) as ExecuteStepDirective, [[{ vote: "pass" }]]);
+    expect(active.failedGatesHistory).toEqual([]);
+  });
+
+  test("the restore fold rebuilds the same history the live path accumulated", async () => {
+    const { projectRoot } = await buildProjectRepo();
+    const deps = await makeDeps(projectRoot);
+    const definition = judgedDefinition();
+    const active = activeRunFrom(definition);
+    deps.eventWriter.append({
+      ...runStartedPayload(active.runId, active.branch, definition, active.retrieval),
+      type: "workflow_run_started",
+    });
+    await runEngineSteps(deps, active);
+
+    await applyGatedFinalStep(deps, active, pendingDirectiveOf(active) as ExecuteStepDirective, [
+      [{ vote: "fail", remarks: "the parser drops the last line" }],
+    ]);
+    await applyGatedFinalStep(deps, active, pendingDirectiveOf(active) as ExecuteStepDirective, [
+      [{ vote: "fail", remarks: "the helper name abbreviates" }],
+    ]);
+
+    const restored = restoreRuns(readEvents(deps.corpus.eventsDir)).find((run) => run.kind === "restored");
+    if (restored === undefined || restored.kind !== "restored") throw new Error("expected a restored run");
+    expect(restored.failedGatesHistory).toEqual(active.failedGatesHistory);
   });
 });
 

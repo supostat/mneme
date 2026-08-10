@@ -49,9 +49,14 @@ export async function applyGatedFinalStep(
   const report = await runPhaseGates(phase.doneWhen, { projectRoot: deps.projectRoot, agentVotes });
   const result = stepResultFromGateReport(pending.phaseId, pending.stepId, report);
   active.run = applyStepResult(active.run, active.definition, result);
-  // Mirrors the restore fold's absorbGates so the retry directive rendered in THIS response already
-  // carries the fail-vote remarks, without re-folding the log.
-  active.lastFailedGates = report.passed ? null : failedGatesFromReport(pending, report);
+  // Mirrors the restore fold's absorbGates — pass clears the whole history, fail appends — so the
+  // retry directive rendered in THIS response already carries every failed attempt's remarks,
+  // without re-folding the log.
+  if (report.passed) {
+    active.failedGatesHistory = [];
+  } else {
+    active.failedGatesHistory.push(failedGatesFromReport(pending, report));
+  }
   appendStepApplied(deps, active, { result, attempt: pending.attempt, gates: report, harvestedCount: null, dedupRejected: null });
   const verdict = report.passed ? "PASS" : "FAIL";
   return [

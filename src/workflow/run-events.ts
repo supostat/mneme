@@ -25,8 +25,11 @@ export interface RunRetrievalConfig {
 }
 
 // The fail-vote remarks of the LAST failed gate run, kept so the retry attempt's directive can
-// replay WHAT the reviewers found wrong. One record suffices: the reducer re-issues the failed
-// step, and a passed gate clears it. Restored from the event log and updated live by the executor.
+// replay WHAT the reviewers found wrong. The record is a HISTORY, not a single slot: attempt N's
+// remarks must survive attempt N+1's failure, or the rework loop fixes the newest complaint while
+// re-breaking what an earlier attempt already cured. A passed gate clears the whole history — the
+// phase is closed and its remarks are spent. Restored from the event log and updated live by the
+// executor.
 export interface FailedGateRemarks {
   criterionDescription: string;
   remarks: string[];
@@ -47,7 +50,7 @@ export interface ReadableRun {
   retrieval: RunRetrievalConfig;
   run: WorkflowRun;
   startedTs: string;
-  lastFailedGates: FailedGatesRecord | null;
+  failedGatesHistory: FailedGatesRecord[];
 }
 
 export interface UnreadableRun {
@@ -153,7 +156,7 @@ function restoredRunFrom(runId: string, payload: RunStartedPayload): ReadableRun
     },
     run: initialRun(definition),
     startedTs: payload.ts,
-    lastFailedGates: null,
+    failedGatesHistory: [],
   };
 }
 
@@ -188,19 +191,21 @@ function absorbStepApplied(runsById: Map<string, RestoredRun>, event: StoredEven
   }
 }
 
-// A gated application overwrites the record wholesale: a pass clears it, a fail replaces it with the
-// fresh fail-vote remarks. Ungated applications (recall, harvest, non-final steps) leave it alone —
-// harmless, because the render matches on phase + step + attempt N+1, which only the immediate retry
-// of the recorded failure satisfies. A gated apply always names its step and attempt; an event
-// missing either is malformed, and the tolerant fold records nothing rather than half a record.
+// A gated application grows or clears the history: a pass clears it whole (the phase closed, its
+// remarks are spent), a fail APPENDS the fresh fail-vote remarks — earlier attempts' records stay,
+// so the retry sees the full trajectory, not only the newest complaint. Ungated applications
+// (recall, harvest, non-final steps) leave it alone — harmless, because the render matches on
+// phase + step + attempt N+1 of the LAST record, which only the immediate retry of the newest
+// failure satisfies. A gated apply always names its step and attempt; an event missing either is
+// malformed, and the tolerant fold records nothing rather than half a record.
 function absorbGates(known: ReadableRun, payload: StepAppliedPayload): void {
   if (payload.gates === null) return;
   if (payload.gates.passed) {
-    known.lastFailedGates = null;
+    known.failedGatesHistory = [];
     return;
   }
   if (payload.step_id === null || payload.attempt === null) return;
-  known.lastFailedGates = {
+  known.failedGatesHistory.push({
     phaseId: payload.phase_id,
     stepId: payload.step_id,
     attempt: payload.attempt,
@@ -213,7 +218,7 @@ function absorbGates(known: ReadableRun, payload: StepAppliedPayload): void {
         ),
       }))
       .filter((entry) => entry.remarks.length > 0),
-  };
+  });
 }
 
 function payloadToDefinition(payload: RunStartedPayload["definition"]): RunDefinition {
