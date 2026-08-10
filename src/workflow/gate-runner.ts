@@ -146,7 +146,7 @@ function evaluateAgentJudged(description: string, votes: AgentVote[]): AgentJudg
   return {
     kind: "agent-judged",
     description,
-    passed: evaluateConverge(votes.map((agentVote) => agentVote.vote), votes.length),
+    passed: evaluateConverge(votes.map((agentVote) => agentVote.vote)),
     votes,
   };
 }

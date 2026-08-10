@@ -8,10 +8,10 @@ export interface AgentVote {
   remarks?: string;
 }
 
-export function evaluateConverge(votes: Vote[], minAgree: number): boolean {
-  if (!Number.isInteger(minAgree) || minAgree < 1) {
-    return false;
-  }
-  const passCount = votes.filter((vote) => vote === "pass").length;
-  return passCount >= minAgree;
+// Unanimity is a property of the engine, not a setting: per the REVIEW-AXES-CONVENTION, each vote
+// on a criterion guards a DIFFERENT review axis, so any fail must fail the criterion — a threshold
+// below the vote count is only meaningful for redundant votes on ONE axis, which the convention
+// rules out. An empty vote list is false, fail-closed: silence is not agreement.
+export function evaluateConverge(votes: Vote[]): boolean {
+  return votes.length > 0 && votes.every((vote) => vote === "pass");
 }
