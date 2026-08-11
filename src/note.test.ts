@@ -63,6 +63,28 @@ describe("note round-trip", () => {
     const original = note({ supersedes: "01BX5ZZKBKACTAV9WEVGEMMVRZ" });
     expect(parseNote(serializeNote(original))).toEqual(original);
   });
+
+  test("tags round-trip alongside anchors", () => {
+    const original = note({ tags: ["soft-delete", "lock ordering"] });
+    expect(parseNote(serializeNote(original))).toEqual(original);
+  });
+
+  test("a tags-only note (empty anchors) round-trips", () => {
+    const original = note({ anchors: [], tags: ["soft-delete"] });
+    expect(parseNote(serializeNote(original))).toEqual(original);
+  });
+
+  test("re-serialization of a tagged note is stable", () => {
+    const text = serializeNote(note({ tags: ["invariant"] }));
+    expect(serializeNote(parseNote(text))).toBe(text);
+  });
+
+  test("path-like characters are legal in tags", () => {
+    const original = note({
+      tags: ["Tickets::FindSimilarGroup", "ticket_groups.terminal_at", "board-terminal-column-this-week"],
+    });
+    expect(parseNote(serializeNote(original))).toEqual(original);
+  });
 });
 
 describe("note boundaries", () => {
@@ -77,8 +99,28 @@ describe("note boundaries", () => {
 });
 
 describe("note frontmatter validation", () => {
-  test("empty anchors array is rejected", () => {
+  test("empty anchors array without tags is rejected", () => {
     expect(serializeWith({ anchors: [] })).toThrow(NoteValidationError);
+  });
+
+  test("empty tags array is rejected even alongside anchors", () => {
+    expect(serializeWith({ tags: [] })).toThrow(NoteValidationError);
+  });
+
+  test("duplicate tag is rejected", () => {
+    expect(serializeWith({ tags: ["soft-delete", "soft-delete"] })).toThrow(NoteValidationError);
+  });
+
+  test("empty-string tag is rejected", () => {
+    expect(serializeWith({ tags: [""] })).toThrow(NoteValidationError);
+  });
+
+  test("tag with a newline is rejected", () => {
+    expect(serializeWith({ tags: ["soft\ndelete"] })).toThrow(NoteValidationError);
+  });
+
+  test("tag with a NUL byte is rejected", () => {
+    expect(serializeWith({ tags: ["soft\0delete"] })).toThrow(NoteValidationError);
   });
 
   test("anchor with a leading dash is rejected", () => {

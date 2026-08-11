@@ -14,6 +14,9 @@ export type NoteFrontmatter = {
   id: string;
   type: NoteType;
   anchors: string[];
+  // Concept strings (class names, domain terms, DB columns) — the note's TOPIC, not its address.
+  // Tags feed FTS at rebuild and render to humans; git never checks them. Anchors stay paths only.
+  tags?: string[];
   commit: string;
   created: string;
   supersedes?: string;
@@ -43,7 +46,7 @@ export const MAX_BODY_CODE_POINTS = 1500;
 const FRONTMATTER_FENCE = "---\n";
 const FRONTMATTER_CLOSING = "\n---\n";
 const KEY_VALUE_SEPARATOR = ": ";
-const FRONTMATTER_KEYS = ["id", "type", "anchors", "commit", "created", "supersedes", "retired"] as const;
+const FRONTMATTER_KEYS = ["id", "type", "anchors", "tags", "commit", "created", "supersedes", "retired"] as const;
 const ALLOWED_KEYS: ReadonlySet<string> = new Set(FRONTMATTER_KEYS);
 
 export function serializeNote(note: Note): string {
@@ -53,9 +56,14 @@ export function serializeNote(note: Note): string {
     `id: ${JSON.stringify(frontmatter.id)}`,
     `type: ${JSON.stringify(frontmatter.type)}`,
     `anchors: ${JSON.stringify(frontmatter.anchors)}`,
+  ];
+  if (frontmatter.tags !== undefined) {
+    lines.push(`tags: ${JSON.stringify(frontmatter.tags)}`);
+  }
+  lines.push(
     `commit: ${JSON.stringify(frontmatter.commit)}`,
     `created: ${JSON.stringify(frontmatter.created)}`,
-  ];
+  );
   if (frontmatter.supersedes !== undefined) {
     lines.push(`supersedes: ${JSON.stringify(frontmatter.supersedes)}`);
   }
@@ -116,6 +124,12 @@ function validateFrontmatter(candidate: Record<string, unknown>): NoteFrontmatte
     commit: validateCommit(candidate.commit),
     created: validateCreated(candidate.created),
   };
+  if (candidate.tags !== undefined) {
+    frontmatter.tags = validateTags(candidate.tags);
+  }
+  if (frontmatter.anchors.length === 0 && frontmatter.tags === undefined) {
+    throw new NoteValidationError("note must carry at least one anchor or one tag");
+  }
   if (candidate.supersedes !== undefined) {
     frontmatter.supersedes = validateSupersedes(candidate.supersedes);
   }
@@ -148,11 +162,41 @@ function validateType(value: unknown): NoteType {
   return value as NoteType;
 }
 
+// Anchors may be empty ONLY when tags carry the note instead — the at-least-one-of-two rule is
+// enforced after both fields are known, in validateFrontmatter.
 function validateAnchors(value: unknown): string[] {
-  if (!Array.isArray(value) || value.length === 0) {
-    throw new NoteValidationError("anchors must be a non-empty array");
+  if (!Array.isArray(value)) {
+    throw new NoteValidationError("anchors must be an array");
   }
   return value.map(validateAnchor);
+}
+
+// Tags share the anchors' transport hygiene (no NUL/CR/LF) but none of the path restrictions:
+// "Tickets::FindSimilarGroup", "ticket_groups.terminal_at" and spaced phrases are all legal.
+// An empty tags array has exactly one spelling — omit the key — so [] is rejected, not normalized.
+function validateTags(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new NoteValidationError("tags must be a non-empty array when present");
+  }
+  const seen = new Set<string>();
+  return value.map((tag) => {
+    const validated = validateTag(tag);
+    if (seen.has(validated)) {
+      throw new NoteValidationError(`duplicate tag: ${validated}`);
+    }
+    seen.add(validated);
+    return validated;
+  });
+}
+
+function validateTag(value: unknown): string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new NoteValidationError("tag must be a non-empty string");
+  }
+  if (CONTROL_CHARACTERS_REGEX.test(value)) {
+    throw new NoteValidationError("tag must not contain NUL, CR or LF");
+  }
+  return value;
 }
 
 export function validateAnchor(value: unknown): string {
