@@ -15,7 +15,7 @@ import type { NoteFrontmatter } from "../src/note";
 import { DEAD_ANCHOR_SINK } from "../src/staleness";
 import { remember, stagingList } from "../src/staging";
 import type { StagingDeps } from "../src/staging";
-import { listReanchorRequests } from "../src/curation";
+import { listReanchorRequests, listRetagRequests } from "../src/curation";
 
 // The branch-aware path on REAL modules end-to-end: three anchors with three different truths — one
 // parked on an unmerged branch, one a concept git never saw, one honestly deleted — must travel
@@ -135,26 +135,37 @@ test("parked, concept and deleted anchors travel three honest paths, and the mer
   expect(boostOf(CONCEPT_NOTE)).toBe(DEAD_ANCHOR_SINK);
   expect(boostOf(DELETED_NOTE)).toBe(DEAD_ANCHOR_SINK);
 
-  // SWEEP: three report classes, zero staging for parked/unknown, retire advice only for the
-  // genuine deletion.
+  // SWEEP: three report classes; the parked path stages nothing, the concept stages a RETAG
+  // request (never a repair, never retire), and retire advice belongs to the genuine deletion
+  // alone — the single-retire-line assert below is the regression guard for that.
   const report = await anchorSweep(deps);
   expect(report.parked).toEqual([
     { noteId: PARKED_NOTE, type: "decision", oldAnchor: "src/parked.ts", branches: ["feature"] },
   ]);
-  expect(report.unknownToGit).toEqual([{ noteId: CONCEPT_NOTE, type: "decision", oldAnchor: "MultiSelect" }]);
+  expect(report.unknownToGit.length).toBe(1);
+  const conceptEntry = report.unknownToGit[0]!;
+  expect(conceptEntry.noteId).toBe(CONCEPT_NOTE);
+  expect(conceptEntry.oldAnchor).toBe("MultiSelect");
   expect(report.noSuccessor).toEqual([{ noteId: DELETED_NOTE, type: "decision", oldAnchor: "src/doomed.ts" }]);
   expect(report.staged).toEqual([]);
   expect(listReanchorRequests(deps.corpus)).toEqual([]);
+  expect(listRetagRequests(deps.corpus).length).toBe(1);
   const rendered = formatSweepReport(report);
   expect(rendered).toContain("Anchor sweep (checked against 2 local branches):");
   expect(rendered).toContain(`${PARKED_NOTE} [decision]: src/parked.ts — lives on: feature`);
-  expect(rendered).toContain(`${CONCEPT_NOTE} [decision]: MultiSelect`);
+  expect(rendered).toContain(`${CONCEPT_NOTE} [decision]: MultiSelect -> tags — request ${conceptEntry.requestId}`);
   expect(rendered).toContain(`note_retire { id: "${DELETED_NOTE}", reason: "<...>" }`);
   expect(rendered.match(/note_retire/g)!.length).toBe(1);
 
-  // IDEMPOTENCY: a second sweep renders byte-identically and still stages nothing.
-  expect(formatSweepReport(await anchorSweep(deps))).toBe(rendered);
+  // IDEMPOTENCY: a second sweep stages no second retag (the pending request silences the concept
+  // anchor), keeps the parked class stable, and still renders exactly ONE retire line.
+  const second = await anchorSweep(deps);
+  expect(second.parked).toEqual(report.parked);
+  expect(second.unknownToGit).toEqual([]);
+  expect(second.noSuccessor).toEqual(report.noSuccessor);
+  expect(listRetagRequests(deps.corpus).length).toBe(1);
   expect(listReanchorRequests(deps.corpus)).toEqual([]);
+  expect(formatSweepReport(second).match(/note_retire/g)!.length).toBe(1);
 
   // INTAKE: a staged note anchored to the same parked path and concept gets per-state warnings.
   await remember(deps, {
@@ -180,6 +191,8 @@ test("parked, concept and deleted anchors travel three honest paths, and the mer
   const afterMerge = await anchorSweep(deps);
   expect(afterMerge.parked).toEqual([]);
   expect(formatSweepReport(afterMerge)).not.toContain("src/parked.ts");
-  expect(afterMerge.unknownToGit.length).toBe(1);
+  // The concept anchor stays silent behind its pending retag request; the deletion remains.
+  expect(afterMerge.unknownToGit).toEqual([]);
+  expect(listRetagRequests(deps.corpus).length).toBe(1);
   expect(afterMerge.noSuccessor.length).toBe(1);
 });
