@@ -9,6 +9,8 @@ import { runGit } from "./git";
 import type { GitResult } from "./git";
 import { EMBEDDING_DIMENSION } from "./embeddings";
 import type { EmbeddingsClient } from "./embeddings";
+import { readActiveNotes } from "./index-db";
+import { findForbiddenMarkup } from "./sanitize-body";
 
 // A read-only diagnostic of mneme's wiring. runDoctor probes each component, catches its own failures,
 // and returns a STRUCTURED machine report (the source of truth); renderDoctorReport is a pure human
@@ -62,6 +64,7 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
     runGuarded("index", () => checkIndex(indexProbe)),
     runGuarded("embeddings", () => checkEmbeddings(deps.embedder, indexProbe, expectedDimension, probeText)),
     runGuarded("git", () => checkGit(gitRunner, deps.corpusDir)),
+    runGuarded("note_bodies", () => checkNoteBodies(paths)),
   ]);
   return { components, overall: worstStatus(components) };
 }
@@ -219,6 +222,32 @@ async function checkEmbeddings(
     };
   }
   return { status: "ok", detail: `reachable, dimension ${vector.length}` };
+}
+
+// Bodies are immutable by design, so a legacy body carrying foreign protocol markup (accepted
+// before the write-path sanitizer tightened) can only be REPORTED: the id and the offending token,
+// zero mutations. The recall bundle already excludes such notes loudly; this check makes the same
+// fact visible at diagnosis time so curation can happen in the corpus.
+function checkNoteBodies(paths: CorpusPaths): CheckOutcome {
+  if (!isDirectory(paths.notesDir)) {
+    return { status: "degraded", detail: "notes/ directory is missing (see note_store)" };
+  }
+  const findings: string[] = [];
+  let scanned = 0;
+  for (const note of readActiveNotes(paths.notesDir)) {
+    scanned += 1;
+    const marker = findForbiddenMarkup(note.body);
+    if (marker !== null) {
+      findings.push(`${note.frontmatter.id}: ${marker}`);
+    }
+  }
+  if (findings.length > 0) {
+    return {
+      status: "degraded",
+      detail: `${findings.length} note(s) carry foreign protocol markup (excluded from recall bundles; curate in the corpus): ${findings.join("; ")}`,
+    };
+  }
+  return { status: "ok", detail: `${scanned} active note bodies are free of foreign protocol markup` };
 }
 
 async function checkGit(gitRunner: GitRunner, corpusDir: string): Promise<CheckOutcome> {

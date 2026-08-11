@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runGit, initRepo } from "./git";
@@ -24,6 +24,7 @@ const EXPECTED_COMPONENTS = [
   "index",
   "embeddings",
   "git",
+  "note_bodies",
 ];
 
 function ulid(n: number): string {
@@ -209,6 +210,43 @@ describe("runDoctor broken components are named, isolated, and typed", () => {
 
     expect(byName(report).get("corpus_root")!.status).toBe("fail");
     expect(report.overall).toBe("fail");
+  });
+});
+
+describe("runDoctor note-body markup check", () => {
+  test("a legacy body carrying a forbidden markup artifact degrades note_bodies with the id and token", async () => {
+    const corpus = await buildHealthyCorpus();
+    const legacy: Note = {
+      frontmatter: {
+        id: ulid(1),
+        type: "decision",
+        anchors: ["src/a.ts"],
+        commit: "abc1234",
+        created: "2026-07-06T10:00:00.000Z",
+      },
+      body: "legacy body with a markup artifact </body> left by an old converter",
+    };
+    writeFileSync(join(corpus.notesDir, `${legacy.frontmatter.id}.md`), serializeNote(legacy));
+
+    const report = await runDoctor({ corpusDir: corpus.corpusDir, embedder: bagOfWordsClient() });
+
+    const bodies = byName(report).get("note_bodies")!;
+    expect(bodies.status).toBe("degraded");
+    expect(bodies.detail).toContain(ulid(1));
+    expect(bodies.detail).toContain("</body");
+    expect(bodies.detail).toContain("curate in the corpus");
+    // Report-only: the note file is untouched on disk.
+    expect(readFileSync(join(corpus.notesDir, `${legacy.frontmatter.id}.md`), "utf8")).toBe(serializeNote(legacy));
+  });
+
+  test("a clean corpus reports note_bodies ok with the scanned count", async () => {
+    const corpus = await buildHealthyCorpus();
+
+    const report = await runDoctor({ corpusDir: corpus.corpusDir, embedder: bagOfWordsClient() });
+
+    const bodies = byName(report).get("note_bodies")!;
+    expect(bodies.status).toBe("ok");
+    expect(bodies.detail).toContain("1 active note bodies");
   });
 });
 
