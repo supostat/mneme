@@ -119,15 +119,24 @@ export function readActiveNotes(notesDir: string): Note[] {
 
 // An anchor-neutral note (pattern, antipattern) is pinned to the neutral 0 boost — the same value a
 // fresh at-HEAD anchor earns — so example rot never sinks it; the git anchor scan is skipped
-// entirely for these types. Every other type keeps the pinned staleness formula unchanged.
+// entirely for these types. A note with ZERO path anchors (tags-only) earns the same neutral pin:
+// it has no code address to go stale, and stalenessBoost on an empty array would be Math.min() of
+// nothing = Infinity. Every other case keeps the pinned staleness formula unchanged.
 const ANCHOR_NEUTRAL_STALENESS_BOOST = 0;
+
+// The FTS document is body plus tags: tags earn FTS rank (their only retrieval channel) while the
+// returned body — and the vector/dedup key — stays the pure note body.
+function ftsDocument(note: Note): string {
+  const tags = note.frontmatter.tags;
+  return tags === undefined ? note.body : `${note.body}\n${tags.join("\n")}`;
+}
 
 async function insertFtsAndMeta(database: Database, notes: Note[], projectRoot: string): Promise<number[]> {
   // The branch-tips map is built ONCE for the whole rebuild; per-note scoring only does lookups.
   const context = await createLivenessContext(projectRoot);
   const boosts = await Promise.all(
     notes.map((note) =>
-      isAnchorNeutral(note.frontmatter.type)
+      isAnchorNeutral(note.frontmatter.type) || note.frontmatter.anchors.length === 0
         ? ANCHOR_NEUTRAL_STALENESS_BOOST
         : stalenessBoost(context, note.frontmatter.anchors, note.frontmatter.commit),
     ),
@@ -136,7 +145,7 @@ async function insertFtsAndMeta(database: Database, notes: Note[], projectRoot: 
   const insertMeta = database.query("INSERT INTO meta(id, type, staleness_boost) VALUES (?, ?, ?)");
   const write = database.transaction(() => {
     notes.forEach((note, index) => {
-      insertFts.run(note.frontmatter.id, note.body);
+      insertFts.run(note.frontmatter.id, ftsDocument(note));
       insertMeta.run(note.frontmatter.id, note.frontmatter.type, boosts[index]!);
     });
   });

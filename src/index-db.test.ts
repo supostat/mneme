@@ -146,6 +146,22 @@ describe("rebuild FTS and meta determinism", () => {
   });
 });
 
+describe("rebuild FTS document with tags", () => {
+  test("tags are appended to the FTS document while the stored body column carries them after the body", async () => {
+    const { projectRoot, commit } = await buildProjectRepo(["src/a.ts"]);
+    const corpus = makeCorpus();
+    writeNote(
+      corpus.notesDir,
+      note({ id: ulid(0), anchors: ["src/a.ts"], tags: ["MultiSelect", "lock ordering"], commit }, "plain body text"),
+    );
+
+    await rebuild(rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, embeddings: offlineClient() }));
+
+    const rows = JSON.parse(dumpIndex(corpus.indexPath)) as Array<{ id: string; body: string }>;
+    expect(rows[0]!.body).toBe("plain body text\nMultiSelect\nlock ordering");
+  });
+});
+
 describe("rebuild supersede exclusion", () => {
   test("a superseded note is dropped, keeping only its successor", async () => {
     const corpus = makeCorpus();
@@ -257,6 +273,24 @@ describe("rebuild content-hash embedding cache", () => {
     expect(log.calls[0]).toEqual(["shared body text"]);
   });
 
+  test("adding tags to an unchanged body re-embeds nothing and keeps vector bytes identical", async () => {
+    const { projectRoot, commit } = await buildProjectRepo(["src/a.ts"]);
+    const corpus = makeCorpus();
+    writeNote(corpus.notesDir, note({ id: ulid(0), anchors: ["src/a.ts"], commit }, "alpha body"));
+    const log: EmbedLog = { calls: [] };
+    const deps = rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, embeddings: jitterClient(log) });
+
+    await rebuild(deps);
+    const first = dumpVectors(corpus.indexPath);
+    writeNote(corpus.notesDir, note({ id: ulid(0), anchors: ["src/a.ts"], tags: ["soft-delete"], commit }, "alpha body"));
+    log.calls = [];
+    await rebuild(deps);
+
+    // The vector/dedup key is the pure body: tags change the FTS document, never the embedding.
+    expect(dumpVectors(corpus.indexPath)).toBe(first);
+    expect(log.calls).toEqual([[]]);
+  });
+
   test("a changed embedding model forces a full re-embed", async () => {
     const { projectRoot, commit } = await buildProjectRepo(["src/a.ts", "src/b.ts"]);
     const corpus = makeCorpus();
@@ -358,6 +392,24 @@ describe("rebuild telemetry event", () => {
     const eventsDir = mkdtempSync(join(tmpdir(), "mneme-index-antipattern-events-"));
     const eventWriter = new EventWriter(eventsDir, { sessionId: "s-index-antipattern", mnemeVersion: "0.1.0", clock: fixedClock });
     const embeddings = keyedVectorClient(new Map([["antipattern body", [1, 0]], ["bugfix body", [0, 1]]]));
+
+    await rebuild({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, embeddings, eventWriter, clock: fixedClock });
+
+    const emitted = readEvents(eventsDir).filter((event) => event.type === "rebuild")[0]!;
+    expect(emitted.staleness).toEqual([0, -1]);
+    expect(emitted.dead_anchors_n).toBe(1);
+  });
+
+  test("a tags-only decision is pinned to staleness 0 while a concept-anchor bugfix twin sinks to -1", async () => {
+    const { projectRoot, commit } = await buildProjectRepo(["src/a.ts"]);
+    const corpus = makeCorpus();
+    // Same knowledge, two spellings: the tags-only note has no code address to go stale (and an
+    // empty anchors array must never reach Math.min()); the concept-in-anchors twin keeps the sink.
+    writeNote(corpus.notesDir, note({ id: ulid(0), type: "decision", anchors: [], tags: ["soft-delete"], commit }, "tagged concept body"));
+    writeNote(corpus.notesDir, note({ id: ulid(1), type: "bugfix", anchors: ["soft-delete"], commit }, "concept anchor body"));
+    const eventsDir = mkdtempSync(join(tmpdir(), "mneme-index-tags-events-"));
+    const eventWriter = new EventWriter(eventsDir, { sessionId: "s-index-tags", mnemeVersion: "0.1.0", clock: fixedClock });
+    const embeddings = keyedVectorClient(new Map([["tagged concept body", [1, 0]], ["concept anchor body", [0, 1]]]));
 
     await rebuild({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, embeddings, eventWriter, clock: fixedClock });
 

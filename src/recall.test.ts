@@ -37,6 +37,8 @@ interface NoteSpec {
   dead?: boolean;
   type?: NoteType;
   retired?: boolean;
+  // Concept tags; an empty-string anchor means a tags-only note with zero path anchors.
+  tags?: string[];
 }
 
 function hashTerm(term: string): number {
@@ -90,7 +92,7 @@ async function setupIndex(
   specs: NoteSpec[],
   embeddings: EmbeddingsClient,
 ): Promise<{ indexPath: string; eventsDir: string }> {
-  const liveFiles = specs.filter((spec) => !spec.dead).map((spec) => spec.anchor);
+  const liveFiles = specs.filter((spec) => !spec.dead && spec.anchor !== "").map((spec) => spec.anchor);
   const { projectRoot, commit } = await buildProjectRepo(liveFiles);
   const corpusDir = mkdtempSync(join(tmpdir(), "mneme-recall-"));
   const notesDir = join(corpusDir, "notes");
@@ -102,9 +104,10 @@ async function setupIndex(
       ...baseFrontmatter,
       id: spec.id,
       type: spec.type ?? baseFrontmatter.type,
-      anchors: [spec.anchor],
+      anchors: spec.anchor === "" ? [] : [spec.anchor],
       commit,
     };
+    if (spec.tags !== undefined) frontmatter.tags = spec.tags;
     if (spec.retired === true) frontmatter.retired = true;
     const note: Note = { frontmatter, body: spec.body };
     writeFileSync(join(notesDir, `${spec.id}.md`), serializeNote(note));
@@ -203,6 +206,21 @@ describe("recall FTS regression", () => {
     const result = await recall(deps, "payment", 10000, "tool-call");
 
     expect(result.returnedIds).toEqual([ulid(1)]);
+  });
+
+  test("a tag term finds a tags-only note through FTS while an unrelated query stays empty", async () => {
+    const specs: NoteSpec[] = [
+      { id: ulid(0), body: "disabled means zero memberships", anchor: "", tags: ["MultiSelect", "soft-delete"] },
+      { id: ulid(1), body: "unrelated caching guidance here", anchor: "src/cache.ts" },
+    ];
+    const { indexPath, eventsDir } = await setupIndex(specs, offlineClient());
+    const deps = openRecall(indexPath, eventsDir, offlineClient());
+
+    const byTag = await recall(deps, "MultiSelect", 10000, "tool-call");
+    expect(byTag.returnedIds).toEqual([ulid(0)]);
+
+    const unrelated = await recall(deps, "grpc streaming", 10000, "tool-call");
+    expect(unrelated.returnedIds).toEqual([]);
   });
 
   test("fts operator characters in the query do not throw and still match", async () => {

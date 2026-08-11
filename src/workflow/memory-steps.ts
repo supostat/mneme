@@ -38,6 +38,7 @@ export interface BundleNote {
   type: NoteType;
   body: string;
   anchors: string[];
+  tags: string[];
   anchorOverlap: number;
   cosine: number | null;
   branchReachable: boolean;
@@ -145,6 +146,7 @@ async function buildBundleNote(
     type: note.frontmatter.type,
     body: recalled.body,
     anchors: note.frontmatter.anchors,
+    tags: note.frontmatter.tags ?? [],
     // An anchor-neutral type's anchors (pattern, antipattern) are examples, not the application
     // site, so file-anchor overlap must not lift it in the bundle — it competes on body semantics
     // (recall's fused order) alone.
@@ -228,7 +230,8 @@ function demotionOf(note: BundleNote): number {
 function noteHeader(note: BundleNote): string {
   const branchSuffix =
     !note.branchReachable && note.branchName !== null ? ` (from branch ${note.branchName})` : "";
-  return `[${note.type}] ${note.id}${branchSuffix}`;
+  const tagsSuffix = note.tags.length > 0 ? ` — tags: ${note.tags.join(", ")}` : "";
+  return `[${note.type}] ${note.id}${branchSuffix}${tagsSuffix}`;
 }
 
 // A random per-call nonce is woven into both fences so a poisoned note body cannot forge the closing
