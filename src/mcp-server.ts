@@ -86,7 +86,12 @@ const NOTE_RETIRE_DESCRIPTION =
   "only stages a retire request — the human decides via staging_resolve (accept or reject). An " +
   "accepted retire keeps the file in notes/ as history but excludes the note from recall.";
 
-const REMEMBER_INPUT = { type: z.enum(NOTE_TYPES), body: z.string(), anchors: z.array(z.string()) };
+const REMEMBER_INPUT = {
+  type: z.enum(NOTE_TYPES),
+  body: z.string(),
+  anchors: z.array(z.string()),
+  tags: z.array(z.string()).optional(),
+};
 const NOTES_LIST_INPUT = {
   id: z.string().optional(),
   type: z.enum(NOTE_TYPES).optional(),
@@ -262,9 +267,15 @@ async function dispatch(
 
 async function rememberTool(
   stagingDeps: StagingDeps,
-  args: { type: NoteType; body: string; anchors: string[] },
+  args: { type: NoteType; body: string; anchors: string[]; tags?: string[] },
 ): Promise<CallToolResult> {
-  const result = await remember(stagingDeps, { type: args.type, body: args.body, anchors: args.anchors, source: REMEMBER_SOURCE });
+  const result = await remember(stagingDeps, {
+    type: args.type,
+    body: args.body,
+    anchors: args.anchors,
+    tags: args.tags,
+    source: REMEMBER_SOURCE,
+  });
   return textResult(formatRemember(result));
 }
 

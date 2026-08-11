@@ -210,6 +210,29 @@ describe("mcp-server full cycle", () => {
     expect(recalled).toContain(acceptedBody);
     expect(recalled).not.toContain(rejectedBody);
   });
+
+  test("remember accepts tags through the tool schema and staging_list renders them", async () => {
+    const client = await connect({
+      projectRoot: await buildProjectRepo(),
+      corpusHome: corpusHomeDir(),
+      embeddings: offlineClient(),
+      idFactory: sequentialIds(),
+      clock: fixedClock,
+    });
+
+    const remembered = await callText(client, "remember", {
+      type: "decision",
+      body: "soft-delete concept note over MCP",
+      anchors: [],
+      tags: ["soft-delete", "ticket_groups.terminal_at"],
+    });
+    expect(remembered).toContain("Staged note");
+
+    const listed = await callText(client, "staging_list", {});
+    expect(listed).toContain("anchors: (none)");
+    expect(listed).toContain("tags: soft-delete, ticket_groups.terminal_at");
+    expect(listed).toContain("note: no path anchors");
+  });
 });
 
 describe("mcp-server empty responses", () => {

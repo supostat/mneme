@@ -102,10 +102,22 @@ function formatStagingEntry(entry: StagingEntry, fence: NoteFence): string {
     `type: ${entry.type}`,
     formatDedup(entry.dedup),
     formatAnchors(entry.anchors),
+    ...(entry.tags.length > 0 ? [`tags: ${entry.tags.join(", ")}`] : []),
     ...anchorWarnings(entry.anchors),
+    ...pathlessNotice(entry.anchors),
     entry.digest,
     fence.end,
   ].join("\n");
+}
+
+// A tags-only note has no code address by design: no anchorOverlap, no staleness. The notice keeps
+// the curator informed without blocking — it is the NORMAL state for a conceptual note.
+function pathlessNotice(anchors: StagedAnchor[]): string[] {
+  if (anchors.length > 0) return [];
+  return [
+    "note: no path anchors — this note takes no part in anchorOverlap or staleness ranking; " +
+      "normal for a conceptual note, add a tracked file path to give it a code address",
+  ];
 }
 
 // The warnings derive from the same four-state classification stalenessBoost ranks by, so each one
@@ -127,7 +139,7 @@ function anchorWarning(anchor: StagedAnchor): string {
   if (anchor.liveness === "missing" && anchor.everExisted === false) {
     return (
       `warning: anchor ${anchor.path} was never known to the project's git — likely a concept, not a ` +
-      "file path; anchor to a real tracked file or the note will sink in recall ranking"
+      "file path; move it to tags or the note will sink in recall ranking"
     );
   }
   return `warning: anchor ${anchor.path} is not tracked by the project's git, so this note will sink in recall ranking; fix the anchor before accepting it`;
@@ -140,6 +152,7 @@ function formatDedup(dedup: DedupSummary): string {
 }
 
 function formatAnchors(anchors: StagedAnchor[]): string {
+  if (anchors.length === 0) return "anchors: (none)";
   return `anchors: ${anchors.map((anchor) => `${anchor.path} [${anchor.liveness}]`).join(", ")}`;
 }
 

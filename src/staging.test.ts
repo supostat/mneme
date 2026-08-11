@@ -8,7 +8,7 @@ import { resolveCorpus } from "./corpus";
 import type { Corpus } from "./corpus";
 import { EventWriter, readEvents } from "./events";
 import type { StoredEvent } from "./events";
-import { parseNote, serializeNote } from "./note";
+import { parseNote, serializeNote, NoteValidationError } from "./note";
 import type { EmbeddingsClient } from "./embeddings";
 import { EMBEDDING_DIMENSION } from "./embeddings";
 import { dumpIndex } from "./index-db";
@@ -581,7 +581,7 @@ describe("stagingList untracked-anchor warnings", () => {
 
     expect(rendered).toContain(
       "warning: anchor MultiSelect was never known to the project's git — likely a concept, not a " +
-        "file path; anchor to a real tracked file or the note will sink in recall ranking",
+        "file path; move it to tags or the note will sink in recall ranking",
     );
   });
 
@@ -623,6 +623,83 @@ describe("stagingList untracked-anchor warnings", () => {
     if (result.outcome === "accepted") {
       expect(result.commit).toMatch(/^[0-9a-f]{40}$/);
     }
+  });
+});
+
+describe("remember with tags", () => {
+  test("a tags-only note stages legally and renders its tags with the pathless notice", async () => {
+    const projectRoot = await buildProjectRepo();
+    const deps = await makeDeps(projectRoot, offlineClient(), sequentialIds());
+    const result = await remember(deps, {
+      type: "decision",
+      body: "soft-delete keeps memberships at zero",
+      anchors: [],
+      tags: ["soft-delete", "Tickets::FindSimilarGroup"],
+      source: "mcp",
+    });
+
+    expect(result.outcome).toBe("staged");
+    const rendered = formatStagingList(await stagingList(deps), [], []);
+    expect(rendered).toContain("anchors: (none)");
+    expect(rendered).toContain("tags: soft-delete, Tickets::FindSimilarGroup");
+    expect(rendered).toContain(
+      "note: no path anchors — this note takes no part in anchorOverlap or staleness ranking; " +
+        "normal for a conceptual note, add a tracked file path to give it a code address",
+    );
+  });
+
+  test("tags ride alongside anchors and the pathless notice stays silent", async () => {
+    const projectRoot = await buildProjectRepo();
+    const deps = await makeDeps(projectRoot, offlineClient(), sequentialIds());
+    await remember(deps, {
+      type: "decision",
+      body: "anchored and tagged",
+      anchors: ["src/a.ts"],
+      tags: ["lock ordering"],
+      source: "mcp",
+    });
+
+    const rendered = formatStagingList(await stagingList(deps), [], []);
+    expect(rendered).toContain("tags: lock ordering");
+    expect(rendered).not.toContain("note: no path anchors");
+  });
+
+  test("empty anchors with no tags fail closed before anything is staged", async () => {
+    const projectRoot = await buildProjectRepo();
+    const deps = await makeDeps(projectRoot, offlineClient(), sequentialIds());
+
+    await expect(
+      remember(deps, { type: "decision", body: "addressless note", anchors: [], source: "mcp" }),
+    ).rejects.toThrow(NoteValidationError);
+    expect(readdirSync(join(deps.corpus.stagingDir))).toEqual([]);
+  });
+
+  test("an empty tags array normalizes to key absence and stays rejected when anchors are empty too", async () => {
+    const projectRoot = await buildProjectRepo();
+    const deps = await makeDeps(projectRoot, offlineClient(), sequentialIds());
+
+    await expect(
+      remember(deps, { type: "decision", body: "addressless note", anchors: [], tags: [], source: "mcp" }),
+    ).rejects.toThrow(NoteValidationError);
+  });
+
+  test("a tags-only note accepts through the human gate and keeps its tags in notes/", async () => {
+    const projectRoot = await buildProjectRepo();
+    const deps = await makeDeps(projectRoot, offlineClient(), sequentialIds());
+    await remember(deps, {
+      type: "decision",
+      body: "concept note accepted",
+      anchors: [],
+      tags: ["invariant"],
+      source: "mcp",
+    });
+
+    const result = await stagingResolve(deps, ulid(0), "accept");
+
+    expect(result.outcome).toBe("accepted");
+    const stored = parseNote(readFileSync(join(deps.corpus.notesDir, `${ulid(0)}.md`), "utf8"));
+    expect(stored.frontmatter.tags).toEqual(["invariant"]);
+    expect(stored.frontmatter.anchors).toEqual([]);
   });
 });
 

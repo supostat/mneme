@@ -37,6 +37,7 @@ export interface RememberInput {
   type: NoteType;
   body: string;
   anchors: string[];
+  tags?: string[];
   source: string;
 }
 
@@ -59,6 +60,7 @@ export interface StagingEntry {
   type: NoteType;
   digest: string;
   anchors: StagedAnchor[];
+  tags: string[];
   dedup: DedupSummary;
 }
 
@@ -123,6 +125,11 @@ function stageNote(deps: StagingDeps, noteId: string, commit: string, input: Rem
     commit,
     created: deps.clock().toISOString(),
   };
+  // The MCP boundary normalizes an empty tags array to key absence — the note schema keeps
+  // exactly one spelling of "no tags" (the retired:false precedent).
+  if (input.tags !== undefined && input.tags.length > 0) {
+    frontmatter.tags = input.tags;
+  }
   const serialized = serializeNote({ frontmatter, body: input.body });
   const sidecar = sidecarFor(classification, deps.config.dedup);
   writeFileSync(notePath(deps.corpus.stagingDir, noteId), serialized);
@@ -173,6 +180,7 @@ async function stagingEntry(corpus: Corpus, context: LivenessContext, file: stri
     type: note.frontmatter.type,
     digest: firstLine(note.body),
     anchors: await probeMissingAnchors(context, await resolveAnchorLiveness(context, note.frontmatter.anchors)),
+    tags: note.frontmatter.tags ?? [],
     dedup: dedupSummary(readSidecar(corpus, id)),
   };
 }
