@@ -16,9 +16,9 @@ import { createLivenessContext, pathEverExisted, resolveAnchorLiveness } from ".
 import type { LivenessContext, StagedAnchor } from "./anchor-liveness";
 import { sidecarFor, writeSidecar, readSidecar, removeSidecar, dedupSummary } from "./dedup-sidecar";
 import type { StagedClassification, DedupSummary } from "./dedup-sidecar";
-import { emitRemember, dedupPayload, dedupFromClassification, appendReanchorResolved, appendRetireResolved, appendStagingResolve } from "./staging-resolve";
-import { countReanchorRequests, countRetireRequests, readReanchorRequest, readRetireRequest, removeReanchorRequest, removeRetireRequest } from "./curation";
-import type { ReanchorRequest, RetireRequest } from "./curation";
+import { emitRemember, dedupPayload, dedupFromClassification, appendReanchorResolved, appendRetagResolved, appendRetireResolved, appendStagingResolve } from "./staging-resolve";
+import { countReanchorRequests, countRetagRequests, countRetireRequests, readReanchorRequest, readRetagRequest, readRetireRequest, removeReanchorRequest, removeRetagRequest, removeRetireRequest } from "./curation";
+import type { ReanchorRequest, RetagRequest, RetireRequest } from "./curation";
 import { isTracked } from "./staleness";
 
 export class StagingError extends Error {}
@@ -73,7 +73,9 @@ export type ResolveResult =
   | { outcome: "retired"; requestId: string; noteId: string; commit: string }
   | { outcome: "retire_rejected"; requestId: string; noteId: string }
   | { outcome: "reanchored"; requestId: string; noteId: string; oldAnchor: string; newAnchor: string; commit: string }
-  | { outcome: "reanchor_rejected"; requestId: string; noteId: string };
+  | { outcome: "reanchor_rejected"; requestId: string; noteId: string }
+  | { outcome: "retagged"; requestId: string; noteId: string; anchor: string; commit: string }
+  | { outcome: "retag_rejected"; requestId: string; noteId: string };
 
 const NOTE_EXTENSION = ".md";
 
@@ -151,7 +153,7 @@ function stageNote(deps: StagingDeps, noteId: string, commit: string, input: Rem
 // staging_listed event; listing stays the reviewed act.
 export function countStagedNotes(corpus: Corpus): number {
   const stagedNotes = readdirSync(corpus.stagingDir).filter((name) => name.endsWith(NOTE_EXTENSION)).length;
-  return stagedNotes + countRetireRequests(corpus) + countReanchorRequests(corpus);
+  return stagedNotes + countRetireRequests(corpus) + countReanchorRequests(corpus) + countRetagRequests(corpus);
 }
 
 export async function stagingList(deps: StagingDeps): Promise<StagingEntry[]> {
@@ -213,6 +215,10 @@ export async function stagingResolve(deps: StagingDeps, id: string, decision: Re
   const reanchorRequest = readReanchorRequest(deps.corpus, id);
   if (reanchorRequest !== undefined) {
     return resolveReanchorRequest(deps, reanchorRequest, decision);
+  }
+  const retagRequest = readRetagRequest(deps.corpus, id);
+  if (retagRequest !== undefined) {
+    return resolveRetagRequest(deps, retagRequest, decision);
   }
   if (decision === "reject") {
     return rejectNote(deps, id);
@@ -290,6 +296,55 @@ async function resolveReanchorRequest(
     newAnchor: request.newAnchor,
     commit,
   };
+}
+
+// The retag decision resolves like a re-anchor: accept moves the string out of anchors[] into
+// tags[] in place (the address list shrinks, the topic list grows, the body never changes), commits
+// the corpus, and rebuilds; reject drops the request.
+async function resolveRetagRequest(
+  deps: StagingDeps,
+  request: RetagRequest,
+  decision: ResolveDecision,
+): Promise<ResolveResult> {
+  if (decision !== "accept" && decision !== "reject") {
+    throw new StagingError(`a retag request resolves with accept or reject only: ${request.requestId}`);
+  }
+  if (decision === "reject") {
+    removeRetagRequest(deps.corpus, request.requestId);
+    appendRetagResolved(deps, request.requestId, request.targetId, "reject", null);
+    return { outcome: "retag_rejected", requestId: request.requestId, noteId: request.targetId };
+  }
+  markNoteRetagged(deps.corpus, request);
+  const commit = await commitPaths(
+    deps.corpus,
+    [notesRelPath(request.targetId)],
+    `Retag note ${shortId(request.targetId)}`,
+  );
+  removeRetagRequest(deps.corpus, request.requestId);
+  appendRetagResolved(deps, request.requestId, request.targetId, "accept", commit);
+  await rebuild(rebuildDeps(deps));
+  return { outcome: "retagged", requestId: request.requestId, noteId: request.targetId, anchor: request.anchor, commit };
+}
+
+// Retry-convergent like markNoteReanchored: a note already carrying the string in tags skips the
+// write, so a crash between the rewrite and the commit re-runs cleanly.
+function markNoteRetagged(corpus: Corpus, request: RetagRequest): void {
+  const path = notePath(corpus.notesDir, request.targetId);
+  if (!existsSync(path)) {
+    throw new StagingError(`no note to retag: ${request.targetId}`);
+  }
+  const note = parseNote(readFileSync(path, "utf8"));
+  const tags = note.frontmatter.tags ?? [];
+  if (!note.frontmatter.anchors.includes(request.anchor)) {
+    if (tags.includes(request.anchor)) return;
+    throw new StagingError(`note ${request.targetId} does not anchor ${request.anchor}`);
+  }
+  const frontmatter: NoteFrontmatter = {
+    ...note.frontmatter,
+    anchors: note.frontmatter.anchors.filter((anchor) => anchor !== request.anchor),
+    tags: tags.includes(request.anchor) ? tags : [...tags, request.anchor],
+  };
+  writeFileSync(path, serializeNote({ frontmatter, body: note.body }));
 }
 
 // Retry-convergent, the resolve non-atomicity discipline: a crash after the rewrite but before the

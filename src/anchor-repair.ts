@@ -1,5 +1,5 @@
 import { createLivenessContext, pathEverExisted, resolveAnchorLiveness } from "./anchor-liveness";
-import { listReanchorRequests, noteReanchor } from "./curation";
+import { listReanchorRequests, listRetagRequests, noteReanchor, noteRetag } from "./curation";
 import { runGit } from "./git";
 import { readActiveNotes } from "./index-db";
 import { NOTE_TYPES, isAnchorNeutral } from "./note";
@@ -141,12 +141,28 @@ export interface SweepParked {
   branches: string[];
 }
 
+// An unknown-to-git anchor is a concept, and the sweep STAGES its move into tags — requestId names
+// the queued retag request awaiting the human gate.
+export interface SweepRetagStaged {
+  noteId: string;
+  type: NoteType;
+  oldAnchor: string;
+  requestId: string;
+}
+
+export interface SweepUntracked {
+  noteId: string;
+  type: NoteType;
+  oldAnchor: string;
+}
+
 export interface SweepReport {
   staged: SweepStaged[];
   ambiguous: SweepAmbiguous[];
   parked: SweepParked[];
-  unknownToGit: SweepNoSuccessor[];
+  unknownToGit: SweepRetagStaged[];
   noSuccessor: SweepNoSuccessor[];
+  untracked: SweepUntracked[];
   skippedNeutralN: number;
   missingByType: Record<NoteType, number>;
   branchesChecked: number;
@@ -159,15 +175,17 @@ export async function anchorSweep(deps: StagingDeps): Promise<SweepReport> {
   const renames = await traceRenames(deps.projectRoot);
   // The branch-tips context is built ONCE for the whole sweep, never per note or per anchor.
   const context = await createLivenessContext(deps.projectRoot);
-  const pending = new Set(
-    listReanchorRequests(deps.corpus).map((request) => pendingKey(request.targetId, request.oldAnchor)),
-  );
+  const pending = new Set([
+    ...listReanchorRequests(deps.corpus).map((request) => pendingKey(request.targetId, request.oldAnchor)),
+    ...listRetagRequests(deps.corpus).map((request) => pendingKey(request.targetId, request.anchor)),
+  ]);
   const report: SweepReport = {
     staged: [],
     ambiguous: [],
     parked: [],
     unknownToGit: [],
     noSuccessor: [],
+    untracked: [],
     skippedNeutralN: 0,
     missingByType: emptyTypeCounts(),
     branchesChecked: context.branches.length,
@@ -175,16 +193,24 @@ export async function anchorSweep(deps: StagingDeps): Promise<SweepReport> {
   for (const note of readActiveNotes(deps.corpus.notesDir)) {
     const anchors = await resolveAnchorLiveness(context, note.frontmatter.anchors);
     // A parked anchor (alive on another branch's tip) is REPORT-ONLY: never repaired, never
-    // retire-advised — the merge brings it back. Only truly missing anchors enter repair.
+    // retire-advised — the merge brings it back. An untracked-exists anchor (on disk, unknown to
+    // the index — the formerly SILENT class) is also report-only: the ranking sinks it, so the
+    // report must name it. Only truly missing anchors enter repair.
     const parked = anchors.filter((anchor) => anchor.liveness === "known-elsewhere");
     const missing = anchors.filter((anchor) => anchor.liveness === "missing");
-    if (parked.length === 0 && missing.length === 0) continue;
+    const untracked = anchors.filter((anchor) => anchor.liveness === "untracked-exists");
+    if (parked.length === 0 && missing.length === 0 && untracked.length === 0) continue;
     const noteId = note.frontmatter.id;
     const type = note.frontmatter.type;
-    report.missingByType[type] += 1;
+    if (parked.length > 0 || missing.length > 0) {
+      report.missingByType[type] += 1;
+    }
     if (isAnchorNeutral(type)) {
       report.skippedNeutralN += 1;
       continue;
+    }
+    for (const anchor of untracked) {
+      report.untracked.push({ noteId, type, oldAnchor: anchor.path });
     }
     for (const anchor of parked) {
       report.parked.push({ noteId, type, oldAnchor: anchor.path, branches: anchor.branches ?? [] });
@@ -196,7 +222,11 @@ export async function anchorSweep(deps: StagingDeps): Promise<SweepReport> {
         if (await pathEverExisted(deps.projectRoot, anchor.path)) {
           report.noSuccessor.push({ noteId, type, oldAnchor: anchor.path });
         } else {
-          report.unknownToGit.push({ noteId, type, oldAnchor: anchor.path });
+          // A concept, not a path: stage the anchor -> tags move (binary verdict, no score — the
+          // pathEverExisted probe the report already trusts). The human gate decides, as always.
+          const retagStaged = await noteRetag(deps, noteId, anchor.path);
+          pending.add(pendingKey(noteId, anchor.path));
+          report.unknownToGit.push({ noteId, type, oldAnchor: anchor.path, requestId: retagStaged.requestId });
         }
       } else if (classified.kind === "ambiguous") {
         report.ambiguous.push({ noteId, type, oldAnchor: anchor.path, candidates: classified.candidates });
@@ -221,6 +251,8 @@ export async function anchorSweep(deps: StagingDeps): Promise<SweepReport> {
     parked_n: report.parked.length,
     unknown_to_git_n: report.unknownToGit.length,
     no_successor_n: report.noSuccessor.length,
+    untracked_n: report.untracked.length,
+    retag_staged_n: report.unknownToGit.length,
     skipped_neutral_n: report.skippedNeutralN,
   });
   return report;

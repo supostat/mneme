@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { createLivenessContext, resolveAnchorLiveness } from "./anchor-liveness";
+import { createLivenessContext, pathEverExisted, resolveAnchorLiveness } from "./anchor-liveness";
 import type { Corpus } from "./corpus";
 import { REANCHOR_SOURCES } from "./event-schema";
 import type { ReanchorSource } from "./event-schema";
@@ -8,7 +8,7 @@ import { readActiveNotes } from "./index-db";
 import { isNoteId, parseNote, validateAnchor } from "./note";
 import type { Note, NoteType } from "./note";
 import { isTracked } from "./staleness";
-import { appendReanchorStaged, appendRetireStaged } from "./staging-resolve";
+import { appendReanchorStaged, appendRetagStaged, appendRetireStaged } from "./staging-resolve";
 import type { StagingDeps } from "./staging";
 
 // Curation of ACCEPTED notes: list them with anchor health, show one in full, and queue a retire
@@ -21,6 +21,7 @@ export class CurationError extends Error {}
 
 const RETIRE_EXTENSION = ".retire.json";
 const REANCHOR_EXTENSION = ".reanchor.json";
+const RETAG_EXTENSION = ".retag.json";
 
 export const DEFAULT_NOTES_LIST_LIMIT = 50;
 
@@ -300,6 +301,107 @@ function requireReanchorRequest(corpus: Corpus, requestId: string): ReanchorRequ
 
 function reanchorPath(corpus: Corpus, requestId: string): string {
   return join(corpus.stagingDir, `${requestId}${REANCHOR_EXTENSION}`);
+}
+
+export interface RetagRequest {
+  requestId: string;
+  targetId: string;
+  anchor: string;
+}
+
+export interface StagedRetag {
+  requestId: string;
+  targetId: string;
+}
+
+// Stages an anchor -> tags move for the human gate: the string is knowledge's TOPIC, not its
+// address. Retag is for CONCEPT anchors only — the anchor must be missing AND never known to git
+// (pathEverExisted false); a path git once saw is an honest deletion and keeps the retire path.
+export async function noteRetag(deps: StagingDeps, targetId: string, anchor: string): Promise<StagedRetag> {
+  const target = showNote(deps.corpus, targetId);
+  if (target.frontmatter.retired === true) {
+    throw new CurationError(`note ${targetId} is retired; a retired note is not retagged`);
+  }
+  if (!target.frontmatter.anchors.includes(anchor)) {
+    throw new CurationError(`note ${targetId} does not anchor ${anchor}`);
+  }
+  const context = await createLivenessContext(deps.projectRoot);
+  const [liveness] = await resolveAnchorLiveness(context, [anchor]);
+  if (liveness!.liveness !== "missing") {
+    throw new CurationError(
+      `anchor ${anchor} is ${liveness!.liveness}, not missing; only a concept anchor is retagged`,
+    );
+  }
+  if (await pathEverExisted(deps.projectRoot, anchor)) {
+    throw new CurationError(
+      `anchor ${anchor} was once a real path in git history — an honest deletion is retired or ` +
+        "re-anchored, never retagged",
+    );
+  }
+  const pending = listRetagRequests(deps.corpus).find(
+    (request) => request.targetId === targetId && request.anchor === anchor,
+  );
+  if (pending !== undefined) {
+    throw new CurationError(
+      `note ${targetId} already has a pending retag request ${pending.requestId} for ${anchor}; resolve it first`,
+    );
+  }
+  const requestId = deps.idFactory();
+  if (!isNoteId(requestId)) {
+    throw new CurationError(`idFactory produced an invalid request id: ${requestId}`);
+  }
+  writeFileSync(
+    retagPath(deps.corpus, requestId),
+    JSON.stringify({ request_id: requestId, target_id: targetId, anchor }, null, 2) + "\n",
+  );
+  appendRetagStaged(deps, requestId, targetId, anchor);
+  return { requestId, targetId };
+}
+
+export function listRetagRequests(corpus: Corpus): RetagRequest[] {
+  return readdirSync(corpus.stagingDir)
+    .filter((name) => name.endsWith(RETAG_EXTENSION))
+    .sort()
+    .map((name) => requireRetagRequest(corpus, name.slice(0, -RETAG_EXTENSION.length)));
+}
+
+export function readRetagRequest(corpus: Corpus, requestId: string): RetagRequest | undefined {
+  if (!existsSync(retagPath(corpus, requestId))) {
+    return undefined;
+  }
+  return requireRetagRequest(corpus, requestId);
+}
+
+export function removeRetagRequest(corpus: Corpus, requestId: string): void {
+  rmSync(retagPath(corpus, requestId), { force: true });
+}
+
+export function countRetagRequests(corpus: Corpus): number {
+  return readdirSync(corpus.stagingDir).filter((name) => name.endsWith(RETAG_EXTENSION)).length;
+}
+
+// Fail-closed read, the requireRetireRequest discipline: a request file that lost its shape is a
+// named error, never a silently skipped queue entry.
+function requireRetagRequest(corpus: Corpus, requestId: string): RetagRequest {
+  const parsed: unknown = JSON.parse(readFileSync(retagPath(corpus, requestId), "utf8"));
+  if (typeof parsed !== "object" || parsed === null) {
+    throw new CurationError(`retag request ${requestId} is not a JSON object`);
+  }
+  const record = parsed as { request_id?: unknown; target_id?: unknown; anchor?: unknown };
+  if (record.request_id !== requestId) {
+    throw new CurationError(`retag request ${requestId} names a different request_id`);
+  }
+  if (typeof record.target_id !== "string" || !isNoteId(record.target_id)) {
+    throw new CurationError(`retag request ${requestId} has an invalid target_id`);
+  }
+  if (typeof record.anchor !== "string" || record.anchor.length === 0) {
+    throw new CurationError(`retag request ${requestId} has an invalid anchor`);
+  }
+  return { requestId, targetId: record.target_id, anchor: record.anchor };
+}
+
+function retagPath(corpus: Corpus, requestId: string): string {
+  return join(corpus.stagingDir, `${requestId}${RETAG_EXTENSION}`);
 }
 
 function requireCleanReason(reason: string): void {

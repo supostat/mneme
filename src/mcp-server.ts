@@ -21,7 +21,7 @@ import { recall } from "./recall";
 import { NOTE_TYPES } from "./note";
 import type { NoteType } from "./note";
 import { remember, stagingList, stagingResolve } from "./staging";
-import { listReanchorRequests, listRetireRequests, noteReanchor, noteRetire, notesList, showNote } from "./curation";
+import { listReanchorRequests, listRetagRequests, listRetireRequests, noteReanchor, noteRetire, notesList, showNote } from "./curation";
 import { computeStats, formatStats } from "./stats";
 import { computeFriction, formatFriction } from "./stats-friction";
 import { computeFootprint, formatFootprint } from "./stats-footprint";
@@ -310,7 +310,12 @@ async function recallTool(
 async function stagingListTool(stagingDeps: StagingDeps): Promise<CallToolResult> {
   const entries = await stagingList(stagingDeps);
   return textResult(
-    formatStagingList(entries, listRetireRequests(stagingDeps.corpus), listReanchorRequests(stagingDeps.corpus)),
+    formatStagingList(
+      entries,
+      listRetireRequests(stagingDeps.corpus),
+      listReanchorRequests(stagingDeps.corpus),
+      listRetagRequests(stagingDeps.corpus),
+    ),
   );
 }
 

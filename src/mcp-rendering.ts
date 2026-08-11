@@ -1,7 +1,7 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { RememberResult, StagingEntry, ResolveResult } from "./staging";
 import type { RecalledNote } from "./recall";
-import type { NotesListResult, ReanchorRequest, RetireRequest } from "./curation";
+import type { NotesListResult, ReanchorRequest, RetagRequest, RetireRequest } from "./curation";
 import type { SweepReport, ScoredCandidate } from "./anchor-repair";
 import type { DedupSummary } from "./dedup-sidecar";
 import type { Note } from "./note";
@@ -60,8 +60,14 @@ export function formatStagingList(
   entries: StagingEntry[],
   retireRequests: RetireRequest[],
   reanchorRequests: ReanchorRequest[],
+  retagRequests: RetagRequest[] = [],
 ): string {
-  if (entries.length === 0 && retireRequests.length === 0 && reanchorRequests.length === 0) {
+  if (
+    entries.length === 0 &&
+    retireRequests.length === 0 &&
+    reanchorRequests.length === 0 &&
+    retagRequests.length === 0
+  ) {
     return "The staging queue is empty. Nothing to review.";
   }
   const fence = makeFence();
@@ -69,6 +75,7 @@ export function formatStagingList(
     ...entries.map((entry) => formatStagingEntry(entry, fence)),
     ...retireRequests.map((request) => formatRetireRequest(request, fence)),
     ...reanchorRequests.map((request) => formatReanchorRequest(request, fence)),
+    ...retagRequests.map((request) => formatRetagRequest(request, fence)),
   ];
   return `${RETRIEVED_DATA_NOTICE}\n${blocks.join("\n")}\nAsk the human to decide accept, reject, or supersede for each, then call staging_resolve.`;
 }
@@ -91,6 +98,16 @@ function formatReanchorRequest(request: ReanchorRequest, fence: NoteFence): stri
     `re-anchor request for note ${request.targetId} (accept or reject only)`,
     `anchor: ${request.oldAnchor} -> ${request.newAnchor}${score}`,
     `source: ${request.source}`,
+    fence.end,
+  ].join("\n");
+}
+
+function formatRetagRequest(request: RetagRequest, fence: NoteFence): string {
+  return [
+    fence.begin,
+    `id: ${request.requestId}`,
+    `retag request for note ${request.targetId} (accept or reject only)`,
+    `anchor -> tags: ${request.anchor} (a concept, not a path — accept moves it out of anchors into tags)`,
     fence.end,
   ].join("\n");
 }
@@ -171,6 +188,12 @@ export function formatResolve(result: ResolveResult): string {
   if (result.outcome === "reanchor_rejected") {
     return `Rejected the re-anchor request for note ${result.noteId}; the anchor stays as it is.`;
   }
+  if (result.outcome === "retagged") {
+    return `Retagged note ${result.noteId}: ${result.anchor} moved from anchors to tags; committed ${result.commit}.`;
+  }
+  if (result.outcome === "retag_rejected") {
+    return `Rejected the retag request for note ${result.noteId}; the anchor stays as it is.`;
+  }
   return `Superseded ${result.supersededId} with note ${result.noteId}; committed ${result.commit}.`;
 }
 
@@ -185,6 +208,7 @@ export function formatSweepReport(report: SweepReport): string {
     report.parked.length +
     report.unknownToGit.length +
     report.noSuccessor.length +
+    report.untracked.length +
     report.skippedNeutralN;
   if (total === 0) {
     return "Anchor sweep: no missing anchors to repair. Nothing was staged.";
@@ -192,8 +216,9 @@ export function formatSweepReport(report: SweepReport): string {
   const lines = [
     `Anchor sweep (checked against ${report.branchesChecked} local branches): ` +
       `staged ${report.staged.length} · ambiguous ${report.ambiguous.length} · ` +
-      `parked ${report.parked.length} · unknown ${report.unknownToGit.length} · ` +
-      `no successor ${report.noSuccessor.length} · skipped anchor-neutral ${report.skippedNeutralN}`,
+      `parked ${report.parked.length} · retag staged ${report.unknownToGit.length} · ` +
+      `no successor ${report.noSuccessor.length} · untracked ${report.untracked.length} · ` +
+      `skipped anchor-neutral ${report.skippedNeutralN}`,
     `notes with missing anchors by type: ${Object.entries(report.missingByType)
       .map(([type, count]) => `${type} ${count}`)
       .join(" · ")}`,
@@ -220,8 +245,16 @@ export function formatSweepReport(report: SweepReport): string {
     }
   }
   if (report.unknownToGit.length > 0) {
-    lines.push("unknown to git (likely a concept, not a path — rebind manually with anchor_repair; the knowledge is alive):");
+    lines.push("unknown to git (a concept, not a path — a retag request is staged; review with staging_list):");
     for (const entry of report.unknownToGit) {
+      lines.push(`  ${entry.noteId} [${entry.type}]: ${entry.oldAnchor} -> tags — request ${entry.requestId}`);
+    }
+  }
+  if (report.untracked.length > 0) {
+    lines.push(
+      "untracked on disk (gitignored or never added — the ranking sinks it; track the file or move the anchor to tags):",
+    );
+    for (const entry of report.untracked) {
       lines.push(`  ${entry.noteId} [${entry.type}]: ${entry.oldAnchor}`);
     }
   }

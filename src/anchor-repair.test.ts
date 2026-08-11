@@ -12,7 +12,10 @@ import { initRepo, runGit } from "./git";
 import { serializeNote } from "./note";
 import type { NoteFrontmatter, NoteType } from "./note";
 import type { StagingDeps } from "./staging";
-import { listReanchorRequests, readReanchorRequest } from "./curation";
+import { readFileSync } from "node:fs";
+import { parseNote } from "./note";
+import { stagingResolve } from "./staging";
+import { listReanchorRequests, listRetagRequests, readReanchorRequest } from "./curation";
 import { RENAME_SCORE_FLOOR, anchorSweep } from "./anchor-repair";
 import { formatSweepReport } from "./mcp-rendering";
 
@@ -320,7 +323,7 @@ describe("anchorSweep staging", () => {
     expect(swept[0]!.parked_n).toBe(1);
   });
 
-  test("a concept anchor git never saw lands in unknown-to-git without a retire line", async () => {
+  test("a concept anchor git never saw stages a retag request without a retire line", async () => {
     const deps = await makeDeps(
       [{ id: ulid(0), body: "anchored to a concept, not a path", anchors: ["MultiSelect"] }],
       ["src/a.ts"],
@@ -328,18 +331,88 @@ describe("anchorSweep staging", () => {
 
     const report = await anchorSweep(deps);
 
-    expect(report.unknownToGit).toEqual([{ noteId: ulid(0), type: "decision", oldAnchor: "MultiSelect" }]);
+    expect(report.unknownToGit.length).toBe(1);
+    const entry = report.unknownToGit[0]!;
+    expect(entry.noteId).toBe(ulid(0));
+    expect(entry.oldAnchor).toBe("MultiSelect");
+    const requests = listRetagRequests(deps.corpus);
+    expect(requests.length).toBe(1);
+    expect(requests[0]!.requestId).toBe(entry.requestId);
+    expect(requests[0]!.anchor).toBe("MultiSelect");
     expect(report.noSuccessor).toEqual([]);
     expect(listReanchorRequests(deps.corpus)).toEqual([]);
     const rendered = formatSweepReport(report);
-    expect(rendered).toContain("unknown to git (likely a concept, not a path");
-    expect(rendered).toContain(`${ulid(0)} [decision]: MultiSelect`);
+    expect(rendered).toContain("unknown to git (a concept, not a path — a retag request is staged");
+    expect(rendered).toContain(`${ulid(0)} [decision]: MultiSelect -> tags — request ${entry.requestId}`);
     expect(rendered).not.toContain("note_retire");
     const swept = eventsOfType(deps.corpus, "anchor_sweep");
     expect(swept[0]!.unknown_to_git_n).toBe(1);
+    expect(swept[0]!.retag_staged_n).toBe(1);
+    expect(eventsOfType(deps.corpus, "note_retag_staged").length).toBe(1);
   });
 
-  test("a re-run over parked and unknown anchors renders a byte-identical report", async () => {
+  test("accepting a staged retag moves the anchor into tags and commits the corpus", async () => {
+    const deps = await makeDeps(
+      [{ id: ulid(0), body: "soft-delete invariant note", anchors: ["soft-delete"] }],
+      ["src/a.ts"],
+    );
+    const report = await anchorSweep(deps);
+    const requestId = report.unknownToGit[0]!.requestId;
+
+    const result = await stagingResolve(deps, requestId, "accept");
+
+    expect(result.outcome).toBe("retagged");
+    if (result.outcome === "retagged") {
+      expect(result.anchor).toBe("soft-delete");
+      expect(result.commit).toMatch(/^[0-9a-f]{40}$/);
+    }
+    const stored = parseNote(readFileSync(join(deps.corpus.notesDir, `${ulid(0)}.md`), "utf8"));
+    expect(stored.frontmatter.anchors).toEqual([]);
+    expect(stored.frontmatter.tags).toEqual(["soft-delete"]);
+    expect(listRetagRequests(deps.corpus)).toEqual([]);
+    expect(eventsOfType(deps.corpus, "note_retag_resolved").length).toBe(1);
+  });
+
+  test("rejecting a staged retag leaves the note untouched", async () => {
+    const deps = await makeDeps(
+      [{ id: ulid(0), body: "concept note kept as is", anchors: ["MultiSelect"] }],
+      ["src/a.ts"],
+    );
+    const report = await anchorSweep(deps);
+    const requestId = report.unknownToGit[0]!.requestId;
+
+    const result = await stagingResolve(deps, requestId, "reject");
+
+    expect(result.outcome).toBe("retag_rejected");
+    const stored = parseNote(readFileSync(join(deps.corpus.notesDir, `${ulid(0)}.md`), "utf8"));
+    expect(stored.frontmatter.anchors).toEqual(["MultiSelect"]);
+    expect(stored.frontmatter.tags).toBeUndefined();
+    expect(listRetagRequests(deps.corpus)).toEqual([]);
+  });
+
+  test("a gitignored on-disk anchor lands in the untracked report class without staging", async () => {
+    const deps = await makeDeps(
+      [{ id: ulid(0), body: "anchored to a build artifact", anchors: ["dist/out.js"] }],
+      ["src/a.ts"],
+    );
+    writeFileSync(join(deps.projectRoot, ".gitignore"), "dist/\n");
+    mkdirSync(join(deps.projectRoot, "dist"), { recursive: true });
+    writeFileSync(join(deps.projectRoot, "dist/out.js"), "built artifact\n");
+
+    const report = await anchorSweep(deps);
+
+    expect(report.untracked).toEqual([{ noteId: ulid(0), type: "decision", oldAnchor: "dist/out.js" }]);
+    expect(report.unknownToGit).toEqual([]);
+    expect(listRetagRequests(deps.corpus)).toEqual([]);
+    const rendered = formatSweepReport(report);
+    expect(rendered).toContain("untracked on disk (gitignored or never added");
+    expect(rendered).toContain(`${ulid(0)} [decision]: dist/out.js`);
+    const swept = eventsOfType(deps.corpus, "anchor_sweep");
+    expect(swept[0]!.untracked_n).toBe(1);
+    expect(swept[0]!.retag_staged_n).toBe(0);
+  });
+
+  test("a re-run stages no second retag and keeps the parked class stable", async () => {
     const deps = await makeDeps(
       [
         { id: ulid(0), body: "parked note", anchors: ["src/parked.ts"] },
@@ -349,10 +422,14 @@ describe("anchorSweep staging", () => {
     );
     await parkFileOnBranch(deps.projectRoot, "feature", "src/parked.ts");
 
-    const first = formatSweepReport(await anchorSweep(deps));
-    const second = formatSweepReport(await anchorSweep(deps));
+    const first = await anchorSweep(deps);
+    const second = await anchorSweep(deps);
 
-    expect(second).toBe(first);
+    expect(first.unknownToGit.length).toBe(1);
+    // The pending retag request makes the second pass skip the concept anchor SILENTLY.
+    expect(second.unknownToGit).toEqual([]);
+    expect(listRetagRequests(deps.corpus).length).toBe(1);
+    expect(second.parked).toEqual(first.parked);
     expect(listReanchorRequests(deps.corpus)).toEqual([]);
   });
 

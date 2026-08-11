@@ -1,7 +1,7 @@
 import { readEvents } from "./events";
 import type { StoredEvent } from "./events";
 import { isStagingEvent } from "./event-dialect";
-import { DEDUP_OUTCOMES, REANCHOR_DECISIONS, RESOLVE_DECISIONS, RETIRE_DECISIONS } from "./event-schema";
+import { DEDUP_OUTCOMES, REANCHOR_DECISIONS, RESOLVE_DECISIONS, RETAG_DECISIONS, RETIRE_DECISIONS } from "./event-schema";
 import type { ReanchorSource } from "./event-schema";
 import type { DedupThresholds } from "./dedup";
 import type { StagedClassification } from "./dedup-sidecar";
@@ -32,6 +32,7 @@ export function emitRemember(
     note_type: input.type,
     body_len: [...input.body].length,
     anchors_n: input.anchors.length,
+    tags_n: (input.tags ?? []).length,
     source: input.source,
     dedup,
   });
@@ -107,6 +108,31 @@ export function appendReanchorStaged(deps: StagingDeps, payload: ReanchorStagedP
     new_anchor: payload.newAnchor,
     score: payload.score,
     source: payload.source,
+  });
+}
+
+export function appendRetagStaged(deps: StagingDeps, requestId: string, targetId: string, anchor: string): void {
+  deps.eventWriter.append({
+    type: "note_retag_staged",
+    request_id: requestId,
+    target_id: targetId,
+    anchor,
+  });
+}
+
+export function appendRetagResolved(
+  deps: StagingDeps,
+  requestId: string,
+  targetId: string,
+  decision: (typeof RETAG_DECISIONS)[number],
+  commit: string | null,
+): void {
+  deps.eventWriter.append({
+    type: "note_retag_resolved",
+    request_id: requestId,
+    target_id: targetId,
+    decision,
+    commit,
   });
 }
 

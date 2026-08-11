@@ -95,7 +95,7 @@ const LIVE_EVENTS: Record<string, EventInput> = {
     timings: { embed_ms: 1, fts_ms: 0, fusion_ms: 2 },
     candidates: [FULL_CANDIDATE],
   },
-  remember: { type: "remember", note_id: "n1", note_type: "pattern", body_len: 12, anchors_n: 1, source: "mcp", dedup: DEDUP_ADD },
+  remember: { type: "remember", note_id: "n1", note_type: "pattern", body_len: 12, anchors_n: 1, tags_n: 0, source: "mcp", dedup: DEDUP_ADD },
   staging_resolve_accept: { type: "staging_resolve", note_id: "n1", decision: "accept", staged_to_resolved_ms: 0, commit: "abc1234", superseded_id: null, suggested: null },
   staging_resolve_reject: { type: "staging_resolve", note_id: "n1", decision: "reject", staged_to_resolved_ms: null, commit: null, superseded_id: null, suggested: null },
   staging_resolve_supersede: { type: "staging_resolve", note_id: "n1", decision: "supersede", staged_to_resolved_ms: 5, commit: "abc1234", superseded_id: "n0", suggested: true },
@@ -168,8 +168,8 @@ const AGENT_VOTE_MIRROR = {
 } as const satisfies Record<Vote, true>;
 
 describe("event-schema constants", () => {
-  test("SCHEMA_VERSION is 12", () => {
-    expect(SCHEMA_VERSION).toBe(12);
+  test("SCHEMA_VERSION is 13", () => {
+    expect(SCHEMA_VERSION).toBe(13);
   });
 
   test("EXECUTABLE_GATE_REASONS mirrors gate-runner's ExecutableGateReason in both directions", () => {

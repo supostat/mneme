@@ -49,12 +49,18 @@ import { z } from "zod";
 //  12 — branch-aware liveness: the staging_listed liveness enum gains known-elsewhere (the path
 //       lives on another local branch's tip) with optional branches[]; anchor_sweep gains
 //       parked_n and unknown_to_git_n for the two report classes that stage nothing.
-export const SCHEMA_VERSION = 12;
+//  13 — tags: remember gains tags_n; note_retag_staged {request_id, target_id, anchor} queues an
+//       anchor -> tags move for the human gate and note_retag_resolved {request_id, target_id,
+//       decision, commit} applies it (an accepted retag rewrites frontmatter: the string leaves
+//       anchors[] and joins tags[], the body never changes); anchor_sweep gains untracked_n (the
+//       previously silent untracked-exists report class) and retag_staged_n.
+export const SCHEMA_VERSION = 13;
 
 export const DEDUP_OUTCOMES = ["add", "supersede_suggest", "noop"] as const;
 export const RESOLVE_DECISIONS = ["accept", "reject", "supersede"] as const;
 export const RETIRE_DECISIONS = ["accept", "reject"] as const;
 export const REANCHOR_DECISIONS = ["accept", "reject"] as const;
+export const RETAG_DECISIONS = ["accept", "reject"] as const;
 // Who staged a re-anchor request: the batch sweep's rename tracing or a manual anchor_repair call.
 export const REANCHOR_SOURCES = ["sweep", "manual"] as const;
 export type ReanchorSource = (typeof REANCHOR_SOURCES)[number];
@@ -169,6 +175,7 @@ const rememberEvent = z.object({
   note_type: z.string(),
   body_len: z.number(),
   anchors_n: z.number(),
+  tags_n: z.number(),
   source: z.string(),
   dedup: dedupOutcome,
 });
@@ -245,8 +252,27 @@ const noteReanchorResolvedEvent = z.object({
   commit: z.string().nullable(),
 });
 
+// A staged anchor -> tags move: the concept string leaves anchors[] and joins tags[] on accept.
+const noteRetagStagedEvent = z.object({
+  type: z.literal("note_retag_staged"),
+  ...envelope,
+  request_id: z.string(),
+  target_id: z.string(),
+  anchor: z.string(),
+});
+
+// commit is null for a rejected retag (nothing was written to the corpus repo).
+const noteRetagResolvedEvent = z.object({
+  type: z.literal("note_retag_resolved"),
+  ...envelope,
+  request_id: z.string(),
+  target_id: z.string(),
+  decision: z.enum(RETAG_DECISIONS),
+  commit: z.string().nullable(),
+});
+
 // One batch-stager pass over the corpus: what it staged and what it only reported. The per-request
-// detail lives in the note_reanchor_staged events the pass emitted alongside.
+// detail lives in the note_reanchor_staged / note_retag_staged events the pass emitted alongside.
 const anchorSweepEvent = z.object({
   type: z.literal("anchor_sweep"),
   ...envelope,
@@ -255,6 +281,8 @@ const anchorSweepEvent = z.object({
   parked_n: z.number().int(),
   unknown_to_git_n: z.number().int(),
   no_successor_n: z.number().int(),
+  untracked_n: z.number().int(),
+  retag_staged_n: z.number().int(),
   skipped_neutral_n: z.number().int(),
 });
 
@@ -437,6 +465,8 @@ export const eventSchema = z.discriminatedUnion("type", [
   noteRetireResolvedEvent,
   noteReanchorStagedEvent,
   noteReanchorResolvedEvent,
+  noteRetagStagedEvent,
+  noteRetagResolvedEvent,
   anchorSweepEvent,
   bundleNoteRejectedEvent,
   rebuildEvent,
