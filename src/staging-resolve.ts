@@ -2,7 +2,7 @@ import { readEvents } from "./events";
 import type { StoredEvent } from "./events";
 import { isStagingEvent } from "./event-dialect";
 import { DEDUP_OUTCOMES, REANCHOR_DECISIONS, RESOLVE_DECISIONS, RETAG_DECISIONS, RETIRE_DECISIONS } from "./event-schema";
-import type { ReanchorSource } from "./event-schema";
+import type { DecisionClass, ReanchorSource } from "./event-schema";
 import type { DedupThresholds } from "./dedup";
 import type { StagedClassification } from "./dedup-sidecar";
 import type { StagingDeps, RememberInput } from "./staging";
@@ -10,6 +10,15 @@ import type { StagingDeps, RememberInput } from "./staging";
 // The event-log emission layer for the staging lifecycle: how a remember and a resolve record
 // themselves. Kept apart from staging.ts (which owns the note I/O and git) so both stay under the
 // per-file cap and the telemetry payloads live in one place.
+
+// The digit-menu context a deciding call rode on (see the v14 changelog). Snake_case on purpose:
+// the object lands in the event verbatim.
+export interface MenuContext {
+  decision_class: DecisionClass;
+  options_n: number;
+  recommended_position: number;
+  chosen_position: number;
+}
 
 interface DedupEventPayload {
   outcome: (typeof DEDUP_OUTCOMES)[number];
@@ -35,6 +44,7 @@ export function emitRemember(
     tags_n: (input.tags ?? []).length,
     source: input.source,
     dedup,
+    menu: input.menu ?? null,
   });
 }
 
@@ -156,6 +166,9 @@ interface StagingResolveExtra {
   commit: string | null;
   superseded_id: string | null;
   suggested: boolean | null;
+  accepted_body_len: number | null;
+  accepted_anchors_n: number | null;
+  menu: MenuContext | null;
 }
 
 export function appendStagingResolve(
@@ -172,6 +185,9 @@ export function appendStagingResolve(
     commit: extra.commit,
     superseded_id: extra.superseded_id,
     suggested: extra.suggested,
+    accepted_body_len: extra.accepted_body_len,
+    accepted_anchors_n: extra.accepted_anchors_n,
+    menu: extra.menu,
   });
 }
 

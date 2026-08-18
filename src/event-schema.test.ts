@@ -82,6 +82,13 @@ const GATE_REPORT_PAYLOAD = {
   ],
 };
 
+const MENU_CURATION = {
+  decision_class: "curation",
+  options_n: 4,
+  recommended_position: 2,
+  chosen_position: 1,
+};
+
 const LIVE_EVENTS: Record<string, EventInput> = {
   recall: {
     type: "recall",
@@ -96,9 +103,9 @@ const LIVE_EVENTS: Record<string, EventInput> = {
     candidates: [FULL_CANDIDATE],
   },
   remember: { type: "remember", note_id: "n1", note_type: "pattern", body_len: 12, anchors_n: 1, tags_n: 0, source: "mcp", dedup: DEDUP_ADD },
-  staging_resolve_accept: { type: "staging_resolve", note_id: "n1", decision: "accept", staged_to_resolved_ms: 0, commit: "abc1234", superseded_id: null, suggested: null },
-  staging_resolve_reject: { type: "staging_resolve", note_id: "n1", decision: "reject", staged_to_resolved_ms: null, commit: null, superseded_id: null, suggested: null },
-  staging_resolve_supersede: { type: "staging_resolve", note_id: "n1", decision: "supersede", staged_to_resolved_ms: 5, commit: "abc1234", superseded_id: "n0", suggested: true },
+  staging_resolve_accept: { type: "staging_resolve", note_id: "n1", decision: "accept", staged_to_resolved_ms: 0, commit: "abc1234", superseded_id: null, suggested: null, accepted_body_len: 12, accepted_anchors_n: 1, menu: MENU_CURATION },
+  staging_resolve_reject: { type: "staging_resolve", note_id: "n1", decision: "reject", staged_to_resolved_ms: null, commit: null, superseded_id: null, suggested: null, accepted_body_len: null, accepted_anchors_n: null },
+  staging_resolve_supersede: { type: "staging_resolve", note_id: "n1", decision: "supersede", staged_to_resolved_ms: 5, commit: "abc1234", superseded_id: "n0", suggested: true, accepted_body_len: 20, accepted_anchors_n: 2, menu: null },
   staging_listed: { type: "staging_listed", count: 1, liveness: [{ id: "n1", anchors: [{ path: "src/a.ts", liveness: "tracked" }] }] },
   rebuild: { type: "rebuild", duration_ms: 0, notes_n: 2, embedded_n: 2, dead_anchors_n: 1, staleness: [0, -1], ollama: { available: true, retries: 0 } },
   session_start: { type: "session_start" },
@@ -168,8 +175,8 @@ const AGENT_VOTE_MIRROR = {
 } as const satisfies Record<Vote, true>;
 
 describe("event-schema constants", () => {
-  test("SCHEMA_VERSION is 13", () => {
-    expect(SCHEMA_VERSION).toBe(13);
+  test("SCHEMA_VERSION is 14", () => {
+    expect(SCHEMA_VERSION).toBe(14);
   });
 
   test("EXECUTABLE_GATE_REASONS mirrors gate-runner's ExecutableGateReason in both directions", () => {
@@ -204,7 +211,22 @@ describe("eventSchema rejects malformed producer events", () => {
   });
 
   test("a staging_resolve with an unknown decision fails", () => {
-    const event = stamp({ type: "staging_resolve", note_id: "n1", decision: "frobnicate", staged_to_resolved_ms: 0, commit: null, superseded_id: null, suggested: null });
+    const event = stamp({ ...LIVE_EVENTS["staging_resolve_reject"]!, decision: "frobnicate" });
+    expect(eventSchema.safeParse(event).success).toBe(false);
+  });
+
+  test("a staging_resolve with an unknown menu decision_class fails", () => {
+    const event = stamp({ ...LIVE_EVENTS["staging_resolve_accept"]!, menu: { ...MENU_CURATION, decision_class: "commit" } });
+    expect(eventSchema.safeParse(event).success).toBe(false);
+  });
+
+  test("a staging_resolve missing accepted_body_len fails the producer schema", () => {
+    const { accepted_body_len: _omitted, ...withoutLength } = LIVE_EVENTS["staging_resolve_accept"]!;
+    expect(eventSchema.safeParse(stamp(withoutLength)).success).toBe(false);
+  });
+
+  test("a remember with a fractional menu position fails", () => {
+    const event = stamp({ ...LIVE_EVENTS["remember"]!, menu: { ...MENU_CURATION, chosen_position: 1.5 } });
     expect(eventSchema.safeParse(event).success).toBe(false);
   });
 
@@ -221,6 +243,28 @@ describe("eventSchema rejects malformed producer events", () => {
   test("a workflow_run_started without a branch fails", () => {
     const { branch: _omitted, ...withoutBranch } = LIVE_EVENTS["workflow_run_started"]!;
     expect(eventSchema.safeParse(stamp(withoutBranch)).success).toBe(false);
+  });
+});
+
+describe("gate-metrics menu payload (v14)", () => {
+  test("a remember carrying a plan-fan menu validates", () => {
+    const event = stamp({ ...LIVE_EVENTS["remember"]!, menu: { ...MENU_CURATION, decision_class: "plan-fan" } });
+    expect(eventSchema.safeParse(event).success).toBe(true);
+  });
+
+  test("menu positions and accepted measures round-trip through the writer", () => {
+    const stamped = stamp(LIVE_EVENTS["staging_resolve_accept"]!);
+    expect(stamped.menu).toEqual(MENU_CURATION);
+    expect(stamped.accepted_body_len).toBe(12);
+    expect(stamped.accepted_anchors_n).toBe(1);
+  });
+
+  test("a reject carries null accepted measures and validates without a menu key", () => {
+    const stamped = stamp(LIVE_EVENTS["staging_resolve_reject"]!);
+    expect(stamped.accepted_body_len).toBeNull();
+    expect(stamped.accepted_anchors_n).toBeNull();
+    expect("menu" in stamped).toBe(false);
+    expect(eventSchema.safeParse(stamped).success).toBe(true);
   });
 });
 

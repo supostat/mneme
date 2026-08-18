@@ -7,7 +7,7 @@ import { runGit } from "./git";
 import type { EmbeddingsClient } from "./embeddings";
 import type { EventWriter } from "./events";
 import { serializeNote, parseNote, isNoteId } from "./note";
-import type { NoteFrontmatter, NoteType } from "./note";
+import type { Note, NoteFrontmatter, NoteType } from "./note";
 import { assertCleanNoteBody } from "./sanitize-body";
 import { classifyCandidate } from "./dedup";
 import { rebuild } from "./index-db";
@@ -17,6 +17,7 @@ import type { LivenessContext, StagedAnchor } from "./anchor-liveness";
 import { sidecarFor, writeSidecar, readSidecar, removeSidecar, dedupSummary } from "./dedup-sidecar";
 import type { StagedClassification, DedupSummary } from "./dedup-sidecar";
 import { emitRemember, dedupPayload, dedupFromClassification, appendReanchorResolved, appendRetagResolved, appendRetireResolved, appendStagingResolve } from "./staging-resolve";
+import type { MenuContext } from "./staging-resolve";
 import { countReanchorRequests, countRetagRequests, countRetireRequests, readReanchorRequest, readRetagRequest, readRetireRequest, removeReanchorRequest, removeRetagRequest, removeRetireRequest } from "./curation";
 import type { ReanchorRequest, RetagRequest, RetireRequest } from "./curation";
 import { isTracked } from "./staleness";
@@ -39,6 +40,7 @@ export interface RememberInput {
   anchors: string[];
   tags?: string[];
   source: string;
+  menu?: MenuContext;
 }
 
 export interface StagedRemember {
@@ -204,7 +206,14 @@ function firstLine(body: string): string {
   return newlineIndex === -1 ? body : body.slice(0, newlineIndex);
 }
 
-export async function stagingResolve(deps: StagingDeps, id: string, decision: ResolveDecision): Promise<ResolveResult> {
+// menu is the digit-menu context of the deciding call; v1 stamps it on NOTE resolutions only —
+// request resolutions (retire/reanchor/retag) keep their own event types untouched.
+export async function stagingResolve(
+  deps: StagingDeps,
+  id: string,
+  decision: ResolveDecision,
+  menu?: MenuContext,
+): Promise<ResolveResult> {
   if (!isNoteId(id)) {
     throw new StagingError(`invalid staged note id: ${id}`);
   }
@@ -221,12 +230,12 @@ export async function stagingResolve(deps: StagingDeps, id: string, decision: Re
     return resolveRetagRequest(deps, retagRequest, decision);
   }
   if (decision === "reject") {
-    return rejectNote(deps, id);
+    return rejectNote(deps, id, menu ?? null);
   }
   if (decision === "accept") {
-    return acceptNote(deps, id);
+    return acceptNote(deps, id, menu ?? null);
   }
-  return supersedeNote(deps, id, decision.supersede);
+  return supersedeNote(deps, id, decision.supersede, menu ?? null);
 }
 
 // The retire decision resolves like any staged item: accept rewrites the note's frontmatter
@@ -375,24 +384,45 @@ function markNoteRetired(corpus: Corpus, targetId: string): void {
   writeFileSync(path, serializeNote({ frontmatter: { ...note.frontmatter, retired: true }, body: note.body }));
 }
 
-async function acceptNote(deps: StagingDeps, id: string): Promise<ResolveResult> {
-  moveStagedToNotes(deps.corpus, id, (frontmatter) => frontmatter);
+async function acceptNote(deps: StagingDeps, id: string, menu: MenuContext | null): Promise<ResolveResult> {
+  const accepted = moveStagedToNotes(deps.corpus, id, (frontmatter) => frontmatter);
   const commit = await commitPaths(deps.corpus, [notesRelPath(id)], `Add note ${shortId(id)}`);
-  appendStagingResolve(deps, id, "accept", { commit, superseded_id: null, suggested: null });
+  appendStagingResolve(deps, id, "accept", {
+    commit,
+    superseded_id: null,
+    suggested: null,
+    ...acceptedMeasures(accepted),
+    menu,
+  });
   removeSidecar(deps.corpus, id);
   await rebuild(rebuildDeps(deps));
   return { outcome: "accepted", noteId: id, commit };
 }
 
-async function supersedeNote(deps: StagingDeps, id: string, target: string): Promise<ResolveResult> {
+async function supersedeNote(deps: StagingDeps, id: string, target: string, menu: MenuContext | null): Promise<ResolveResult> {
   validateSupersedeTarget(deps.corpus, id, target);
   const suggested = readSidecar(deps.corpus, id)?.nearest_id === target;
-  moveStagedToNotes(deps.corpus, id, (frontmatter) => ({ ...frontmatter, supersedes: target }));
+  const accepted = moveStagedToNotes(deps.corpus, id, (frontmatter) => ({ ...frontmatter, supersedes: target }));
   const commit = await commitPaths(deps.corpus, [notesRelPath(id)], `Supersede ${shortId(target)} with ${shortId(id)}`);
-  appendStagingResolve(deps, id, "supersede", { commit, superseded_id: target, suggested });
+  appendStagingResolve(deps, id, "supersede", {
+    commit,
+    superseded_id: target,
+    suggested,
+    ...acceptedMeasures(accepted),
+    menu,
+  });
   removeSidecar(deps.corpus, id);
   await rebuild(rebuildDeps(deps));
   return { outcome: "superseded", noteId: id, supersededId: target, commit, suggested };
+}
+
+// The accepted note's measures at accept time, stamped into the resolve event so the edit
+// heuristic compares two records of one log. Code-point length mirrors emitRemember's body_len.
+function acceptedMeasures(note: Note): { accepted_body_len: number; accepted_anchors_n: number } {
+  return {
+    accepted_body_len: [...note.body].length,
+    accepted_anchors_n: note.frontmatter.anchors.length,
+  };
 }
 
 function validateSupersedeTarget(corpus: Corpus, id: string, target: string): void {
@@ -407,7 +437,7 @@ function validateSupersedeTarget(corpus: Corpus, id: string, target: string): vo
   }
 }
 
-function rejectNote(deps: StagingDeps, id: string): ResolveResult {
+function rejectNote(deps: StagingDeps, id: string, menu: MenuContext | null): ResolveResult {
   const stagingPath = notePath(deps.corpus.stagingDir, id);
   if (!existsSync(stagingPath)) {
     if (existsSync(notePath(deps.corpus.archiveDir, id))) {
@@ -418,20 +448,31 @@ function rejectNote(deps: StagingDeps, id: string): ResolveResult {
   }
   renameSync(stagingPath, notePath(deps.corpus.archiveDir, id));
   removeSidecar(deps.corpus, id);
-  appendStagingResolve(deps, id, "reject", { commit: null, superseded_id: null, suggested: null });
+  appendStagingResolve(deps, id, "reject", {
+    commit: null,
+    superseded_id: null,
+    suggested: null,
+    accepted_body_len: null,
+    accepted_anchors_n: null,
+    menu,
+  });
   return { outcome: "rejected", noteId: id };
 }
 
-function moveStagedToNotes(corpus: Corpus, id: string, transform: (frontmatter: NoteFrontmatter) => NoteFrontmatter): void {
+// Returns the note as written to notes/ (the retry-convergent re-run reads it back from notes/),
+// so the caller can stamp the accepted measures without a second read of its own.
+function moveStagedToNotes(corpus: Corpus, id: string, transform: (frontmatter: NoteFrontmatter) => NoteFrontmatter): Note {
   const stagingPath = notePath(corpus.stagingDir, id);
   if (!existsSync(stagingPath)) {
-    if (existsSync(notePath(corpus.notesDir, id))) return;
+    const settledPath = notePath(corpus.notesDir, id);
+    if (existsSync(settledPath)) return parseNote(readFileSync(settledPath, "utf8"));
     throw new StagingError(`no staged note to resolve: ${id}`);
   }
   const note = parseNote(readFileSync(stagingPath, "utf8"));
-  const serialized = serializeNote({ frontmatter: transform(note.frontmatter), body: note.body });
-  writeFileSync(notePath(corpus.notesDir, id), serialized);
+  const resolved: Note = { frontmatter: transform(note.frontmatter), body: note.body };
+  writeFileSync(notePath(corpus.notesDir, id), serializeNote(resolved));
   rmSync(stagingPath, { force: true });
+  return resolved;
 }
 
 function rebuildDeps(deps: StagingDeps): RebuildDeps {

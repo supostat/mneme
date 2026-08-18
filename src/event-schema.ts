@@ -54,9 +54,19 @@ import { z } from "zod";
 //       decision, commit} applies it (an accepted retag rewrites frontmatter: the string leaves
 //       anchors[] and joins tags[], the body never changes); anchor_sweep gains untracked_n (the
 //       previously silent untracked-exists report class) and retag_staged_n.
-export const SCHEMA_VERSION = 13;
+//  14 — gate metrics: staging_resolve and remember gain an optional menu {decision_class, options_n,
+//       recommended_position, chosen_position} — the digit-menu context the deciding call rode on
+//       (absent = the call was not instrumented, read as "unknown", never an error); staging_resolve
+//       gains accepted_body_len / accepted_anchors_n — the accepted note's measures stamped by the
+//       producer at accept time (null on reject), so the reader compares two records of ONE log and
+//       stats stays a pure event-log aggregation.
+export const SCHEMA_VERSION = 14;
 
 export const DEDUP_OUTCOMES = ["add", "supersede_suggest", "noop"] as const;
+// The closed v1 registry of digit-menu decision classes: curation rides staging_resolve, plan-fan
+// rides the remember that stages a plan's choice note. commit/boundary classes are a future extend.
+export const DECISION_CLASSES = ["curation", "plan-fan"] as const;
+export type DecisionClass = (typeof DECISION_CLASSES)[number];
 export const RESOLVE_DECISIONS = ["accept", "reject", "supersede"] as const;
 export const RETIRE_DECISIONS = ["accept", "reject"] as const;
 export const REANCHOR_DECISIONS = ["accept", "reject"] as const;
@@ -138,6 +148,16 @@ const anchorLiveness = z.object({
 // One pre-budget-cutoff candidate in fused order. type/fts_rank/vector_rank/cosine/token_est are
 // nullable: a candidate reached by only one channel has no rank in the other, a body absent from the
 // index cannot be token-estimated, and a note may carry no type.
+// The digit-menu context a deciding call rode on. Null when the call carried none and OPTIONAL in
+// the shape: pre-v14 events have no menu key at all (the votes-v6 extend pattern). Write-only for
+// the agent: this payload is never rendered back into any agent-facing text.
+const menuPayload = z.object({
+  decision_class: z.enum(DECISION_CLASSES),
+  options_n: z.number().int(),
+  recommended_position: z.number().int(),
+  chosen_position: z.number().int(),
+});
+
 const recallCandidate = z.object({
   id: z.string(),
   type: z.string().nullable(),
@@ -178,10 +198,13 @@ const rememberEvent = z.object({
   tags_n: z.number(),
   source: z.string(),
   dedup: dedupOutcome,
+  menu: menuPayload.nullable().optional(),
 });
 
 // Decision-polymorphic: commit/superseded_id/suggested are nullable so a reject (no commit, no
-// target) validates against the same shape a supersede fills in completely.
+// target) validates against the same shape a supersede fills in completely. accepted_body_len /
+// accepted_anchors_n are the accepted note's measures at accept time (null on reject) — the
+// producer stamps them so the edit heuristic compares two records of one log, never a note file.
 const stagingResolveEvent = z.object({
   type: z.literal("staging_resolve"),
   ...envelope,
@@ -191,6 +214,9 @@ const stagingResolveEvent = z.object({
   commit: z.string().nullable(),
   superseded_id: z.string().nullable(),
   suggested: z.boolean().nullable(),
+  accepted_body_len: z.number().int().nullable(),
+  accepted_anchors_n: z.number().int().nullable(),
+  menu: menuPayload.nullable().optional(),
 });
 
 const stagingListedEvent = z.object({

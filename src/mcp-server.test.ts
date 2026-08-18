@@ -412,6 +412,119 @@ describe("mcp-server error boundary", () => {
   });
 });
 
+describe("mcp-server gate-metrics menu intake", () => {
+  const MENU = { decision_class: "curation", options_n: 4, recommended_position: 2, chosen_position: 1 };
+
+  // The SDK rejects a failed input validation before the handler runs; depending on the transport
+  // it surfaces as a thrown McpError or an isError result — both count as a refused call.
+  async function callExpectingRefusal(client: Client, name: string, args: Record<string, unknown>): Promise<void> {
+    let refused = false;
+    try {
+      const result = await client.callTool({ name, arguments: args });
+      refused = result.isError === true;
+    } catch {
+      refused = true;
+    }
+    expect(refused).toBe(true);
+  }
+
+  test("a valid menu on staging_resolve lands in the on-disk event and passes the producer schema", async () => {
+    const projectRoot = await buildProjectRepo();
+    const corpusHome = corpusHomeDir();
+    const client = await connect({
+      projectRoot,
+      corpusHome,
+      embeddings: offlineClient(),
+      idFactory: sequentialIds(),
+      clock: fixedClock,
+    });
+    const id = ulid(1);
+    await callText(client, "remember", { type: "pattern", body: "menu smoke body", anchors: ["src/a.ts"] });
+
+    await callText(client, "staging_resolve", { id, decision: "accept", menu: MENU });
+
+    const corpus = await resolveCorpus(projectRoot, { corpusHome });
+    const resolved = readEvents(corpus.eventsDir).filter((event) => event.type === "staging_resolve");
+    expect(resolved.length).toBe(1);
+    expect(resolved[0]!.menu).toEqual(MENU);
+    expect(resolved[0]!.accepted_body_len).toBe([..."menu smoke body"].length);
+    expect(eventSchema.safeParse(resolved[0]!).success).toBe(true);
+  });
+
+  test("a plan-fan menu on remember lands in the remember event", async () => {
+    const projectRoot = await buildProjectRepo();
+    const corpusHome = corpusHomeDir();
+    const client = await connect({
+      projectRoot,
+      corpusHome,
+      embeddings: offlineClient(),
+      idFactory: sequentialIds(),
+      clock: fixedClock,
+    });
+    const fanMenu = { decision_class: "plan-fan", options_n: 3, recommended_position: 2, chosen_position: 2 };
+
+    const response = await callText(client, "remember", {
+      type: "decision",
+      body: "chose the piggyback option",
+      anchors: ["src/a.ts"],
+      menu: fanMenu,
+    });
+
+    expect(response.toLowerCase()).not.toContain("menu");
+    expect(response.toLowerCase()).not.toContain("agreement");
+    const corpus = await resolveCorpus(projectRoot, { corpusHome });
+    const remembered = readEvents(corpus.eventsDir).filter((event) => event.type === "remember");
+    expect(remembered[0]!.menu).toEqual(fanMenu);
+  });
+
+  test("chosen_position beyond options_n refuses the call and writes nothing to the log", async () => {
+    const projectRoot = await buildProjectRepo();
+    const corpusHome = corpusHomeDir();
+    const client = await connect({
+      projectRoot,
+      corpusHome,
+      embeddings: offlineClient(),
+      idFactory: sequentialIds(),
+      clock: fixedClock,
+    });
+    const id = ulid(1);
+    await callText(client, "remember", { type: "pattern", body: "stays staged", anchors: ["src/a.ts"] });
+
+    await callExpectingRefusal(client, "staging_resolve", {
+      id,
+      decision: "accept",
+      menu: { ...MENU, chosen_position: 5 },
+    });
+
+    const corpus = await resolveCorpus(projectRoot, { corpusHome });
+    const events = readEvents(corpus.eventsDir);
+    expect(events.filter((event) => event.type === "staging_resolve").length).toBe(0);
+    expect(events.filter((event) => event.type === "tool_error").length).toBe(0);
+  });
+
+  test("an unknown decision_class refuses a remember and stages nothing", async () => {
+    const projectRoot = await buildProjectRepo();
+    const corpusHome = corpusHomeDir();
+    const client = await connect({
+      projectRoot,
+      corpusHome,
+      embeddings: offlineClient(),
+      idFactory: sequentialIds(),
+      clock: fixedClock,
+    });
+
+    await callExpectingRefusal(client, "remember", {
+      type: "pattern",
+      body: "never staged",
+      anchors: ["src/a.ts"],
+      menu: { ...MENU, decision_class: "commit" },
+    });
+
+    const corpus = await resolveCorpus(projectRoot, { corpusHome });
+    expect(readEvents(corpus.eventsDir).filter((event) => event.type === "remember").length).toBe(0);
+  });
+});
+
 describe("mcp-server event schema conformance", () => {
   test("every event emitted across a full cycle validates against the current producer schema", async () => {
     const projectRoot = await buildProjectRepo();

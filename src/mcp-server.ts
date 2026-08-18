@@ -10,7 +10,7 @@ import packageJson from "../package.json";
 import { resolveCorpus } from "./corpus";
 import type { Corpus } from "./corpus";
 import { EventWriter, readEvents } from "./events";
-import { RESOLVE_DECISIONS } from "./event-schema";
+import { DECISION_CLASSES, RESOLVE_DECISIONS } from "./event-schema";
 import { sanitizeToolErrorMessage } from "./sanitize";
 import { loadConfig } from "./config";
 import type { MnemeConfig } from "./config";
@@ -86,11 +86,32 @@ const NOTE_RETIRE_DESCRIPTION =
   "only stages a retire request — the human decides via staging_resolve (accept or reject). An " +
   "accepted retire keeps the file in notes/ as history but excludes the note from recall.";
 
+// The digit-menu context a deciding call rode on — telemetry only, fail-closed at the boundary:
+// positions beyond options_n or an unknown decision_class refuse the WHOLE call before any event
+// is written. Never rendered back into any tool response (measurement neutrality).
+const MENU_INPUT = z
+  .object({
+    decision_class: z.enum(DECISION_CLASSES),
+    options_n: z.number().int().min(2),
+    recommended_position: z.number().int().min(1),
+    chosen_position: z.number().int().min(1),
+  })
+  .superRefine((menu, issues) => {
+    if (menu.recommended_position > menu.options_n) {
+      issues.addIssue({ code: "custom", message: "recommended_position exceeds options_n" });
+    }
+    if (menu.chosen_position > menu.options_n) {
+      issues.addIssue({ code: "custom", message: "chosen_position exceeds options_n" });
+    }
+  });
+type MenuInput = z.infer<typeof MENU_INPUT>;
+
 const REMEMBER_INPUT = {
   type: z.enum(NOTE_TYPES),
   body: z.string(),
   anchors: z.array(z.string()),
   tags: z.array(z.string()).optional(),
+  menu: MENU_INPUT.optional(),
 };
 const NOTES_LIST_INPUT = {
   id: z.string().optional(),
@@ -118,6 +139,7 @@ const STAGING_RESOLVE_INPUT = {
   id: z.string(),
   decision: z.enum(RESOLVE_DECISIONS),
   supersede_target: z.string().optional(),
+  menu: MENU_INPUT.optional(),
 };
 
 export interface CreateServerOptions {
@@ -267,7 +289,7 @@ async function dispatch(
 
 async function rememberTool(
   stagingDeps: StagingDeps,
-  args: { type: NoteType; body: string; anchors: string[]; tags?: string[] },
+  args: { type: NoteType; body: string; anchors: string[]; tags?: string[]; menu?: MenuInput },
 ): Promise<CallToolResult> {
   const result = await remember(stagingDeps, {
     type: args.type,
@@ -275,6 +297,7 @@ async function rememberTool(
     anchors: args.anchors,
     tags: args.tags,
     source: REMEMBER_SOURCE,
+    menu: args.menu,
   });
   return textResult(formatRemember(result));
 }
@@ -363,9 +386,9 @@ function noteRetireTool(stagingDeps: StagingDeps, args: { id: string; reason: st
 
 async function stagingResolveTool(
   stagingDeps: StagingDeps,
-  args: { id: string; decision: "accept" | "reject" | "supersede"; supersede_target?: string },
+  args: { id: string; decision: "accept" | "reject" | "supersede"; supersede_target?: string; menu?: MenuInput },
 ): Promise<CallToolResult> {
-  const result = await stagingResolve(stagingDeps, args.id, resolveDecision(args));
+  const result = await stagingResolve(stagingDeps, args.id, resolveDecision(args), args.menu);
   return textResult(formatResolve(result));
 }
 

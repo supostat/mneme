@@ -365,6 +365,67 @@ describe("stagingResolve reject", () => {
   });
 });
 
+describe("gate-metrics menu and accepted measures (v14)", () => {
+  const MENU = { decision_class: "curation" as const, options_n: 4, recommended_position: 2, chosen_position: 1 };
+
+  test("accept stamps the menu and the accepted note's measures into the resolve event", async () => {
+    const projectRoot = await buildProjectRepo();
+    const deps = await makeDeps(projectRoot, offlineClient(), sequentialIds());
+    const body = "gate metrics accept 🎯 path";
+    await remember(deps, { type: "bugfix", body, anchors: ["src/a.ts", "src/b.ts"], source: "mcp" });
+    const id = ulid(0);
+
+    await stagingResolve(deps, id, "accept", MENU);
+
+    const resolved = eventsOfType(deps.corpus, "staging_resolve");
+    expect(resolved.length).toBe(1);
+    expect(resolved[0]!.menu).toEqual(MENU);
+    expect(resolved[0]!.accepted_body_len).toBe([...body].length);
+    expect(resolved[0]!.accepted_anchors_n).toBe(2);
+  });
+
+  test("accept without a menu stamps menu null and staging behavior stays unchanged", async () => {
+    const projectRoot = await buildProjectRepo();
+    const deps = await makeDeps(projectRoot, offlineClient(), sequentialIds());
+    await remember(deps, { type: "bugfix", body: "no menu path", anchors: ["src/a.ts"], source: "mcp" });
+    const id = ulid(0);
+
+    const result = await stagingResolve(deps, id, "accept");
+
+    expect(result.outcome).toBe("accepted");
+    const resolved = eventsOfType(deps.corpus, "staging_resolve");
+    expect(resolved[0]!.menu).toBeNull();
+    expect(resolved[0]!.accepted_body_len).toBe([..."no menu path"].length);
+  });
+
+  test("reject carries null accepted measures and the menu it rode on", async () => {
+    const projectRoot = await buildProjectRepo();
+    const deps = await makeDeps(projectRoot, offlineClient(), sequentialIds());
+    await remember(deps, { type: "antipattern", body: "rejected with menu", anchors: ["src/a.ts"], source: "mcp" });
+    const id = ulid(0);
+
+    await stagingResolve(deps, id, "reject", MENU);
+
+    const resolved = eventsOfType(deps.corpus, "staging_resolve");
+    expect(resolved[0]!.accepted_body_len).toBeNull();
+    expect(resolved[0]!.accepted_anchors_n).toBeNull();
+    expect(resolved[0]!.menu).toEqual(MENU);
+  });
+
+  test("remember stamps a plan-fan menu on its event and null without one", async () => {
+    const projectRoot = await buildProjectRepo();
+    const deps = await makeDeps(projectRoot, offlineClient(), sequentialIds());
+    const fanMenu = { decision_class: "plan-fan" as const, options_n: 3, recommended_position: 2, chosen_position: 2 };
+
+    await remember(deps, { type: "decision", body: "chose option B", anchors: ["src/a.ts"], source: "mcp", menu: fanMenu });
+    await remember(deps, { type: "decision", body: "uninstrumented choice", anchors: ["src/a.ts"], source: "mcp" });
+
+    const remembered = eventsOfType(deps.corpus, "remember");
+    expect(remembered[0]!.menu).toEqual(fanMenu);
+    expect(remembered[1]!.menu).toBeNull();
+  });
+});
+
 describe("stagingResolve supersede", () => {
   const targetBody = "original decision rationale";
   const newBody = "revised decision rationale";
