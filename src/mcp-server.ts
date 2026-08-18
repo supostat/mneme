@@ -24,6 +24,7 @@ import { remember, stagingList, stagingResolve } from "./staging";
 import { listReanchorRequests, listRetagRequests, listRetireRequests, noteReanchor, noteRetire, notesList, showNote } from "./curation";
 import { computeStats, formatStats } from "./stats";
 import { computeFriction, formatFriction } from "./stats-friction";
+import { computeGateAudit, formatGateAudit } from "./stats-gate";
 import { computeFootprint, formatFootprint } from "./stats-footprint";
 import type { StagingDeps, ResolveDecision } from "./staging";
 import { anchorSweep } from "./anchor-repair";
@@ -74,8 +75,10 @@ const STAGING_RESOLVE_DESCRIPTION =
 const STATS_DESCRIPTION =
   "Report proof metrics computed from the event log: cross-session reuse, never-retrieved fraction, " +
   "recall degradation, live corpus size by type, and NOOP confirmations; review friction (staged-to-" +
-  "resolved latency median/p90 and resolution batch sizes); tool errors by tool; and the log footprint " +
-  "(total bytes and events per type). Present the numbers to the human; the output contains no note bodies.";
+  "resolved latency median/p90 and resolution batch sizes); tool errors by tool; human-gate metrics " +
+  "(resolution outcomes, recommendation agreement, menu coverage, active review latency); and the log " +
+  "footprint (total bytes and events per type). Present the numbers to the human; the output contains " +
+  "no note bodies.";
 
 const NOTES_LIST_DESCRIPTION =
   "Curate ACCEPTED notes. Without id: one line per live note (id, type, first line, anchor count, " +
@@ -266,6 +269,7 @@ function statsTool(context: ServerContext): CallToolResult {
     [
       formatStats(computeStats(events)),
       formatFriction(computeFriction(events)),
+      formatGateAudit(computeGateAudit(events)),
       formatFootprint(computeFootprint(context.corpus.eventsDir, events)),
     ].join("\n\n"),
   );

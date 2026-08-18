@@ -346,10 +346,35 @@ describe("mcp-server stats", () => {
     expect(stats).toContain("Accepted notes (historical): 0");
     expect(stats).toContain("Cross-session reuse: n/a (0 accepted notes)");
     expect(stats).toContain("Recall degradation: n/a (0 recall events)");
-    // The stats tool concatenates formatStats + formatFriction + formatFootprint; pin both extra
-    // sections so dropping either concatenation line fails here instead of staying green.
+    // The stats tool concatenates formatStats + formatFriction + formatGateAudit + formatFootprint;
+    // pin each extra section so dropping any concatenation line fails here instead of staying green.
     expect(stats).toContain("(d) Staged -> resolved latency:");
-    expect(stats).toContain("(g) Total size:");
+    expect(stats).toContain("Human gate (from the event log)");
+    expect(stats).toContain("(h) Recommendation agreement: n/a (0 instrumented decisions)");
+    expect(stats).toContain("(k) Total size:");
+  });
+
+  test("stats renders the gate section from the real reader after an instrumented accept", async () => {
+    const client = await connect({
+      projectRoot: await buildProjectRepo(),
+      corpusHome: corpusHomeDir(),
+      embeddings: offlineClient(),
+      idFactory: sequentialIds(),
+      clock: fixedClock,
+    });
+    const id = ulid(1);
+    await callText(client, "remember", { type: "pattern", body: "gate section body", anchors: ["src/a.ts"] });
+    await callText(client, "staging_resolve", {
+      id,
+      decision: "accept",
+      menu: { decision_class: "curation", options_n: 4, recommended_position: 2, chosen_position: 2 },
+    });
+
+    const stats = await callText(client, "stats", {});
+
+    expect(stats).toContain("(g) Resolution outcomes: accepted as-is 1");
+    expect(stats).toContain("(h) Recommendation agreement: 1/1 overall [curation rec@2/4: 1/1]");
+    expect(stats).toContain("(i) Menu coverage: 1/1 resolves carry a menu");
   });
 
   test("a note staged and accepted in one session and recalled later in another reads as cross-session reuse", async () => {

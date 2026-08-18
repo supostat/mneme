@@ -3,7 +3,9 @@
 The `stats` MCP tool reports proof metrics about the corpus **from the event log
 alone** — no note bodies, no LLM, no index: the three proof questions below, two corpus
 signals (live corpus size by type, and NOOP write-path confirmations), review-friction signals
-(staged->resolved latency, review batch sizes, and per-tool errors), and the log footprint. This
+(staged->resolved latency, review batch sizes, and per-tool errors), human-gate signals
+(resolution outcomes, recommendation agreement, menu coverage, active review latency), and the
+log footprint. This
 document states each, how the `stats` tool computes it, and a hand-reproducible `jq` recipe you
 can run yourself.
 
@@ -229,7 +231,157 @@ aggregated).
 cat "$EVENTS"/*.jsonl | jq -s '[.[] | select(.type=="tool_error")] | group_by(.tool) | map({tool: .[0].tool, count: length})'
 ```
 
-## (g) How large is the event log?
+## Метрики человеческого гейта — (g) outcomes, (h) agreement, (i) coverage, (j) active latency
+
+The gate's value is not in rejection counts — a corpus with 197 accepts and 0 rejects says nothing
+by itself. These four numbers measure what the gate actually does: how notes are resolved beyond
+the binary, whether the human's digit choice agrees with the agent's «← рекомендую» mark, how
+completely the calls are instrumented, and how long a review sitting actually takes. They are
+computed by `src/stats-gate.ts` from schema-v14 instrumentation: `staging_resolve` and `remember`
+events carry an optional `menu {decision_class, options_n, recommended_position, chosen_position}`,
+and `staging_resolve` carries `accepted_body_len` / `accepted_anchors_n` stamped at accept time.
+
+**Measurement neutrality.** The `menu` payload and every agreement aggregate are write-only for the
+agent: they are never rendered into directives, recall bundles, or any tool response the agent sees
+while making a recommendation. An agent that knew its agreement rate would optimize for
+coincidence (Goodhart) and destroy the thing being measured. The only outputs are the human-facing
+`stats` text and these hand-run recipes.
+
+**Locality.** The engine only counts, locally, on YOUR corpus — nothing is uploaded anywhere.
+Publishing any aggregate is a separate human decision. This is also what makes the metric checkable
+by anyone: run the recipes below against your own event log.
+
+### (g) Resolution outcomes
+
+**Definition.** Each note's **earliest** resolution (the D-D replay collapse from section (d))
+classifies as: `accept` with both measures present → **accepted as-is** (staging `body_len` /
+`anchors_n` equal the resolve's `accepted_body_len` / `accepted_anchors_n`) or **accepted after
+edit** (either differs); `accept` with a measure missing on either side (pre-v14 records) →
+**accepted pre-instrumentation** — honestly unmeasurable, never folded into as-is; `reject`;
+`supersede`. **Deferred** = a staged note never resolved whose staging session is over (its
+`session_end` appeared, or any later `session_start`). **Silence** = a shown non-empty queue
+(`staging_listed{count>0}`) answered by no resolution in the same session before the session
+closes; a still-open final session counts as neither deferred nor silence — «ещё думает» is not an
+outcome.
+
+> **Оговорка о ложноотрицательных.** Эвристика правки сравнивает только длину тела в code points и
+> число якорей, поэтому она **ложноотрицательна**: правка, сохраняющая обе величины (например,
+> замена одного якоря другим), невидима. «0 правок» НЕ означает, что человек принимает вслепую —
+> это означает лишь, что правок, меняющих длины, не наблюдалось. Читать «accepted after edit» как
+> нижнюю границу, никогда как точный счёт.
+
+The accept split:
+
+```sh
+cat "$EVENTS"/*.jsonl | jq -s '
+  (reduce (.[] | select(.type=="remember" and .dedup.outcome!="noop" and (.body_len|type)=="number")) as $e ({};
+     .[$e.note_id] as $prev | if $prev == null or ($e.ts < $prev.ts) then .[$e.note_id] = {ts: $e.ts, bl: $e.body_len, an: $e.anchors_n} else . end)) as $staged
+  | [.[] | select(.type=="staging_resolve" or .type=="note_accepted")] | group_by(.note_id) | map(min_by(.ts))
+  | map(select(.type=="note_accepted" or .decision=="accept"))
+  | map($staged[.note_id] as $s
+      | if $s == null or (.accepted_body_len|type) != "number" then "pre-instrumentation"
+        elif $s.bl != .accepted_body_len or $s.an != .accepted_anchors_n then "edited"
+        else "as-is" end)
+  | group_by(.) | map({outcome: .[0], count: length})'
+```
+
+Rejected and superseded are plain counts over the same earliest-resolve collapse
+(`.decision=="reject"` / `"supersede"`, unioned with the v1 names). Deferred:
+
+```sh
+cat "$EVENTS"/*.jsonl | jq -s '. as $all
+  | ([.[] | select(.type=="staging_resolve" or .type=="note_accepted" or .type=="note_rejected" or .type=="note_superseded") | .note_id] | unique) as $resolved
+  | [.[] | select((.type=="note_staged" or (.type=="remember" and .dedup.outcome!="noop")) and ((.note_id as $id | $resolved | index($id)) | not))]
+  | map(select(. as $e | any($all[]; .ts != null and $e.ts != null and .ts > $e.ts
+      and (.type=="session_start" or (.type=="session_end" and .session_id == $e.session_id)))))
+  | length'
+```
+
+Silence episodes (one per session whose last shown queue got no answer before the session closed):
+
+```sh
+cat "$EVENTS"/*.jsonl | jq -s '. as $all
+  | [.[] | select(.session_id != null and .ts != null)] | group_by(.session_id)
+  | map(select(
+      ([.[] | select(.type=="staging_listed" and .count > 0)] | length) > 0
+      and (([.[] | select(.type=="staging_listed" and .count > 0)] | max_by(.ts).ts) as $shown
+           | [.[] | select((.type=="staging_resolve" or .type=="note_accepted" or .type=="note_rejected" or .type=="note_superseded") and .ts > $shown)] | length == 0)
+      and ((.[0].session_id) as $sid | ([.[].ts] | max) as $last
+           | any($all[]; .ts != null and .ts > $last and (.type=="session_start" or (.type=="session_end" and .session_id == $sid))))))
+  | length'
+```
+
+### (h) Recommendation agreement
+
+**Definition.** Among `staging_resolve` events carrying a `menu`, a batch «прими все» is N calls
+with the IDENTICAL payload inside one sitting — consecutive same-payload resolves within
+`RESOLVE_BATCH_GAP_MS` (300000 ms) of one session collapse into **one decision** (counting each
+call would inflate agreement by the batch size). Each decision agrees when
+`chosen_position == recommended_position`, sliced by decision class × recommended position ×
+options_n — the slices that separate real agreement from «рекомендация всегда №1, выбор всегда 1»
+inertia. The tool additionally breaks a batch when an uninstrumented resolve lands between two
+identical payloads; the recipe below skips that refinement (hand-verification, second-accurate).
+
+```sh
+cat "$EVENTS"/*.jsonl | jq -s '
+  def ms: sub("\\.[0-9]+Z$";"Z") | fromdateiso8601 * 1000;
+  [.[] | select(.type=="staging_resolve" and (.menu|type)=="object" and .session_id != null and .ts != null)]
+  | group_by(.session_id)
+  | map(sort_by(.ts) | reduce .[] as $r ([];
+      ($r.menu | "\(.decision_class)|\(.options_n)|\(.recommended_position)|\(.chosen_position)") as $key
+      | ($r.ts | ms) as $t
+      | if length > 0 and .[-1].key == $key and ($t - .[-1].t) <= 300000
+        then .[:-1] + [{key: $key, t: $t, menu: .[-1].menu}]
+        else . + [{key: $key, t: $t, menu: $r.menu}] end))
+  | flatten
+  | group_by(.menu.decision_class, .menu.recommended_position, .menu.options_n)
+  | map({class: .[0].menu.decision_class, rec: .[0].menu.recommended_position, options: .[0].menu.options_n,
+         decisions: length,
+         agreed: ([.[] | select(.menu.chosen_position == .menu.recommended_position)] | length)})'
+```
+
+### (i) Menu coverage
+
+**Definition.** The piggyback design has exactly one hole — «вызов есть, поле пустое» — and this
+number watches it: the share of **v14+** resolutions that carry a `menu`. Resolutions stamped
+before v14 are reported as a separate `pre-instrumentation` line and excluded from the
+denominator — otherwise history would misread as 0% coverage. If skills ever stop filling the
+field after a refactor, the first `stats` run shows it — not a month of blindness.
+
+```sh
+cat "$EVENTS"/*.jsonl | jq -s '
+  [.[] | select(.type=="staging_resolve" or .type=="note_accepted" or .type=="note_rejected" or .type=="note_superseded")]
+  | {pre_instrumentation: ([.[] | select((.schema_version // 0) < 14)] | length),
+     era_resolves: ([.[] | select((.schema_version // 0) >= 14)] | length),
+     with_menu: ([.[] | select((.schema_version // 0) >= 14 and (.menu|type)=="object")] | length)}'
+```
+
+### (j) Active review latency
+
+**Definition.** Section (d) measures calendar staged→resolved time — in one measurement 74 minutes,
+of which nearly all was sleep. This number measures the ACTIVE part: from `staging_listed{count>0}`
+(the queue was shown) to the first resolution of the **same session** — the calendar sleep cuts
+itself off at the session boundary. One sitting = one sample; median and p90 by nearest-rank. The
+existing (d) metric is untouched; the two run side by side.
+
+```sh
+cat "$EVENTS"/*.jsonl | jq -s '
+  def ms: sub("\\.[0-9]+Z$";"Z") | fromdateiso8601 * 1000;
+  [.[] | select(.session_id != null and .ts != null)] | group_by(.session_id)
+  | map(sort_by(.ts)
+      | reduce .[] as $e ({pending: null, samples: []};
+          if $e.type=="staging_listed" and ($e.count // 0) > 0 and .pending == null then .pending = ($e.ts|ms)
+          elif ($e.type=="staging_resolve" or $e.type=="note_accepted" or $e.type=="note_rejected" or $e.type=="note_superseded") and .pending != null
+          then {pending: null, samples: (.samples + [($e.ts|ms) - .pending])}
+          else . end)
+      | .samples)
+  | flatten | sort as $d
+  | {count: ($d|length),
+     median: (if ($d|length)==0 then null else $d[((($d|length)*0.5|ceil)-1)] end),
+     p90:    (if ($d|length)==0 then null else $d[((($d|length)*0.9|ceil)-1)] end)}'
+```
+
+## (k) How large is the event log?
 
 **Definition.** Total bytes across the monthly `*.jsonl` files, plus the count of events per `type`.
 
@@ -270,6 +422,14 @@ cat "$EVENTS"/*.jsonl | jq -s 'group_by(.type) | map({type: .[0].type, count: le
 > types); the log-footprint recipe counts them generically by `.type`. Every event now stamps
 > `schema_version` 4; the reader normalizes older events and `replay.ts` still refuses only a
 > `schema_version` **above** its own. All memory events are unchanged from v3.
+
+> **Schema note (v14).** The human-gate instrumentation. `staging_resolve` and `remember` gain an
+> optional `menu {decision_class, options_n, recommended_position, chosen_position}` — the
+> digit-menu context the deciding call rode on (`decision_class` is a closed enum: `curation`,
+> `plan-fan`); `staging_resolve` additionally carries `accepted_body_len` / `accepted_anchors_n` —
+> the accepted note's measures stamped by the producer at accept time (null on reject). Absence of
+> `menu` on an older event reads as "not instrumented", never an error; the (i) coverage recipe
+> splits its denominator on exactly this version boundary.
 
 ## Offline replay
 

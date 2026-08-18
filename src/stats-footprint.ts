@@ -34,7 +34,7 @@ export function formatFootprint(summary: FootprintSummary): string {
   return [
     "Log footprint (from the event log)",
     "",
-    `(g) Total size: ${summary.totalBytes} bytes across ${summary.fileBytes.length} files`,
+    `(k) Total size: ${summary.totalBytes} bytes across ${summary.fileBytes.length} files`,
     "Bytes per file:",
     ...renderFileBytes(summary.fileBytes),
     "Events per type:",

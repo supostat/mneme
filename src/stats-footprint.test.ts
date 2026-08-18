@@ -69,7 +69,7 @@ describe("formatFootprint", () => {
     const rendered = formatFootprint(computeFootprint(eventsDir, readEvents(eventsDir)));
 
     expect(rendered).toContain(
-      `(g) Total size: ${Buffer.byteLength(JANUARY) + Buffer.byteLength(FEBRUARY)} bytes across 2 files`,
+      `(k) Total size: ${Buffer.byteLength(JANUARY) + Buffer.byteLength(FEBRUARY)} bytes across 2 files`,
     );
     expect(rendered).toContain(`  2026-01.jsonl: ${Buffer.byteLength(JANUARY)} bytes`);
     expect(rendered).toContain(`  2026-02.jsonl: ${Buffer.byteLength(FEBRUARY)} bytes`);
