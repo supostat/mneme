@@ -6,7 +6,7 @@ import { EMBEDDING_DIMENSION } from "../../src/embeddings";
 import type { EmbeddingsClient } from "../../src/embeddings";
 import { readActiveNotes } from "../../src/index-db";
 import { MAX_BODY_CODE_POINTS } from "../../src/note";
-import { IngestError, chunkSessionText, ingestCase } from "./ingest";
+import { IngestError, chunkSessionText, defangForbiddenMarkup, ingestCase } from "./ingest";
 import type { IngestedCase } from "./ingest";
 import { parseLongmemevalS } from "./normalize";
 import type { BenchCase } from "./normalize";
@@ -117,6 +117,45 @@ describe("ingestCase", () => {
     await expect(
       ingestCase(updateCase(), "coexist", { projectRoot, corpusHome, embeddings: offlineClient }),
     ).rejects.toThrow(IngestError);
+  });
+});
+
+describe("defangForbiddenMarkup", () => {
+  test("engine-forbidden markup in dataset text is mechanically neutralized", () => {
+    const dirty = "Here is a page: <html><body>hi</body></html> and a fence BEGIN MNEME NOTE done";
+    const clean = defangForbiddenMarkup(dirty);
+    expect(clean).not.toContain("<html");
+    expect(clean).not.toContain("<body");
+    expect(clean).not.toContain("</body");
+    expect(clean.toLowerCase()).not.toContain("begin mneme note");
+    expect(clean).toContain("‹html");
+    expect(clean).toContain("hi");
+  });
+
+  test("legitimate angle-bracket fragments pass through untouched", () => {
+    const code = "const x: Array<string> = []; if (a < b) render(<div>ok</div>);";
+    expect(defangForbiddenMarkup(code)).toBe(code);
+  });
+
+  test("a session carrying an html fragment ingests through the engine gate", async () => {
+    const corpusHome = mkdtempSync(join(tmpdir(), "mneme-bench-defang-"));
+    const htmlCase: BenchCase = {
+      id: "q-html",
+      sessions: [
+        {
+          id: "s-html",
+          date: null,
+          text: "I pasted my landing page draft: <html><head></head><body>Buy now</body></html>",
+          entities: ["Draft"],
+        },
+      ],
+      questions: [],
+    };
+    const ingested = await ingestCase(htmlCase, "coexist", { projectRoot, corpusHome, embeddings: hashClient() });
+    const bodies = activeBodies(ingested);
+    expect(bodies.length).toBe(1);
+    expect(bodies[0]!).toContain("Buy now");
+    expect(bodies[0]!).toContain("‹html");
   });
 });
 

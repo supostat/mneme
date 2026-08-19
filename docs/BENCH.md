@@ -45,6 +45,12 @@ landscape's honesty spread rather than compete in it.
   labels are structural markup whose tokens would lexically match nearly every
   question ("the user ...") through the FTS channel. LoCoMo keeps speaker names:
   there they are content-bearing entities the questions reference.
+- Defang: the engine's write path fail-closed rejects foreign tool/protocol markup in
+  a note body, and real sessions do carry such fragments (`<html ...` inside pasted
+  pages). The scripted curator neutralizes exactly the engine-forbidden patterns
+  mechanically — the opening bracket becomes `‹` (U+2039), fence literals gain the
+  same mark, framing-breaking code points become newlines — so lexical tokens survive
+  for FTS; anything the list misses still fails closed on the engine's own gate.
 - The write path is the engine's own: programmatic `remember` + `stagingResolve`
   (accept or supersede) via `src/staging.ts`, followed by the engine's own index
   rebuild with the production embedder. Dedup is disabled via config thresholds

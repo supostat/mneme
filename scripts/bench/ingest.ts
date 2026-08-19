@@ -9,8 +9,10 @@ import { resolveCorpus } from "../../src/corpus";
 import type { EmbeddingsClient } from "../../src/embeddings";
 import { EventWriter } from "../../src/events";
 import { MAX_BODY_CODE_POINTS } from "../../src/note";
+import { ForbiddenMarkupError } from "../../src/sanitize-body";
 import { remember, stagingResolve } from "../../src/staging";
 import type { StagingDeps } from "../../src/staging";
+import type { RememberResult } from "../../src/staging";
 import type { BenchCase, BenchQuestion, BenchSession } from "./normalize";
 
 // Builds one isolated benchmark corpus per case through the engine's own write path
@@ -166,13 +168,7 @@ async function ingestSession(
   const noteIds: string[] = [];
   const supersededNoteIds: string[] = [];
   for (const [chunkIndex, chunk] of chunks.entries()) {
-    const result = await remember(stagingDeps, {
-      type: "pattern",
-      body: chunk,
-      anchors: [],
-      tags,
-      source: "bench-ingest",
-    });
+    const result = await rememberChunk(stagingDeps, session, chunk, tags);
     if (result.outcome === "noop") {
       noteIds.push(result.existingId);
       continue;
@@ -197,6 +193,26 @@ async function ingestSession(
   return { sessionId: session.id, noteIds, supersededNoteIds };
 }
 
+// The engine's own gate stays the authoritative backstop: a forbidden pattern the defang
+// list misses still fails closed, with the session named so the list can be extended.
+async function rememberChunk(
+  stagingDeps: StagingDeps,
+  session: BenchSession,
+  chunk: string,
+  tags: string[],
+): Promise<RememberResult> {
+  try {
+    return await remember(stagingDeps, { type: "pattern", body: chunk, anchors: [], tags, source: "bench-ingest" });
+  } catch (error) {
+    if (error instanceof ForbiddenMarkupError) {
+      throw new IngestError(
+        `session ${session.id}: engine rejected the body (${error.message}); extend defangForbiddenMarkup`,
+      );
+    }
+    throw error;
+  }
+}
+
 // Tags carry the dataset's own markup (speakers, dates); a session with no marked
 // entities falls back to its id — a note with empty anchors must carry at least one tag.
 function sessionTags(session: BenchSession): string[] {
@@ -204,11 +220,29 @@ function sessionTags(session: BenchSession): string[] {
   return entities.length > 0 ? entities : [session.id];
 }
 
+// The engine's write path fail-closed rejects foreign tool/protocol markup in a note body
+// (assertCleanNoteBody), and real conversational datasets DO carry such fragments ("<html"
+// inside LongMemEval sessions). A human curator would rephrase; the scripted curator defangs
+// MECHANICALLY instead: the opening bracket of exactly the engine-forbidden tag patterns
+// becomes U+2039, the note-fence literals gain the same mark between words, and the
+// framing-breaking code points map to plain newlines — lexical tokens survive for FTS.
+const DEFANGED_BRACKET = "‹";
+const FORBIDDEN_TAG_PATTERN =
+  /<(\/?)(function_calls|invoke|parameter|function_results|system-reminder|html|head|body)\b/gi;
+const FORBIDDEN_FENCE_PATTERN = /(BEGIN|END) MNEME NOTE/gi;
+
+export function defangForbiddenMarkup(text: string): string {
+  return text
+    .replace(FORBIDDEN_TAG_PATTERN, `${DEFANGED_BRACKET}$1$2`)
+    .replace(FORBIDDEN_FENCE_PATTERN, `$1${DEFANGED_BRACKET}MNEME${DEFANGED_BRACKET}NOTE`)
+    .replace(/[\u2028\u2029\u0085]/g, "\n");
+}
+
 // Mechanical chunking: split on line boundaries into windows of at most
 // MAX_BODY_CODE_POINTS code points; minChunks forces extra splits so update-chain
 // sessions align chunk-for-chunk. Lines longer than the limit hard-split by code point.
 export function chunkSessionText(text: string, minChunks = 1, limit = MAX_BODY_CODE_POINTS): string[] {
-  const normalized = text.replace(/\r\n?/g, "\n").replace(/^\n+/, "");
+  const normalized = defangForbiddenMarkup(text).replace(/\r\n?/g, "\n").replace(/^\n+/, "");
   if ([...normalized].length === 0) {
     throw new IngestError("session text is empty after normalization; it cannot become a note body");
   }
