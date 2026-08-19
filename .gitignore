@@ -11,6 +11,8 @@ node_modules/
 *.bun-build
 # release artifacts (reproducible from source via scripts/build-release.ts)
 dist-release/
+# benchmark datasets (fetched by scripts/bench/download.ts)
+scripts/bench/datasets/
 
 # dev-workflow (stack-detected)
 .DS_Store

@@ -1,0 +1,58 @@
+[
+  {
+    "question_id": "q-standard-1",
+    "question_type": "single-session-user",
+    "question": "What instrument does the user play?",
+    "answer": "cello",
+    "question_date": "2023/06/01 (Thu) 10:00",
+    "haystack_dates": ["2023/05/01 (Mon) 09:00", "2023/05/10 (Wed) 18:30"],
+    "haystack_session_ids": ["s-orchestra", "s-food"],
+    "haystack_sessions": [
+      [
+        { "role": "user", "content": "I play the cello in an amateur orchestra on weekends." },
+        { "role": "assistant", "content": "That sounds wonderful — how long have you played?" }
+      ],
+      [
+        { "role": "user", "content": "My favorite dish is tonkotsu ramen." },
+        { "role": "assistant", "content": "Noted — rich broth is hard to beat." }
+      ]
+    ],
+    "answer_session_ids": ["s-orchestra"]
+  },
+  {
+    "question_id": "q-update-1",
+    "question_type": "knowledge-update",
+    "question": "Where does the user work now?",
+    "answer": "Acme",
+    "question_date": "2023/07/01 (Sat) 12:00",
+    "haystack_dates": ["2023/05/02 (Tue) 11:00", "2023/06/15 (Thu) 16:45"],
+    "haystack_session_ids": ["s-old-job", "s-new-job"],
+    "haystack_sessions": [
+      [
+        { "role": "user", "content": "I work at Initech as a QA engineer." },
+        { "role": "assistant", "content": "How do you like it there?" }
+      ],
+      [
+        { "role": "user", "content": "I changed jobs last week — I now work at Acme as a build engineer." },
+        { "role": "assistant", "content": "Congratulations on the move!" }
+      ]
+    ],
+    "answer_session_ids": ["s-old-job", "s-new-job"]
+  },
+  {
+    "question_id": "q-none-1_abs",
+    "question_type": "single-session-user",
+    "question": "What is the name of the user's cat?",
+    "answer": "The haystack never mentions a cat.",
+    "question_date": "2023/07/02 (Sun) 13:00",
+    "haystack_dates": ["2023/05/03 (Wed) 08:15"],
+    "haystack_session_ids": ["s-hiking"],
+    "haystack_sessions": [
+      [
+        { "role": "user", "content": "I enjoy hiking in the foothills on weekends." },
+        { "role": "assistant", "content": "Any favorite trail so far?" }
+      ]
+    ],
+    "answer_session_ids": []
+  }
+]
