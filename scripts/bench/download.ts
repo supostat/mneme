@@ -23,11 +23,14 @@ export const DATASET_SOURCES: Record<BenchDatasetId, DatasetSource> = {
     url: "https://raw.githubusercontent.com/snap-research/locomo/main/data/locomo10.json",
     manual: "clone https://github.com/snap-research/locomo and copy data/locomo10.json",
   },
+  // The author deprecated the original longmemeval repo in favor of longmemeval-cleaned
+  // (noisy history sessions interfering with answer correctness were removed); the harness
+  // pins the cleaned S-variant. ~278 MB, LFS-backed.
   "longmemeval-s": {
-    file: "longmemeval_s.json",
-    url: "https://huggingface.co/datasets/xiaowu0162/longmemeval/resolve/main/longmemeval_s.json",
+    file: "longmemeval_s_cleaned.json",
+    url: "https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_s_cleaned.json",
     manual:
-      "download longmemeval_s.json from https://huggingface.co/datasets/xiaowu0162/longmemeval " +
+      "download longmemeval_s_cleaned.json from https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned " +
       "(or via the archive linked from https://github.com/xiaowu0162/LongMemEval)",
   },
 };

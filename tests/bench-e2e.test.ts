@@ -6,6 +6,7 @@ import { defaultCorpusHome } from "../src/corpus";
 import { EMBEDDING_DIMENSION, HttpEmbeddingsClient } from "../src/embeddings";
 import type { FetchImplementation } from "../src/embeddings";
 import { main } from "../scripts/bench/bench";
+import { DATASET_SOURCES } from "../scripts/bench/download";
 
 // The wire test: the WHOLE pipeline (dataset file → normalize → ingest in both modes →
 // live recall → report) through the one-command entrypoint, with real modules, real temp
@@ -45,7 +46,7 @@ function fixtureDatasetsDir(): string {
   const fixture = readFileSync(
     join(import.meta.dir, "..", "scripts", "bench", "fixtures", "longmemeval-s-mini.json"),
   );
-  writeFileSync(join(datasetsDir, "longmemeval_s.json"), fixture);
+  writeFileSync(join(datasetsDir, DATASET_SOURCES["longmemeval-s"].file), fixture);
   return datasetsDir;
 }
 

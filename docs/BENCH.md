@@ -105,6 +105,9 @@ bun scripts/bench/download.ts && bun scripts/bench/bench.ts --dataset longmemeva
 Datasets download into `scripts/bench/datasets/` (git-ignored). If the download
 fails, the script prints the manual instruction: LoCoMo from
 https://github.com/snap-research/locomo (`data/locomo10.json`), LongMemEval-S from
-https://huggingface.co/datasets/xiaowu0162/longmemeval (`longmemeval_s.json`). A
-missing dataset fails closed with exit 2. LoCoMo runs as
-`bun scripts/bench/bench.ts --dataset locomo` (coexist only).
+https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned
+(`longmemeval_s_cleaned.json` — the author deprecated the original release in favor
+of this cleaned variant, so published figures measured on the original are one more
+reason the calibration anchors are context, not comparison). A missing dataset fails
+closed with exit 2. LoCoMo runs as `bun scripts/bench/bench.ts --dataset locomo`
+(coexist only).
