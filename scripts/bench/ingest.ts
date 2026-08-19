@@ -242,18 +242,30 @@ export function defangForbiddenMarkup(text: string): string {
 // MAX_BODY_CODE_POINTS code points; minChunks forces extra splits so update-chain
 // sessions align chunk-for-chunk. Lines longer than the limit hard-split by code point.
 export function chunkSessionText(text: string, minChunks = 1, limit = MAX_BODY_CODE_POINTS): string[] {
-  const normalized = defangForbiddenMarkup(text).replace(/\r\n?/g, "\n").replace(/^\n+/, "");
-  if ([...normalized].length === 0) {
-    throw new IngestError("session text is empty after normalization; it cannot become a note body");
-  }
+  const normalized = defangForbiddenMarkup(text).replace(/\r\n?/g, "\n");
   let chunks = splitByLines(normalized, limit);
+  if (chunks.length === 0) {
+    throw new IngestError("session text has no non-whitespace content; it cannot become a note body");
+  }
   while (chunks.length < minChunks) {
     const widest = chunks.reduce((left, right) => ([...left].length >= [...right].length ? left : right));
     if ([...widest].length < 2) break;
     const halves = splitInHalf(widest);
+    if (halves.length < 2) break;
     chunks = chunks.flatMap((chunk) => (chunk === widest ? halves : [chunk]));
   }
   return chunks;
+}
+
+// The note schema requires a non-empty FIRST line: leading whitespace-only lines are
+// dropped, and a chunk with no non-whitespace content at all is discarded entirely.
+function cleanChunk(raw: string): string | null {
+  const lines = raw.split("\n");
+  while (lines.length > 0 && lines[0]!.trim().length === 0) {
+    lines.shift();
+  }
+  const chunk = lines.join("\n");
+  return chunk.trim().length === 0 ? null : chunk;
 }
 
 function splitByLines(text: string, limit: number): string[] {
@@ -261,8 +273,8 @@ function splitByLines(text: string, limit: number): string[] {
   let current: string[] = [];
   let currentLength = 0;
   const flush = (): void => {
-    const chunk = current.join("\n").replace(/^\n+/, "");
-    if ([...chunk].length > 0) chunks.push(chunk);
+    const chunk = cleanChunk(current.join("\n"));
+    if (chunk !== null) chunks.push(chunk);
     current = [];
     currentLength = 0;
   };
@@ -291,7 +303,7 @@ function hardSplit(line: string, limit: number): string[] {
 function splitInHalf(chunk: string): string[] {
   const codePoints = [...chunk];
   const middle = Math.ceil(codePoints.length / 2);
-  return [codePoints.slice(0, middle).join(""), codePoints.slice(middle).join("")].map((half) =>
-    half.replace(/^\n+/, ""),
-  );
+  return [codePoints.slice(0, middle).join(""), codePoints.slice(middle).join("")]
+    .map(cleanChunk)
+    .filter((half): half is string => half !== null);
 }

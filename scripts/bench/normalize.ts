@@ -40,7 +40,7 @@ export function parseDataset(dataset: BenchDatasetId, raw: unknown): BenchCase[]
 }
 
 const LOCOMO_SESSION_KEY = /^session_(\d+)$/;
-const LOCOMO_EVIDENCE_ID = /^D(\d+):\d+$/;
+const LOCOMO_EVIDENCE_ID = /D(\d+):\d+/g;
 const LOCOMO_ABSTENTION_CATEGORY = 5;
 const LONGMEMEVAL_ABSTENTION_SUFFIX = "_abs";
 
@@ -93,13 +93,16 @@ function locomoQuestions(sampleId: string, qaRaw: unknown): BenchQuestion[] {
     const evidenceSessionIds: string[] = [];
     if (category === "standard") {
       for (const evidenceRaw of asArray(entry.evidence ?? [], `${sampleId} qa #${qaIndex} evidence`)) {
-        const evidenceId = asString(evidenceRaw, `${sampleId} qa #${qaIndex} evidence id`);
-        const sessionNumber = LOCOMO_EVIDENCE_ID.exec(evidenceId)?.[1];
-        if (sessionNumber === undefined) {
-          throw new NormalizeError(`${sampleId} qa #${qaIndex} evidence id "${evidenceId}" is not D<session>:<turn>`);
+        // A single evidence string may pack several dia_ids ("D8:6; D9:17", space- or
+        // comma-separated), and a handful of dataset entries are malformed (bare "D",
+        // "D:11:26"). Extract every canonical D<session>:<turn> match; a question whose
+        // evidence yields no ids ends up with an empty list and is thereby excluded from
+        // the answerable metric — the report's question counts keep the drop visible.
+        const evidenceValue = asString(evidenceRaw, `${sampleId} qa #${qaIndex} evidence id`);
+        for (const match of evidenceValue.matchAll(LOCOMO_EVIDENCE_ID)) {
+          const sessionId = `${sampleId}:session_${match[1]}`;
+          if (!evidenceSessionIds.includes(sessionId)) evidenceSessionIds.push(sessionId);
         }
-        const sessionId = `${sampleId}:session_${sessionNumber}`;
-        if (!evidenceSessionIds.includes(sessionId)) evidenceSessionIds.push(sessionId);
       }
     }
     return {

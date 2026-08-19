@@ -182,7 +182,12 @@ describe("chunkSessionText", () => {
     }
   });
 
-  test("empty session text is refused", () => {
+  test("leading whitespace-only lines are dropped so the first line is non-empty", () => {
+    expect(chunkSessionText("   \n\t\nreal content\nmore")).toEqual(["real content\nmore"]);
+  });
+
+  test("whitespace-only session text is refused", () => {
     expect(() => chunkSessionText("\n\n")).toThrow(IngestError);
+    expect(() => chunkSessionText("   \n \t \n")).toThrow(IngestError);
   });
 });
