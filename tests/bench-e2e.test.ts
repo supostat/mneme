@@ -101,6 +101,25 @@ describe("bench end to end", () => {
     expect(listNames(runRoot)).toEqual([]);
   });
 
+  test(
+    "--cases caps the run to the first N cases and says so",
+    async () => {
+      const runRoot = mkdtempSync(join(tmpdir(), "mneme-bench-e2e-cases-"));
+      const lines: string[] = [];
+      const code = await main(["--dataset", "longmemeval-s", "--cases", "2"], {
+        embeddings: oneHotClient(),
+        datasetsDir: fixtureDatasetsDir(),
+        runRoot,
+        projectRoot,
+        log: (line) => lines.push(line),
+      });
+      expect(code).toBe(0);
+      expect(lines.join("\n")).toContain("capped to the first 2 of 3");
+      expect(listNames(join(runRoot, "coexist")).length).toBe(2);
+    },
+    60000,
+  );
+
   test("a missing dataset fails closed with exit 2 and the download instruction", async () => {
     const emptyDatasets = mkdtempSync(join(tmpdir(), "mneme-bench-e2e-empty-"));
     const lines: string[] = [];

@@ -22,7 +22,7 @@ import type { CaseObservation } from "./run";
 // 1 for a failure mid-measurement, 0 for a completed report.
 
 const USAGE =
-  "usage: bun scripts/bench/bench.ts --dataset <locomo|longmemeval-s> [--mode coexist|supersede|both]";
+  "usage: bun scripts/bench/bench.ts --dataset <locomo|longmemeval-s> [--mode coexist|supersede|both] [--cases N]";
 
 const MODES = ["coexist", "supersede", "both"] as const;
 type ModeArgument = (typeof MODES)[number];
@@ -56,7 +56,11 @@ export async function main(argv: string[], deps: BenchDeps = {}): Promise<number
     return 2;
   }
   const datasetBytes = readFileSync(datasetPath);
-  const cases = parseDataset(dataset, JSON.parse(datasetBytes.toString("utf8")));
+  const allCases = parseDataset(dataset, JSON.parse(datasetBytes.toString("utf8")));
+  const cases = parsed.cases === undefined ? allCases : allCases.slice(0, parsed.cases);
+  if (cases.length < allCases.length) {
+    log(`cases capped to the first ${cases.length} of ${allCases.length} (--cases); a capped run is a calibration, not the measurement`);
+  }
   const projectRoot = deps.projectRoot ?? process.cwd();
   const embeddings = deps.embeddings ?? embedderFromConfig(projectRoot);
   if (!(await embeddings.embed(["bench embedder probe"])).available) {
@@ -101,9 +105,12 @@ export async function main(argv: string[], deps: BenchDeps = {}): Promise<number
   return 0;
 }
 
-function parseArguments(argv: string[]): { dataset: BenchDatasetId; mode: ModeArgument } | undefined {
+function parseArguments(
+  argv: string[],
+): { dataset: BenchDatasetId; mode: ModeArgument; cases?: number } | undefined {
   let dataset: BenchDatasetId | undefined;
   let mode: ModeArgument = "coexist";
+  let cases: number | undefined;
   for (let index = 0; index < argv.length; index += 2) {
     const flag = argv[index];
     const value = argv[index + 1];
@@ -112,11 +119,13 @@ function parseArguments(argv: string[]): { dataset: BenchDatasetId; mode: ModeAr
       dataset = value as BenchDatasetId;
     } else if (flag === "--mode" && (MODES as readonly string[]).includes(value)) {
       mode = value as ModeArgument;
+    } else if (flag === "--cases" && /^[1-9]\d*$/.test(value)) {
+      cases = Number(value);
     } else {
       return undefined;
     }
   }
-  return dataset === undefined ? undefined : { dataset, mode };
+  return dataset === undefined ? undefined : { dataset, mode, cases };
 }
 
 function embedderFromConfig(projectRoot: string): EmbeddingsClient {
