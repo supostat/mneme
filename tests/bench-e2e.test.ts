@@ -114,7 +114,7 @@ describe("bench end to end", () => {
         log: (line) => lines.push(line),
       });
       expect(code).toBe(0);
-      expect(lines.join("\n")).toContain("capped to the first 2 of 3");
+      expect(lines.join("\n")).toContain("capped to 2 of 3, sampled evenly");
       expect(listNames(join(runRoot, "coexist")).length).toBe(2);
     },
     60000,

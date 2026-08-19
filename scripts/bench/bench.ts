@@ -57,9 +57,12 @@ export async function main(argv: string[], deps: BenchDeps = {}): Promise<number
   }
   const datasetBytes = readFileSync(datasetPath);
   const allCases = parseDataset(dataset, JSON.parse(datasetBytes.toString("utf8")));
-  const cases = parsed.cases === undefined ? allCases : allCases.slice(0, parsed.cases);
+  const cases = parsed.cases === undefined ? allCases : strideSample(allCases, parsed.cases);
   if (cases.length < allCases.length) {
-    log(`cases capped to the first ${cases.length} of ${allCases.length} (--cases); a capped run is a calibration, not the measurement`);
+    log(
+      `cases capped to ${cases.length} of ${allCases.length}, sampled evenly across the dataset (--cases); ` +
+        "a capped run is a calibration, not the measurement",
+    );
   }
   const projectRoot = deps.projectRoot ?? process.cwd();
   const embeddings = deps.embeddings ?? embedderFromConfig(projectRoot);
@@ -126,6 +129,14 @@ function parseArguments(
     }
   }
   return dataset === undefined ? undefined : { dataset, mode, cases };
+}
+
+// The dataset file is GROUPED by question type (all knowledge-update cases sit in one
+// block), so a prefix cap would sample a homogeneous slice and measure nothing of the
+// delta. An even deterministic stride touches every type block proportionally.
+function strideSample<T>(items: T[], count: number): T[] {
+  if (count >= items.length) return items;
+  return Array.from({ length: count }, (_, index) => items[Math.floor((index * items.length) / count)]!);
 }
 
 function embedderFromConfig(projectRoot: string): EmbeddingsClient {
