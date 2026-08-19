@@ -30,6 +30,7 @@ CLAUDE.md
 .engram/
 docs/*
 !docs/METRICS.md
+!docs/BENCH.md
 
 # analytics package (generated, local-only)
 mneme-analytics/
