@@ -153,6 +153,10 @@ export function parseLongmemevalS(raw: unknown): BenchCase[] {
   });
 }
 
+// Turns render CONTENT-ONLY: the user/assistant role labels are structural markup, and their
+// tokens would lexically match nearly every question ("the user ...") through the FTS channel,
+// injecting a harness artifact into the measurement. LoCoMo keeps speaker names — there they are
+// content-bearing entities the questions themselves reference.
 function longmemevalSession(
   questionId: string,
   sessionId: string,
@@ -162,8 +166,9 @@ function longmemevalSession(
   const lines: string[] = [];
   for (const turnRaw of asArray(turnsRaw, `${questionId} session ${sessionId}`)) {
     const turn = asRecord(turnRaw, `${questionId} session ${sessionId} turn`);
+    asString(turn.role, `${questionId} session ${sessionId} role`);
     if (typeof turn.content !== "string") continue;
-    lines.push(`${asString(turn.role, `${questionId} session ${sessionId} role`)}: ${turn.content}`);
+    lines.push(turn.content);
   }
   return { id: sessionId, date, text: lines.join("\n"), entities: date === null ? [] : [date] };
 }

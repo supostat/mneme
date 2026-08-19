@@ -49,8 +49,8 @@
     "haystack_session_ids": ["s-hiking"],
     "haystack_sessions": [
       [
-        { "role": "user", "content": "I enjoy hiking in the foothills on weekends." },
-        { "role": "assistant", "content": "Any favorite trail so far?" }
+        { "role": "user", "content": "I enjoy weekend treks across mountain foothills." },
+        { "role": "assistant", "content": "Any favorite trail?" }
       ]
     ],
     "answer_session_ids": []

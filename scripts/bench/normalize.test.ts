@@ -62,13 +62,14 @@ describe("parseLongmemevalS", () => {
     expect(cases[0]!.questions.length).toBe(1);
   });
 
-  test("session text renders role-prefixed turns and zips haystack dates", () => {
+  test("session text renders content-only turns (no role labels) and zips haystack dates", () => {
     const orchestra = cases[0]!.sessions[0]!;
     expect(orchestra.date).toBe("2023/05/01 (Mon) 09:00");
     expect(orchestra.text).toBe(
-      "user: I play the cello in an amateur orchestra on weekends.\n" +
-        "assistant: That sounds wonderful — how long have you played?",
+      "I play the cello in an amateur orchestra on weekends.\n" +
+        "That sounds wonderful — how long have you played?",
     );
+    expect(orchestra.text).not.toContain("user:");
     expect(orchestra.entities).toEqual(["2023/05/01 (Mon) 09:00"]);
   });
 
