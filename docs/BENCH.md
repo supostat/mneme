@@ -75,7 +75,11 @@ landscape's honesty spread rather than compete in it.
 - Recall@5/10 reads the event's `candidates` window (pre-threshold, fused order,
   window of 20): a session is retrieved at k when any of its chunk notes sits in the
   top-k candidates; a question's score is the fraction of its evidence sessions
-  retrieved; the mode score is the macro-average over questions.
+  retrieved; the mode score is the macro-average over questions. The aggregate covers
+  STANDARD questions only: a knowledge-update question's evidence chain includes the
+  outdated sessions that supersede mode removes on purpose, so it is measured solely
+  in its own section — and the standard-question numbers of both modes must coincide,
+  since their corpora differ only in update chains (a free invariant check).
 - Abstention reads the final `returned_ids`: a question is abstained when the return
   is empty OR nothing in it passes the engine's own threshold predicate
   (`passesRecallThreshold`) — the latter is precisely the cold-start floor's

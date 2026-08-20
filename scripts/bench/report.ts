@@ -103,8 +103,13 @@ export function aggregateMode(mode: IngestMode, cases: CaseObservation[]): ModeR
       sessionByNoteId: caseObservation.sessionByNoteId,
     })),
   );
+  // Knowledge-update questions are EXCLUDED from the generic answerable aggregate: their
+  // evidence chain includes the outdated sessions that supersede mode removes on purpose,
+  // so counting a missed stale session as a recall failure would fake a mode regression.
+  // They are measured only in their own section (update Recall@k / stale hit@k) — which
+  // also makes the answerable numbers of both modes comparable over identical corpora.
   const answerable = questions.filter(
-    ({ observation }) => observation.category !== "abstention" && observation.evidenceSessionIds.length > 0,
+    ({ observation }) => observation.category === "standard" && observation.evidenceSessionIds.length > 0,
   );
   const abstentionQuestions = questions.filter(({ observation }) => observation.category === "abstention");
   const updates = questions.filter(({ observation }) => observation.category === "knowledge-update");
