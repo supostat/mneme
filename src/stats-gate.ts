@@ -244,11 +244,22 @@ function intervalMs(from: string | null, to: string | null): number | null {
   return interval >= 0 ? interval : null;
 }
 
+// Two decision sources ride a menu stamp, and their counting disciplines are OPPOSITE: a curation
+// batch is many resolve calls per ONE human decision, while a plan fan is one remember call per one
+// decision. They are walked in SEPARATE passes so neither can perturb the other — the resolve pass
+// never sees a remember, and the remember pass owns no batch state to misfire. computeAgreement only
+// merges what the two passes recorded.
+function computeAgreement(events: StoredEvent[]): AgreementSlice[] {
+  const slices = new Map<string, AgreementSlice>();
+  collapsedResolveDecisions(events, slices);
+  rememberDecisions(events, slices);
+  return [...slices.values()].sort(compareSlices);
+}
+
 // A batch "accept all" is N resolve calls carrying the IDENTICAL menu payload inside one review
 // sitting; counting each call would inflate agreement by the batch size, so consecutive same-payload
 // resolves within RESOLVE_BATCH_GAP_MS of one session collapse into ONE decision.
-function computeAgreement(events: StoredEvent[]): AgreementSlice[] {
-  const slices = new Map<string, AgreementSlice>();
+function collapsedResolveDecisions(events: StoredEvent[], slices: Map<string, AgreementSlice>): void {
   for (const sessionEvents of groupBySession(events).values()) {
     let previousKey: string | null = null;
     let previousMs: number | null = null;
@@ -271,7 +282,19 @@ function computeAgreement(events: StoredEvent[]): AgreementSlice[] {
       previousMs = ms !== null && !Number.isNaN(ms) ? ms : null;
     }
   }
-  return [...slices.values()].sort(compareSlices);
+}
+
+// The plan fan's door: its Step-8 remember stages exactly ONE choice note per fan, so one stamped
+// call IS one decision (one-call-one-decision). No session grouping and no time window exist here on
+// purpose — the absence of collapse code is the invariant, not a conditional guarding it. A remember
+// without a menu (a dev harvest artifact, which is never entitled to one) is simply not a decision.
+function rememberDecisions(events: StoredEvent[], slices: Map<string, AgreementSlice>): void {
+  for (const event of events) {
+    if (event.type !== "remember") continue;
+    const menu = menuOf(event);
+    if (menu === null) continue;
+    recordDecision(slices, menu);
+  }
 }
 
 function recordDecision(slices: Map<string, AgreementSlice>, menu: MenuRecord): void {

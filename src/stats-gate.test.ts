@@ -22,12 +22,20 @@ function event(
   return { type, session_id: session, ts, mneme_version: "0.2.0", schema_version: schemaVersion, ...extra };
 }
 
-function staged(id: string, session: string, ts: string, bodyLen: number, anchorsN: number): StoredEvent {
+function staged(
+  id: string,
+  session: string,
+  ts: string,
+  bodyLen: number,
+  anchorsN: number,
+  extra: Record<string, unknown> = {},
+): StoredEvent {
   return event("remember", session, ts, {
     note_id: id,
     body_len: bodyLen,
     anchors_n: anchorsN,
     dedup: { outcome: "add" },
+    ...extra,
   });
 }
 
@@ -43,6 +51,7 @@ function resolved(id: string, session: string, ts: string, extra: Record<string,
 }
 
 const MENU = { decision_class: "curation", options_n: 4, recommended_position: 2, chosen_position: 2 };
+const FAN = { decision_class: "plan-fan", options_n: 3, recommended_position: 2, chosen_position: 2 };
 
 describe("outcome taxonomy", () => {
   test("classifies all six outcomes from remember/resolve pairs", () => {
@@ -208,6 +217,56 @@ describe("recommendation agreement", () => {
     ];
 
     expect(computeGateAudit(events).agreement[0]!.decisions).toBe(2);
+  });
+
+  test("a plan-fan remember is its own slice beside the curation resolves", () => {
+    const events = [
+      resolved("n1", "s1", at(0), { menu: MENU }),
+      staged("n2", "s1", at(1), 10, 1, { menu: FAN }),
+    ];
+
+    expect(computeGateAudit(events).agreement).toEqual([
+      { decisionClass: "curation", recommendedPosition: 2, optionsN: 4, decisions: 1, agreed: 1 },
+      { decisionClass: "plan-fan", recommendedPosition: 2, optionsN: 3, decisions: 1, agreed: 1 },
+    ]);
+  });
+
+  // One plan call stages one choice note, so four stamped remembers are four fan decisions even
+  // second-apart with the same payload — the resolve batch canon must not reach this source.
+  test("four adjacent remembers with an identical payload stay four decisions", () => {
+    const events = [
+      staged("n1", "s1", at(0), 10, 1, { menu: FAN }),
+      staged("n2", "s1", at(11), 10, 1, { menu: FAN }),
+      staged("n3", "s1", at(22), 10, 1, { menu: FAN }),
+      staged("n4", "s1", at(33), 10, 1, { menu: FAN }),
+    ];
+
+    const agreement = computeGateAudit(events).agreement;
+
+    expect(agreement.length).toBe(1);
+    expect(agreement[0]!.decisions).toBe(4);
+    expect(agreement[0]!.agreed).toBe(4);
+  });
+
+  test("a remember without a menu is not a decision", () => {
+    const events = [staged("n1", "s1", at(0), 10, 1), staged("n2", "s1", at(1), 10, 1)];
+
+    expect(computeGateAudit(events).agreement).toEqual([]);
+  });
+
+  test("a stamped remember between two identical resolves does not break their batch", () => {
+    const events = [
+      resolved("n1", "s1", at(0), { menu: MENU }),
+      staged("n2", "s1", at(1), 10, 1, { menu: FAN }),
+      resolved("n3", "s1", at(2), { menu: MENU }),
+    ];
+
+    const agreement = computeGateAudit(events).agreement;
+
+    expect(agreement).toEqual([
+      { decisionClass: "curation", recommendedPosition: 2, optionsN: 4, decisions: 1, agreed: 1 },
+      { decisionClass: "plan-fan", recommendedPosition: 2, optionsN: 3, decisions: 1, agreed: 1 },
+    ]);
   });
 });
 

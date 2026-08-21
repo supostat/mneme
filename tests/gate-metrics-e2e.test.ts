@@ -164,11 +164,14 @@ test("the gate-metrics main path flows from instrumented calls into the stats se
     "(g) Resolution outcomes: accepted as-is 2, accepted after edit 1, rejected 1, superseded 0, " +
       "deferred 1, silence episodes 1, accepted pre-instrumentation 1",
   );
-  expect(stats).toContain("(h) Recommendation agreement: 1/1 overall [curation rec@2/4: 1/1]");
+  expect(stats).toContain(
+    "(h) Recommendation agreement: 2/2 overall [curation rec@2/4: 1/1, plan-fan rec@2/3: 1/1]",
+  );
   expect(stats).toContain("(i) Menu coverage: 2/4 resolves carry a menu; pre-instrumentation: 1 events");
   expect(stats).toContain("(j) Active review latency: median 30000 ms, p90 30000 ms (1 sittings)");
 
-  // The plan-fan menu landed on the remember event itself — write-only telemetry, never rendered.
+  // The plan-fan menu landed on the remember event itself: never in a tool response (the neutrality
+  // asserts above), but counted in the human-facing (h) aggregate as its own slice.
   const events = readEvents(corpus.eventsDir);
   const fanRemember = events.find((event) => event.type === "remember" && event.note_id === batchFirst);
   expect(fanRemember?.menu).toEqual(MENU_FAN);

@@ -313,27 +313,41 @@ cat "$EVENTS"/*.jsonl | jq -s '. as $all
 
 ### (h) Recommendation agreement
 
-**Definition.** Among `staging_resolve` events carrying a `menu`, a batch «прими все» is N calls
-with the IDENTICAL payload inside one sitting — consecutive same-payload resolves within
-`RESOLVE_BATCH_GAP_MS` (300000 ms) of one session collapse into **one decision** (counting each
-call would inflate agreement by the batch size). Each decision agrees when
-`chosen_position == recommended_position`, sliced by decision class × recommended position ×
-options_n — the slices that separate real agreement from «рекомендация всегда №1, выбор всегда 1»
-inertia. The tool additionally breaks a batch when an uninstrumented resolve lands between two
-identical payloads; the recipe below skips that refinement (hand-verification, second-accurate).
+**Definition.** TWO kinds of call carry a `menu`, and their counting disciplines are OPPOSITE, so
+they are walked in two separate passes:
+
+- `staging_resolve` (class `curation`) — a batch «прими все» is N calls with the IDENTICAL payload
+  inside one sitting, so consecutive same-payload resolves within `RESOLVE_BATCH_GAP_MS`
+  (300000 ms) of one session collapse into **one decision**; counting each call would inflate
+  agreement by the batch size.
+- `remember` (class `plan-fan`) — **one-call-one-decision**: a plan fan stages exactly ONE choice
+  note per fan, so every stamped call is a decision of its own and the collapse above is NOT
+  applied to this source. The evidence is in a real log: four identical `{options_n 2,
+  recommended 1, chosen 1}` payloads 11–12 seconds apart in one session are four genuine fan
+  choices — collapsing them would have reported one. A `remember` without a menu (a dev harvest
+  artifact, never entitled to one) is not a decision at all.
+
+Each decision agrees when `chosen_position == recommended_position`, sliced by decision class ×
+recommended position × options_n — the slices that separate real agreement from «рекомендация
+всегда №1, выбор всегда 1» inertia. The tool additionally breaks a RESOLVE batch when an
+uninstrumented resolve lands between two identical payloads; the recipe below skips that
+refinement (hand-verification, second-accurate).
 
 ```sh
 cat "$EVENTS"/*.jsonl | jq -s '
   def ms: sub("\\.[0-9]+Z$";"Z") | fromdateiso8601 * 1000;
-  [.[] | select(.type=="staging_resolve" and (.menu|type)=="object" and .session_id != null and .ts != null)]
-  | group_by(.session_id)
-  | map(sort_by(.ts) | reduce .[] as $r ([];
-      ($r.menu | "\(.decision_class)|\(.options_n)|\(.recommended_position)|\(.chosen_position)") as $key
-      | ($r.ts | ms) as $t
-      | if length > 0 and .[-1].key == $key and ($t - .[-1].t) <= 300000
-        then .[:-1] + [{key: $key, t: $t, menu: .[-1].menu}]
-        else . + [{key: $key, t: $t, menu: $r.menu}] end))
-  | flatten
+  def payloadkey: "\(.decision_class)|\(.options_n)|\(.recommended_position)|\(.chosen_position)";
+  ([.[] | select(.type=="staging_resolve" and (.menu|type)=="object" and .session_id != null and .ts != null)]
+   | group_by(.session_id)
+   | map(sort_by(.ts) | reduce .[] as $r ([];
+       ($r.menu | payloadkey) as $key
+       | ($r.ts | ms) as $t
+       | if length > 0 and .[-1].key == $key and ($t - .[-1].t) <= 300000
+         then .[:-1] + [{key: $key, t: $t, menu: .[-1].menu}]
+         else . + [{key: $key, t: $t, menu: $r.menu}] end))
+   | flatten)
+  + [.[] | select(.type=="remember" and (.menu|type)=="object")
+         | {key: (.menu | payloadkey), t: null, menu: .menu}]
   | group_by(.menu.decision_class, .menu.recommended_position, .menu.options_n)
   | map({class: .[0].menu.decision_class, rec: .[0].menu.recommended_position, options: .[0].menu.options_n,
          decisions: length,
