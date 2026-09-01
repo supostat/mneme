@@ -21,6 +21,7 @@ import { recall } from "./recall";
 import { NOTE_TYPES } from "./note";
 import type { NoteType } from "./note";
 import { remember, stagingList, stagingResolve } from "./staging";
+import { adoptCorpus } from "./corpus-adopt";
 import { listReanchorRequests, listRetagRequests, listRetireRequests, noteReanchor, noteRetire, notesList, showNote } from "./curation";
 import { computeStats, formatStats } from "./stats";
 import { computeFriction, formatFriction } from "./stats-friction";
@@ -34,6 +35,7 @@ import {
   formatRecall,
   formatRemember,
   formatResolve,
+  formatAdoption,
   formatStagingList,
   formatSweepReport,
   textResult,
@@ -123,6 +125,13 @@ const NOTES_LIST_INPUT = {
   limit: z.number().int().positive().optional(),
 };
 const NOTE_RETIRE_INPUT = { id: z.string(), reason: z.string() };
+const CORPUS_ADOPT_DESCRIPTION =
+  "Merge a corpus that drifted apart from this project's corpus — the case where two working copies " +
+  "of one project each grew their own notes. Notes are copied FROM the given corpus directory INTO " +
+  "this project's corpus without re-staging (both sides already passed the human gate); a note " +
+  "already present by id, or one this corpus's dedup recognizes as the same knowledge, is skipped " +
+  "and reported. The source corpus is only read — never emptied, moved or rewritten.";
+const CORPUS_ADOPT_INPUT = { source_corpus_dir: z.string() };
 const ANCHOR_REPAIR_DESCRIPTION =
   "Queue an anchor repair for an accepted note whose anchor path is MISSING (deleted or renamed in " +
   "the project). This does NOT change the note; it only stages a re-anchor request — the human " +
@@ -182,7 +191,11 @@ export function buildServer(options: CreateServerOptions): BuiltServer {
 
   async function context(): Promise<ServerContext> {
     if (cached === undefined) {
-      const corpus = await resolveCorpus(options.projectRoot, { corpusHome: options.corpusHome, clock });
+      const corpus = await resolveCorpus(options.projectRoot, {
+        corpusHome: options.corpusHome,
+        corpusName: config.corpus.name,
+        clock,
+      });
       const eventWriter = new EventWriter(corpus.eventsDir, { sessionId, clock, mnemeVersion: MNEME_VERSION });
       cached = { corpus, eventWriter };
     }
@@ -242,6 +255,9 @@ function registerTools(
   );
   server.registerTool("anchor_sweep", { description: ANCHOR_SWEEP_DESCRIPTION, inputSchema: {} }, () =>
     dispatch(context, "anchor_sweep", (current) => anchorSweepTool(buildStagingDeps(current))),
+  );
+  server.registerTool("corpus_adopt", { description: CORPUS_ADOPT_DESCRIPTION, inputSchema: CORPUS_ADOPT_INPUT }, (args) =>
+    dispatch(context, "corpus_adopt", (current) => corpusAdoptTool(buildStagingDeps(current), args)),
   );
   server.registerTool("staging_resolve", { description: STAGING_RESOLVE_DESCRIPTION, inputSchema: STAGING_RESOLVE_INPUT }, (args) =>
     dispatch(context, "staging_resolve", (current) => stagingResolveTool(buildStagingDeps(current), args)),
@@ -376,6 +392,14 @@ async function anchorRepairTool(
       "Ask the human to review it with staging_list and decide accept or reject via staging_resolve.",
     ].join("\n"),
   );
+}
+
+async function corpusAdoptTool(
+  stagingDeps: StagingDeps,
+  args: { source_corpus_dir: string },
+): Promise<CallToolResult> {
+  const outcome = await adoptCorpus(stagingDeps, args.source_corpus_dir);
+  return textResult(formatAdoption(outcome));
 }
 
 function noteRetireTool(stagingDeps: StagingDeps, args: { id: string; reason: string }): CallToolResult {

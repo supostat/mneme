@@ -93,10 +93,11 @@ async function buildProjectRepo(): Promise<{ projectRoot: string; commit: string
 
 async function buildHealthyCorpus(
   embeddings: EmbeddingsClient = bagOfWordsClient(),
+  corpusName?: string,
 ): Promise<Corpus> {
   const { projectRoot, commit } = await buildProjectRepo();
   const corpusHome = mkdtempSync(join(tmpdir(), "mneme-doctor-home-"));
-  const corpus = await resolveCorpus(projectRoot, { corpusHome, clock: CLOCK });
+  const corpus = await resolveCorpus(projectRoot, { corpusHome, corpusName, clock: CLOCK });
   const note: Note = {
     frontmatter: {
       id: ulid(0),
@@ -166,7 +167,7 @@ describe("runDoctor broken components are named, isolated, and typed", () => {
     const corpus = await buildHealthyCorpus();
     writeFileSync(
       corpus.manifestPath,
-      JSON.stringify({ path: "/somewhere/else", created: "2026-07-06T10:00:00.000Z", format_version: 2 }),
+      JSON.stringify({ path: "/somewhere/else", created: "2026-07-06T10:00:00.000Z", format_version: 3 }),
     );
 
     const report = await runDoctor({ corpusDir: corpus.corpusDir, embedder: bagOfWordsClient() });
@@ -174,6 +175,30 @@ describe("runDoctor broken components are named, isolated, and typed", () => {
     const manifest = byName(report).get("manifest")!;
     expect(manifest.status).toBe("fail");
     expect(manifest.detail).toContain("collision");
+  });
+
+  test("a named corpus is judged by its name, not by the munged project path", async () => {
+    const corpus = await buildHealthyCorpus(bagOfWordsClient(), "shared-corpus");
+
+    const report = await runDoctor({ corpusDir: corpus.corpusDir, embedder: bagOfWordsClient() });
+
+    const manifest = byName(report).get("manifest")!;
+    expect(manifest.status).toBe("ok");
+    expect(manifest.detail).toContain("shared-corpus");
+    expect(report.overall).toBe("ok");
+  });
+
+  test("a named manifest under a directory of another name fails without a munging verdict", async () => {
+    const corpus = await buildHealthyCorpus(bagOfWordsClient(), "shared-corpus");
+    const manifestBefore = JSON.parse(readFileSync(corpus.manifestPath, "utf8"));
+    writeFileSync(corpus.manifestPath, JSON.stringify({ ...manifestBefore, name: "another-corpus" }));
+
+    const report = await runDoctor({ corpusDir: corpus.corpusDir, embedder: bagOfWordsClient() });
+
+    const manifest = byName(report).get("manifest")!;
+    expect(manifest.status).toBe("fail");
+    expect(manifest.detail).toContain("another-corpus");
+    expect(manifest.detail).not.toContain("munging");
   });
 
   test("an embedder whose dimension differs from the stored vectors degrades, named", async () => {

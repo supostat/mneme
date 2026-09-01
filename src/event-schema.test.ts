@@ -175,8 +175,8 @@ const AGENT_VOTE_MIRROR = {
 } as const satisfies Record<Vote, true>;
 
 describe("event-schema constants", () => {
-  test("SCHEMA_VERSION is 14", () => {
-    expect(SCHEMA_VERSION).toBe(14);
+  test("SCHEMA_VERSION is 15", () => {
+    expect(SCHEMA_VERSION).toBe(15);
   });
 
   test("EXECUTABLE_GATE_REASONS mirrors gate-runner's ExecutableGateReason in both directions", () => {

@@ -67,8 +67,32 @@ function rebuildEvent(startedAt: number, finishedAt: number, outcome: RebuildOut
   };
 }
 
-function freshDatabase(indexPath: string): Database {
+// Two live sessions can share one corpus, so every connection is opened for company. WAL is a
+// property of the DATABASE FILE — the writable connection sets it once and it persists, letting a
+// reader run while the writer commits; busy_timeout is a property of the CONNECTION and must be set
+// on each one, so a contended access waits instead of failing instantly with SQLITE_BUSY. A
+// read-only connection cannot switch the journal mode (that write belongs to the writer), which is
+// why only the writable open carries the WAL pragma. ORDER MATTERS: busy_timeout comes FIRST,
+// because switching the journal mode itself takes an exclusive lock — two sessions opening the index
+// at the same moment make the WAL pragma the one unprotected step, and it fails with
+// SQLITE_BUSY_RECOVERY unless the timeout is already armed.
+const BUSY_TIMEOUT_MS = 5000;
+
+function openWritableDatabase(indexPath: string): Database {
   const database = new Database(indexPath, { create: true });
+  database.run(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
+  database.run("PRAGMA journal_mode = WAL");
+  return database;
+}
+
+function openReadOnlyDatabase(indexPath: string): Database {
+  const database = new Database(indexPath, { readonly: true });
+  database.run(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
+  return database;
+}
+
+function freshDatabase(indexPath: string): Database {
+  const database = openWritableDatabase(indexPath);
   for (const statement of SCHEMA_STATEMENTS) database.run(statement);
   return database;
 }
@@ -83,7 +107,7 @@ function loadEmbeddingCache(indexPath: string): Map<string, Uint8Array> {
 }
 
 function readEmbeddingCache(indexPath: string): Map<string, Uint8Array> {
-  const database = new Database(indexPath, { readonly: true });
+  const database = openReadOnlyDatabase(indexPath);
   try {
     const config = database.query("SELECT embedding_model FROM index_config").get() as
       | { embedding_model: string }
@@ -233,7 +257,7 @@ export function nearestNeighbor(
   queryVector: Float32Array,
 ): NearestNeighbor | undefined {
   if (!existsSync(indexPath)) return undefined;
-  const database = new Database(indexPath, { readonly: true });
+  const database = openReadOnlyDatabase(indexPath);
   try {
     const rows = database.query("SELECT id, embedding FROM vec").all() as Array<{
       id: string;
@@ -255,7 +279,7 @@ export function nearestNeighbor(
 }
 
 export function dumpIndex(indexPath: string): string {
-  const database = new Database(indexPath, { readonly: true });
+  const database = openReadOnlyDatabase(indexPath);
   try {
     const rows = database
       .query(
@@ -270,7 +294,7 @@ export function dumpIndex(indexPath: string): string {
 }
 
 export function dumpVectors(indexPath: string): string {
-  const database = new Database(indexPath, { readonly: true });
+  const database = openReadOnlyDatabase(indexPath);
   try {
     const rows = database
       .query("SELECT id, content_hash, hex(embedding) AS embedding FROM vec ORDER BY id")

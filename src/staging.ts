@@ -475,7 +475,7 @@ function moveStagedToNotes(corpus: Corpus, id: string, transform: (frontmatter: 
   return resolved;
 }
 
-function rebuildDeps(deps: StagingDeps): RebuildDeps {
+export function rebuildDeps(deps: StagingDeps): RebuildDeps {
   return {
     indexPath: deps.corpus.indexPath,
     notesDir: deps.corpus.notesDir,

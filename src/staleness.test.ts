@@ -12,6 +12,11 @@ import {
 import { createLivenessContext } from "./anchor-liveness";
 import type { LivenessContext } from "./anchor-liveness";
 
+// Every case here builds a real git repository and walks its history, and the heaviest one makes
+// thirteen sequential commits. That is seconds of honest work, so the default 5s per-test cap turns a
+// loaded machine into a coin flip on logic that is fully deterministic.
+const GIT_TEST_TIMEOUT_MS = 30000;
+
 async function makeRepo(): Promise<string> {
   const repoDir = mkdtempSync(join(tmpdir(), "mneme-staleness-"));
   await initRepo(repoDir);
@@ -61,7 +66,7 @@ describe("stalenessBoost live anchors", () => {
     const commit = await commitFile(repoDir, "src/live.ts", "v0", "add live");
 
     expect(await stalenessBoost(await contextOf(repoDir), ["src/live.ts"], commit)).toBe(0);
-  });
+  }, GIT_TEST_TIMEOUT_MS);
 
   test("drift after the note commit accrues -0.001 per commit", async () => {
     const repoDir = await makeRepo();
@@ -71,7 +76,7 @@ describe("stalenessBoost live anchors", () => {
     await commitFile(repoDir, "src/live.ts", "v3", "drift 3");
 
     expect(await stalenessBoost(await contextOf(repoDir), ["src/live.ts"], commit)).toBeCloseTo(-0.003, 6);
-  });
+  }, GIT_TEST_TIMEOUT_MS);
 
   test("drift is floored at the cap beyond ten commits", async () => {
     const repoDir = await makeRepo();
@@ -81,7 +86,7 @@ describe("stalenessBoost live anchors", () => {
     }
 
     expect(await stalenessBoost(await contextOf(repoDir), ["src/live.ts"], commit)).toBe(DRIFT_PENALTY_CAP);
-  });
+  }, GIT_TEST_TIMEOUT_MS);
 
   test("commits that do not touch the anchor do not accrue drift", async () => {
     const repoDir = await makeRepo();
@@ -90,7 +95,7 @@ describe("stalenessBoost live anchors", () => {
     await commitFile(repoDir, "src/other.ts", "o2", "unrelated 2");
 
     expect(await stalenessBoost(await contextOf(repoDir), ["src/live.ts"], commit)).toBe(0);
-  });
+  }, GIT_TEST_TIMEOUT_MS);
 });
 
 describe("stalenessBoost dead anchors and robustness", () => {
@@ -99,7 +104,7 @@ describe("stalenessBoost dead anchors and robustness", () => {
     const commit = await commitFile(repoDir, "src/live.ts", "v0", "add live");
 
     expect(await stalenessBoost(await contextOf(repoDir), ["src/ghost.ts"], commit)).toBe(DEAD_ANCHOR_SINK);
-  });
+  }, GIT_TEST_TIMEOUT_MS);
 
   test("worst anchor wins: one live, one dead sinks the whole note", async () => {
     const repoDir = await makeRepo();
@@ -108,14 +113,14 @@ describe("stalenessBoost dead anchors and robustness", () => {
     expect(await stalenessBoost(await contextOf(repoDir), ["src/live.ts", "src/ghost.ts"], commit)).toBe(
       DEAD_ANCHOR_SINK,
     );
-  });
+  }, GIT_TEST_TIMEOUT_MS);
 
   test("a missing repository yields the dead sink without throwing", async () => {
     const plainDir = mkdtempSync(join(tmpdir(), "mneme-norepo-"));
     writeFileSync(join(plainDir, "file.ts"), "content");
 
     expect(await stalenessBoost(await contextOf(plainDir), ["file.ts"], "abc1234")).toBe(DEAD_ANCHOR_SINK);
-  });
+  }, GIT_TEST_TIMEOUT_MS);
 
   test("a live anchor with a rewritten/unknown commit yields the dead sink, not a throw", async () => {
     const repoDir = await makeRepo();
@@ -124,14 +129,14 @@ describe("stalenessBoost dead anchors and robustness", () => {
     expect(
       await stalenessBoost(await contextOf(repoDir), ["src/live.ts"], "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"),
     ).toBe(DEAD_ANCHOR_SINK);
-  });
+  }, GIT_TEST_TIMEOUT_MS);
 
   test("an anchor beginning with a dash reaches git as a path, not a flag", async () => {
     const repoDir = await makeRepo();
     const commit = await commitFile(repoDir, "-x", "v0", "add dashed path");
 
     expect(await stalenessBoost(await contextOf(repoDir), ["-x"], commit)).toBe(0);
-  });
+  }, GIT_TEST_TIMEOUT_MS);
 });
 
 describe("stalenessBoost known-elsewhere", () => {
@@ -152,7 +157,7 @@ describe("stalenessBoost known-elsewhere", () => {
     expect(await stalenessBoost(await contextOf(repoDir), ["src/parked.ts"], commit)).toBe(
       KNOWN_ELSEWHERE_PENALTY,
     );
-  });
+  }, GIT_TEST_TIMEOUT_MS);
 
   // Directional, never exact-value: fresh above parked, parked above missing (the formula stays a
   // pinned design point; this is a semantic EXTENSION, not tuning).
@@ -169,7 +174,7 @@ describe("stalenessBoost known-elsewhere", () => {
     expect(parked).toBeGreaterThanOrEqual(DRIFT_PENALTY_CAP);
     expect(parked).toBeGreaterThan(missing);
     expect(missing).toBe(DEAD_ANCHOR_SINK);
-  });
+  }, GIT_TEST_TIMEOUT_MS);
 
   test("worst anchor wins across the new state: parked plus missing still sinks the note", async () => {
     const { repoDir, commit } = await repoWithParkedBranch();
@@ -177,5 +182,5 @@ describe("stalenessBoost known-elsewhere", () => {
     expect(
       await stalenessBoost(await contextOf(repoDir), ["src/parked.ts", "src/ghost.ts"], commit),
     ).toBe(DEAD_ANCHOR_SINK);
-  });
+  }, GIT_TEST_TIMEOUT_MS);
 });

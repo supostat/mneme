@@ -10,7 +10,15 @@ import type { GitResult } from "./git";
 
 export class CorpusGitError extends Error {}
 
+// A shared corpus has more than one live session, and git serializes writers with .git/index.lock:
+// the loser gets a generic non-zero exit whose real meaning is "someone else is mid-commit". It is
+// raised as a DISTINCT error (a CorpusGitError, so existing handling still catches it) rather than
+// retried blindly — every corpus writer is retry-convergent, so the honest move is to tell the
+// caller to run the same operation again.
+export class CorpusBusyError extends CorpusGitError {}
+
 const COMMIT_AUTHOR_ARGS = ["-c", "user.email=mneme@localhost", "-c", "user.name=mneme"];
+const INDEX_LOCK_MARKER = "index.lock";
 
 export async function commitPaths(
   corpus: Corpus,
@@ -33,6 +41,9 @@ async function runGitOrThrow(
 ): Promise<GitResult> {
   const result = await runGit(repoDir, args, pathArgs);
   if (result.exitCode !== 0) {
+    if (result.stderr.includes(INDEX_LOCK_MARKER)) {
+      throw new CorpusBusyError("another session is committing to this corpus; retry");
+    }
     throw new CorpusGitError(`git ${args.join(" ")} failed: ${result.stderr.trim()}`);
   }
   return result;

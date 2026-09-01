@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { readFileSync } from "node:fs";
+import { loadConfig } from "../src/config";
 import { resolveCorpus } from "../src/corpus";
 import { phaseDocumentsFromSpec } from "../src/workflow/from-spec";
 import { applyMigration, planMigration, specSlug } from "../src/workflow/migration";
@@ -58,7 +59,9 @@ export async function main(argv: string[]): Promise<number> {
   }
   try {
     const phases = phaseDocumentsFromSpec(readFileSync(args.specPath, "utf8"));
-    const corpus = await resolveCorpus(process.cwd());
+    const corpus = await resolveCorpus(process.cwd(), {
+      corpusName: loadConfig(process.cwd()).corpus.name,
+    });
     const plan = planMigration(phases, corpus.corpusDir, specSlug(args.specPath));
     const conflicts = plan.writes.filter((write) => write.action === "conflict").length;
     const absolutePaths = plan.writes.map((write) => write.absolutePath);

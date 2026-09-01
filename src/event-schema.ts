@@ -60,7 +60,11 @@ import { z } from "zod";
 //       gains accepted_body_len / accepted_anchors_n — the accepted note's measures stamped by the
 //       producer at accept time (null on reject), so the reader compares two records of ONE log and
 //       stats stays a pure event-log aggregation.
-export const SCHEMA_VERSION = 14;
+//  15 — corpus adoption: corpus_adopted {source_path, adopted_n, skipped_n} records one merge of a
+//       corpus that drifted apart from this one (two working copies of a project used to derive two
+//       corpora). Notes cross WITHOUT re-staging — both sides already passed the human gate — so this
+//       event, not a staging_resolve, is where an adopted note's arrival is recorded.
+export const SCHEMA_VERSION = 15;
 
 export const DEDUP_OUTCOMES = ["add", "supersede_suggest", "noop"] as const;
 // The closed v1 registry of digit-menu decision classes: curation rides staging_resolve, plan-fan
@@ -321,6 +325,17 @@ const bundleNoteRejectedEvent = z.object({
   marker: z.string(),
 });
 
+// One adoption of a corpus that drifted apart from this one. source_path is the canonical directory
+// the notes came from; skipped_n counts both kinds of skip (already present by id, and a duplicate
+// the receiving corpus's dedup recognized).
+const corpusAdoptedEvent = z.object({
+  type: z.literal("corpus_adopted"),
+  ...envelope,
+  source_path: z.string(),
+  adopted_n: z.number().int(),
+  skipped_n: z.number().int(),
+});
+
 // session_start / session_end carry only the envelope. An ABSENT session_end means the session was
 // cut off (SIGKILL, kernel panic, killed terminal) — that is normal, NOT a data error; Phase-6
 // duration analysis pairs each session_start with its session_end and treats a missing end as open.
@@ -495,6 +510,7 @@ export const eventSchema = z.discriminatedUnion("type", [
   noteRetagResolvedEvent,
   anchorSweepEvent,
   bundleNoteRejectedEvent,
+  corpusAdoptedEvent,
   rebuildEvent,
   sessionStartEvent,
   sessionEndEvent,

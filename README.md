@@ -8,17 +8,18 @@ silently: you accept, reject, or supersede staged notes yourself, so the corpus 
 memory you approved. Recall fuses full-text and vector search under a token budget and logs its
 candidates so retrieval decisions can be replayed and audited offline.
 
-The binary exposes thirteen MCP tools over stdio. Five are the memory surface: `remember` (stage a
+The binary exposes fourteen MCP tools over stdio. Five are the memory surface: `remember` (stage a
 note), `recall` (token-budgeted fused retrieval), `staging_list` and `staging_resolve` (review and
 accept/reject/supersede staged notes), and `stats` (reuse and footprint metrics from the event log).
-Four curate the accepted corpus: `notes_list` (one line per live note with anchor health, or one full
+Five curate the accepted corpus: `notes_list` (one line per live note with anchor health, or one full
 note by id), `note_retire` (queue a retirement — the decision still travels through the
 `staging_resolve` human gate, and an accepted retire keeps the file as history while recall stops
 seeing it), `anchor_repair` (queue an anchor replacement for a note whose anchor path went missing —
 same gate, and an accepted repair rewrites the address while the body stays immutable), and
 `anchor_sweep` (batch-stage repairs by tracing renames in the project's git history: a single
 confident successor is staged, ambiguity and outright deletions are only reported, and a repaired
-corpus sweeps to silence). The remaining four drive the workflow engine: `workflow_start` opens a run anchored to
+corpus sweeps to silence), and `corpus_adopt` (merge a corpus that drifted apart from this one — see
+Merging corpora below). The remaining four drive the workflow engine: `workflow_start` opens a run anchored to
 the current project branch; `workflow_step` is the live executor — it loops directives (recall at
 phase start, gated steps, harvest on close) decided by the reducer, resumes a branch's unfinished
 run from the event log after an interruption, and never silently resumes a run whose branch is gone;
@@ -28,6 +29,49 @@ records a terminal human refusal of an unfinished run, distinct from failure.
 The server ships as a single self-contained compiled binary, distributed through the separate
 `mneme-plugin` repository. This repository is the source; the binary is built from it by the bridge
 described below.
+
+## Sharing one corpus between working copies
+
+By default a project's corpus directory is derived from the project's absolute path, so two working
+copies of the same project — two folders with different names — grow two independent corpora and
+neither sees the other's notes. Give both copies the same corpus name in their `.mneme.json` to point
+them at one corpus:
+
+```json
+{ "corpus": { "name": "my-project" } }
+```
+
+The name is a slug (`^[a-z0-9][a-z0-9_-]{0,63}$`) naming a directory under `~/.mneme/`; a value with
+slashes or dots is refused. `MNEME_CORPUS_NAME` overrides the file. A project without the key keeps
+the historical path-derived directory, byte for byte. Two live sessions may share one corpus: the
+index is opened in WAL mode with a busy timeout, event-log lines are appended atomically, and a
+session that loses the race for the corpus repo's git lock is told to retry rather than left with a
+half-written commit.
+
+### Moving an existing corpus onto a name
+
+Renaming is a manual, reversible move — the engine deliberately does not relocate corpora for you:
+
+```
+mv ~/.mneme/-Users-you-Projects-my-project ~/.mneme/my-project
+```
+
+then add the `corpus.name` key to `.mneme.json` and delete any symlinks you had created under
+`~/.mneme/` to fake a shared corpus. The first run stamps the name into the corpus manifest.
+
+### Merging corpora
+
+When both copies already accumulated notes, merge them with the `corpus_adopt` tool, giving it the
+OTHER corpus's directory:
+
+```
+corpus_adopt { "source_corpus_dir": "~/.mneme/-Users-you-Projects-my-project-copy" }
+```
+
+Notes cross without re-staging — both sides already passed the human review gate — while a note
+already present by id, or one the receiving corpus's dedup recognizes as the same knowledge, is
+skipped and reported. The source corpus is only read; deleting that folder afterwards is your
+decision. Adoption needs the embedder running, because the dedup check is the point.
 
 ## Building the plugin
 

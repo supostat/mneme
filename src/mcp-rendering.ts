@@ -6,6 +6,7 @@ import type { SweepReport, ScoredCandidate } from "./anchor-repair";
 import type { DedupSummary } from "./dedup-sidecar";
 import type { Note } from "./note";
 import type { StagedAnchor } from "./anchor-liveness";
+import type { AdoptOutcome } from "./corpus-adopt";
 
 // Renders tool results as the delimiter-fenced text handed back to the LLM. Kept apart from the
 // server wiring so mcp-server.ts stays focused on dispatch, lifecycle and dependency assembly.
@@ -319,4 +320,30 @@ export function formatNoteShow(note: Note): string {
     `${lifecycle}${note.body}`,
     fence.end,
   ].join("\n");
+}
+
+// One adoption pass, reported so the human can see WHY a note did not cross: the counts alone would
+// hide the difference between "already had it" and "dedup called it the same knowledge".
+export function formatAdoption(outcome: AdoptOutcome): string {
+  if (outcome.notes.length === 0) {
+    return `Adopted nothing: ${outcome.sourcePath} holds no notes. Its files were left untouched.`;
+  }
+  const lines = [
+    `Adopted ${outcome.adoptedCount} note(s) from ${outcome.sourcePath}, skipped ${outcome.skippedCount}.`,
+    outcome.commit === null
+      ? "Nothing new to commit in this corpus."
+      : `Corpus commit: ${outcome.commit}.`,
+  ];
+  const alreadyPresent = outcome.notes.filter((note) => note.reason === "already-present");
+  const duplicates = outcome.notes.filter((note) => note.reason === "duplicate");
+  if (alreadyPresent.length > 0) {
+    lines.push(`already present by id: ${alreadyPresent.map((note) => note.id).join(", ")}`);
+  }
+  for (const duplicate of duplicates) {
+    lines.push(
+      `duplicate of ${duplicate.nearestId} (similarity ${duplicate.similarity?.toFixed(3)}): ${duplicate.id}`,
+    );
+  }
+  lines.push("The source corpus was only read; deleting that folder stays your decision.");
+  return lines.join("\n");
 }

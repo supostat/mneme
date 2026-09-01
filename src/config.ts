@@ -15,10 +15,19 @@ export class ConfigError extends Error {}
 export const CONFIG_FILE_NAME = ".mneme.json";
 export const DEFAULT_RECALL_BUDGET = 2000;
 
+// The corpus name becomes a directory under the corpus home, so its grammar is the security guard
+// that keeps a configured value from escaping that home: no slashes and no dots means traversal is
+// impossible by construction rather than by sanitizing a looser value.
+export const CORPUS_NAME_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+const CORPUS_NAME_REQUIREMENT =
+  "it must be a corpus slug: lowercase letters, digits, underscore or dash, " +
+  "starting with a letter or digit, at most 64 characters";
+
 export interface MnemeConfig {
   embedder: { baseUrl: string; model: string; format: EmbedderFormat };
   dedup: { supersedeThreshold: number; noopThreshold: number };
   recall: { budget: number };
+  corpus: { name: string | undefined };
 }
 
 export function defaultConfig(): MnemeConfig {
@@ -26,6 +35,7 @@ export function defaultConfig(): MnemeConfig {
     embedder: { baseUrl: OLLAMA_BASE_URL, model: EMBEDDING_MODEL, format: "ollama" },
     dedup: { supersedeThreshold: DEDUP_SUPERSEDE_THRESHOLD, noopThreshold: DEDUP_NOOP_THRESHOLD },
     recall: { budget: DEFAULT_RECALL_BUDGET },
+    corpus: { name: undefined },
   };
 }
 
@@ -51,6 +61,12 @@ const configFileSchema = z
     recall: z
       .object({
         budget: z.number().int().positive().optional(),
+      })
+      .strict()
+      .optional(),
+    corpus: z
+      .object({
+        name: z.string().regex(CORPUS_NAME_PATTERN, CORPUS_NAME_REQUIREMENT).optional(),
       })
       .strict()
       .optional(),
@@ -89,6 +105,7 @@ function applyConfigFile(config: MnemeConfig, configPath: string): void {
   config.dedup.supersedeThreshold = file.dedup?.supersede_threshold ?? config.dedup.supersedeThreshold;
   config.dedup.noopThreshold = file.dedup?.noop_threshold ?? config.dedup.noopThreshold;
   config.recall.budget = file.recall?.budget ?? config.recall.budget;
+  config.corpus.name = file.corpus?.name ?? config.corpus.name;
 }
 
 function parseJson(configPath: string, text: string): unknown {
@@ -109,6 +126,18 @@ function applyEnvironment(config: MnemeConfig, environment: ConfigEnvironment): 
   config.dedup.noopThreshold =
     thresholdFrom(environment, "MNEME_DEDUP_NOOP_THRESHOLD") ?? config.dedup.noopThreshold;
   config.recall.budget = budgetFrom(environment) ?? config.recall.budget;
+  config.corpus.name = corpusNameFrom(environment) ?? config.corpus.name;
+}
+
+function corpusNameFrom(environment: ConfigEnvironment): string | undefined {
+  const raw = environment["MNEME_CORPUS_NAME"];
+  if (raw === undefined) {
+    return undefined;
+  }
+  if (!CORPUS_NAME_PATTERN.test(raw)) {
+    throw new ConfigError(`MNEME_CORPUS_NAME is "${raw}"; ${CORPUS_NAME_REQUIREMENT}`);
+  }
+  return raw;
 }
 
 function embedderFormatFrom(environment: ConfigEnvironment): EmbedderFormat | undefined {

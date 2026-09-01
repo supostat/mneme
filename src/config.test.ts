@@ -28,6 +28,7 @@ describe("default parity", () => {
       embedder: { baseUrl: OLLAMA_BASE_URL, model: EMBEDDING_MODEL, format: "ollama" },
       dedup: { supersedeThreshold: DEDUP_SUPERSEDE_THRESHOLD, noopThreshold: DEDUP_NOOP_THRESHOLD },
       recall: { budget: DEFAULT_RECALL_BUDGET },
+      corpus: { name: undefined },
     });
     expect(config).toEqual(defaultConfig());
   });
@@ -63,6 +64,7 @@ describe("file overrides", () => {
         embedder: { base_url: "http://lm-studio:1234", model: "nomic-embed-text", format: "openai" },
         dedup: { supersede_threshold: 0.8, noop_threshold: 0.95 },
         recall: { budget: 4000 },
+        corpus: { name: "shared-corpus" },
       }),
     );
 
@@ -70,6 +72,7 @@ describe("file overrides", () => {
       embedder: { baseUrl: "http://lm-studio:1234", model: "nomic-embed-text", format: "openai" },
       dedup: { supersedeThreshold: 0.8, noopThreshold: 0.95 },
       recall: { budget: 4000 },
+      corpus: { name: "shared-corpus" },
     });
   });
 });
@@ -85,12 +88,14 @@ describe("environment overrides", () => {
       MNEME_DEDUP_SUPERSEDE_THRESHOLD: "0.7",
       MNEME_DEDUP_NOOP_THRESHOLD: "0.9",
       MNEME_RECALL_BUDGET: "1500",
+      MNEME_CORPUS_NAME: "from-env",
     });
 
     expect(config).toEqual({
       embedder: { baseUrl: "http://from-env:2", model: "env-model", format: "openai" },
       dedup: { supersedeThreshold: 0.7, noopThreshold: 0.9 },
       recall: { budget: 1500 },
+      corpus: { name: "from-env" },
     });
   });
 
@@ -136,5 +141,38 @@ describe("fail-closed file validation", () => {
     expect(() => loadConfig(projectRoot, NO_ENV)).toThrow(
       /supersede_threshold \(0.98\) must not exceed noop_threshold \(0.97\)/,
     );
+  });
+});
+
+describe("corpus name", () => {
+  test("a slug in the file names the corpus two working copies share", () => {
+    const projectRoot = projectWithFile(JSON.stringify({ corpus: { name: "mneme_engine-2" } }));
+
+    expect(loadConfig(projectRoot, NO_ENV).corpus.name).toBe("mneme_engine-2");
+  });
+
+  test("without the section the name stays undefined, keeping the munged derivation", () => {
+    expect(loadConfig(emptyProject(), NO_ENV).corpus.name).toBeUndefined();
+    expect(loadConfig(projectWithFile(JSON.stringify({ recall: { budget: 100 } })), NO_ENV).corpus.name).toBeUndefined();
+  });
+
+  test("MNEME_CORPUS_NAME overrides the file", () => {
+    const projectRoot = projectWithFile(JSON.stringify({ corpus: { name: "from-file" } }));
+
+    expect(loadConfig(projectRoot, { MNEME_CORPUS_NAME: "from-env" }).corpus.name).toBe("from-env");
+  });
+
+  test("a name that could escape the corpus home is refused with its key path", () => {
+    for (const name of ["../evil", "nested/name", "with.dot", "", "UPPER", "-leading", "x".repeat(65)]) {
+      const projectRoot = projectWithFile(JSON.stringify({ corpus: { name } }));
+
+      expect(() => loadConfig(projectRoot, NO_ENV)).toThrow(ConfigError);
+      expect(() => loadConfig(projectRoot, NO_ENV)).toThrow(/corpus\.name/);
+    }
+  });
+
+  test("the same grammar guards the environment override", () => {
+    expect(() => loadConfig(emptyProject(), { MNEME_CORPUS_NAME: "../evil" })).toThrow(ConfigError);
+    expect(() => loadConfig(emptyProject(), { MNEME_CORPUS_NAME: "../evil" })).toThrow(/MNEME_CORPUS_NAME is "\.\.\/evil"/);
   });
 });

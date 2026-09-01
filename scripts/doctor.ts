@@ -37,7 +37,7 @@ export async function doctorForProject(
     config.embedder.model,
     config.embedder.format,
   );
-  const { corpusDir } = corpusDirFor(projectRoot, options.corpusHome);
+  const { corpusDir } = corpusDirFor(projectRoot, options.corpusHome, config.corpus.name);
   return runDoctor({ corpusDir, embedder });
 }
 

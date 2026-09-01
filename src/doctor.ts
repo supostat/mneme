@@ -132,6 +132,18 @@ function checkManifest(paths: CorpusPaths): CheckOutcome {
     return { status: "fail", detail: errorMessage(error) };
   }
   const expected = basename(paths.corpusDir);
+  // A NAMED corpus is addressed by its name and serves several working copies, so the munging check
+  // — which asks whether THIS project's path produced the directory name — is meaningless for it and
+  // the name is what must match. Unnamed corpora keep the historical collision guard.
+  if (manifest.name !== undefined) {
+    if (manifest.name !== expected) {
+      return {
+        status: "fail",
+        detail: `manifest names corpus ${manifest.name}, which is not the corpus directory ${expected}`,
+      };
+    }
+    return { status: "ok", detail: `format v${manifest.format_version} for corpus ${manifest.name}` };
+  }
   if (mungePath(manifest.path) !== expected) {
     return {
       status: "fail",
