@@ -8,6 +8,7 @@ import { validatePhaseDocument } from "./phase-document";
 import { buildPhaseGraph } from "./phase-graph";
 import { applyStepResult, initialRun, reduce } from "./reducer";
 import type { Directive, RunDefinition, StepResult, WorkflowRun } from "./reducer";
+import type { BundleNoteRef } from "./run-payloads";
 
 // Pure, total restore of workflow runs from the event log (producer serialization lives in
 // run-payloads.ts). Restore parses with the version-TOLERANT *Restore schema variants (see the v4
@@ -51,6 +52,11 @@ export interface ReadableRun {
   run: WorkflowRun;
   startedTs: string;
   failedGatesHistory: FailedGatesRecord[];
+  // What each phase's recall bundle actually held, keyed by phase id. A phase absent from the map
+  // has an UNKNOWN composition (its recall predates schema v16, or it has not run yet) — which is
+  // not the same as an empty bundle, and the usage-declaration check must refuse rather than
+  // silently pass when it cannot see the ground truth.
+  bundleNotesByPhase: Record<string, BundleNoteRef[]>;
 }
 
 export interface UnreadableRun {
@@ -157,6 +163,7 @@ function restoredRunFrom(runId: string, payload: RunStartedPayload): ReadableRun
     run: initialRun(definition),
     startedTs: payload.ts,
     failedGatesHistory: [],
+    bundleNotesByPhase: {},
   };
 }
 
@@ -186,9 +193,22 @@ function absorbStepApplied(runsById: Map<string, RestoredRun>, event: StoredEven
   try {
     known.run = applyStepResult(known.run, known.definition, stepResultFromPayload(parsed.data));
     absorbGates(known, parsed.data);
+    absorbBundleNotes(known, parsed.data);
   } catch (error) {
     setUnreadable(runsById, runId, known.branch, problemMessage(error));
   }
+}
+
+// The restore mirror of the executor's own write: a recall application carrying a composition
+// records it under its phase. A recall is safely REPEATABLE (it is read-only against the corpus, so
+// a crash between the effect and its append simply re-runs it), which means one phase can leave
+// several recall events — the LAST one wins, because it describes the bundle the agent actually
+// received. An event without the key predates v16 and leaves the phase unknown rather than empty.
+function absorbBundleNotes(known: ReadableRun, payload: StepAppliedPayload): void {
+  if (payload.result_kind !== "recall") return;
+  const notes = payload.bundle_notes;
+  if (notes === undefined || notes === null) return;
+  known.bundleNotesByPhase[payload.phase_id] = notes.map((note) => ({ id: note.id, type: note.type }));
 }
 
 // A gated application grows or clears the history: a pass clears it whole (the phase closed, its

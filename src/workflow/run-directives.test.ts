@@ -38,6 +38,7 @@ function activeRunFrom(definition: RunDefinition): ReadableRun {
     run: initialRun(definition),
     startedTs: "2026-07-06T10:00:00.000Z",
     failedGatesHistory: [],
+    bundleNotesByPhase: {},
   };
 }
 

@@ -9,7 +9,8 @@ import type { ExecuteStepDirective, HarvestDirective, StepResult } from "./reduc
 import { pendingDirectiveOf, phaseOf } from "./run-events";
 import type { FailedGatesRecord, ReadableRun } from "./run-events";
 import { stepAppliedPayload } from "./run-payloads";
-import type { StepApplication } from "./run-payloads";
+import type { StepApplication, UsedNoteRef } from "./run-payloads";
+import { assertDeclaredNotesInBundle } from "./used-notes";
 
 // The mechanical side of the live executor: each function advances the in-memory run through
 // applyStepResult and appends the matching workflow_step_applied event, returning the response
@@ -29,8 +30,20 @@ export async function runEngineSteps(deps: StagingDeps, active: ReadableRun): Pr
       budget: active.retrieval.recallBudget,
     });
     const result: StepResult = { kind: "recall", phaseId: directive.phaseId };
+    const bundleNotes = bundle.notes.map((note) => ({ id: note.id, type: String(note.type) }));
     active.run = applyStepResult(active.run, active.definition, result);
-    appendStepApplied(deps, active, { result, attempt: null, gates: null, harvestedCount: null, dedupRejected: null });
+    // The composition is recorded HERE, at the moment it was compiled: it is what a later harvest's
+    // usage declaration is checked against, and it must survive into a fresh session's fold.
+    active.bundleNotesByPhase[directive.phaseId] = bundleNotes;
+    appendStepApplied(deps, active, {
+      result,
+      attempt: null,
+      gates: null,
+      harvestedCount: null,
+      dedupRejected: null,
+      bundleNotes,
+      usedNotes: null,
+    });
     sections.push(`Recall bundle for phase "${directive.phaseId}":\n${formatRecallBundle(bundle)}`);
     directive = pendingDirectiveOf(active);
   }
@@ -57,7 +70,15 @@ export async function applyGatedFinalStep(
   } else {
     active.failedGatesHistory.push(failedGatesFromReport(pending, report));
   }
-  appendStepApplied(deps, active, { result, attempt: pending.attempt, gates: report, harvestedCount: null, dedupRejected: null });
+  appendStepApplied(deps, active, {
+    result,
+    attempt: pending.attempt,
+    gates: report,
+    harvestedCount: null,
+    dedupRejected: null,
+    bundleNotes: null,
+    usedNotes: null,
+  });
   const verdict = report.passed ? "PASS" : "FAIL";
   return [
     `Gate verdict for ${pending.phaseId}/${pending.stepId} (attempt ${pending.attempt}): ${verdict}\n${formatGateReport(report)}`,
@@ -92,7 +113,11 @@ export async function applyHarvest(
   active: ReadableRun,
   pending: HarvestDirective,
   artifacts: PhaseArtifact[],
+  usedNotes?: UsedNoteRef[],
 ): Promise<string[]> {
+  // The declaration is checked BEFORE anything is staged or appended: a call naming a note the phase
+  // never surfaced is refused whole, so the corpus and the log stay exactly as they were.
+  assertDeclaredNotesInBundle(pending.phaseId, usedNotes ?? [], active.bundleNotesByPhase);
   // Crash window between harvestPhase and the append is accepted: with live embeddings a replayed
   // harvest dedups to a noop; in degraded mode the duplicate staged note is caught by human review.
   const results = await harvestPhase(deps, artifacts);
@@ -108,6 +133,10 @@ export async function applyHarvest(
     gates: null,
     harvestedCount: stagedCount,
     dedupRejected: rejected,
+    bundleNotes: null,
+    // Absence and emptiness are recorded differently: no field means the caller was not
+    // instrumented, [] means it looked and found nothing useful.
+    usedNotes: usedNotes ?? null,
   });
   const rejectionNotice =
     rejected.length === 0 ? "" : ` ${rejected.length} artifact(s) were dropped as duplicates of existing notes;`;

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultConfig } from "../config";
@@ -110,6 +110,7 @@ function activeRunFrom(definition: RunDefinition): ReadableRun {
     run: initialRun(definition),
     startedTs: "2026-07-06T10:00:00.000Z",
     failedGatesHistory: [],
+    bundleNotesByPhase: {},
   };
 }
 
@@ -365,5 +366,110 @@ describe("the reducer stays memory-agnostic", () => {
     const forbidden = ["memory-steps", "recall", "staging", "index-db", "corpus", "embeddings", "/events"];
     const leaked = importSources.filter((from) => forbidden.some((needle) => from.includes(needle)));
     expect(leaked).toEqual([]);
+  });
+});
+
+describe("runEngineSteps records the bundle composition it compiled", () => {
+  function recallEvents(deps: StagingDeps): StoredEvent[] {
+    return readEvents(deps.corpus.eventsDir).filter(
+      (event: StoredEvent) => event.type === "workflow_step_applied" && event.result_kind === "recall",
+    );
+  }
+
+  test("the recall event names the notes of the bundle the agent received, with their types", async () => {
+    const { projectRoot, commit } = await buildProjectRepo();
+    const deps = await makeDeps(projectRoot);
+    const noteId = "01ARZ3NDEKTSV4RRFFQ69G5FB7";
+    const noteBody = "phase one module ranking probe closure evidence";
+    writeAcceptedNote(deps, noteId, noteBody, commit);
+    await rebuild({
+      indexPath: deps.corpus.indexPath,
+      notesDir: deps.corpus.notesDir,
+      projectRoot,
+      embeddings: deps.embeddings,
+      eventWriter: deps.eventWriter,
+      clock: fixedClock,
+    });
+    const active = activeRunFrom(twoPhaseDefinition());
+
+    const sections = await runEngineSteps(deps, active);
+
+    // What the event claims is exactly what the agent was handed.
+    const bundleText = sections.find((section) => section.includes('Recall bundle for phase "phase-one"'))!;
+    expect(bundleText).toContain(noteBody);
+    expect(recallEvents(deps)[0]!.bundle_notes).toEqual([{ id: noteId, type: "decision" }]);
+    // And the live run carries the same composition, so a harvest in THIS session can check against it
+    // without re-reading the log.
+    expect(active.bundleNotesByPhase).toEqual({ "phase-one": [{ id: noteId, type: "decision" }] });
+  });
+
+  test("an empty corpus yields an empty composition, not a missing one", async () => {
+    const { projectRoot } = await buildProjectRepo();
+    const deps = await makeDeps(projectRoot);
+    const active = activeRunFrom(twoPhaseDefinition());
+
+    await runEngineSteps(deps, active);
+
+    expect(recallEvents(deps)[0]!.bundle_notes).toEqual([]);
+    expect(active.bundleNotesByPhase["phase-one"]).toEqual([]);
+  });
+
+  test("the composition survives a restore from the log alone", async () => {
+    const { projectRoot, commit } = await buildProjectRepo();
+    const deps = await makeDeps(projectRoot);
+    const noteId = "01ARZ3NDEKTSV4RRFFQ69G5FB8";
+    writeAcceptedNote(deps, noteId, "phase one module ranking probe restored evidence", commit);
+    await rebuild({
+      indexPath: deps.corpus.indexPath,
+      notesDir: deps.corpus.notesDir,
+      projectRoot,
+      embeddings: deps.embeddings,
+      eventWriter: deps.eventWriter,
+      clock: fixedClock,
+    });
+    const definition = twoPhaseDefinition();
+    const active = activeRunFrom(definition);
+    deps.eventWriter.append({
+      ...runStartedPayload(active.runId, active.branch, definition, active.retrieval),
+      type: "workflow_run_started",
+    });
+    await runEngineSteps(deps, active);
+
+    const restored = restoreRuns(readEvents(deps.corpus.eventsDir)).find((run) => run.kind === "restored");
+
+    expect(restored?.kind).toBe("restored");
+    expect(restored?.kind === "restored" ? restored.bundleNotesByPhase : {}).toEqual({
+      "phase-one": [{ id: noteId, type: "decision" }],
+    });
+  });
+});
+
+describe("applyHarvest refuses a declaration before anything is written", () => {
+  test("a stranger id throws and stages NOTHING — the artifacts never reach the corpus", async () => {
+    const { projectRoot } = await buildProjectRepo();
+    const deps = await makeDeps(projectRoot);
+    const active = activeRunFrom(twoPhaseDefinition());
+    await runEngineSteps(deps, active);
+    await applyGatedFinalStep(deps, active, pendingDirectiveOf(active) as ExecuteStepDirective, []);
+    const harvest = pendingDirectiveOf(active) as HarvestDirective;
+    const artifacts = [
+      {
+        kind: "decision" as const,
+        decision: "the declaration guard runs first",
+        rationale: "so a refused call leaves no trace",
+        anchors: ["src/a.ts"],
+      },
+    ];
+
+    await expect(
+      applyHarvest(deps, active, harvest, artifacts, [
+        { id: "01ARZ3NDEKTSV4RRFFQ69G5FC9", evidence: "claimed, but never surfaced" },
+      ]),
+    ).rejects.toThrow(/recall bundle/);
+
+    expect(readdirSync(deps.corpus.stagingDir).length).toBe(0);
+    expect(readEvents(deps.corpus.eventsDir).some((event) => event.result_kind === "harvest")).toBe(false);
+    // The directive is untouched, so the correct call still closes the phase.
+    expect(pendingDirectiveOf(active).kind).toBe("harvest");
   });
 });

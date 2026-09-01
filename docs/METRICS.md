@@ -445,6 +445,72 @@ cat "$EVENTS"/*.jsonl | jq -s 'group_by(.type) | map({type: .[0].type, count: le
 > `menu` on an older event reads as "not instrumented", never an error; the (i) coverage recipe
 > splits its denominator on exactly this version boundary.
 
+## (l) Precision-of-use — did a surfaced note actually get used? · (m) Declaration coverage
+
+**Read this number as biased.** The numerator is the agent's own claim about its own work, so it is
+systematically **inflated**. The **trend** across weeks says more than any single level, and levels
+are comparable only **inside one generation of the declaring skill** — a reworded instruction
+changes the number without anything about the corpus changing.
+
+**Definition.** When a phase opens, its recall bundle is compiled and the notes it surfaced are
+recorded on the `workflow_step_applied{result_kind:"recall"}` event as `bundle_notes [{id, type}]` —
+this is the **denominator**. When the phase closes, the harvest call MAY carry
+`used_notes [{id, evidence}]`: the notes the agent declares it leaned on, each with the place it
+influenced the work. Those are the **numerator**. Both sides come from one log and are stitched by
+`run_id` + `phase_id`.
+
+```
+precision-of-use = |used_notes| / |bundle_notes|      (per note type, and overall)
+coverage         = harvests carrying used_notes / all harvests
+```
+
+`used_notes` is **three-valued** and the distinction is load-bearing:
+
+| value | meaning | counted in precision | counted in coverage |
+|---|---|---|---|
+| absent / `null` | the caller was not instrumented | no | denominator only |
+| `[]` | the agent looked and declared nothing useful | yes (as 0 used) | yes |
+| `[{id, evidence}, …]` | declared uses | yes | yes |
+
+An empty precision population reports **no data**, never `0%`: nobody having declared anything is a
+different finding from nothing having helped. Windows are **calendar** windows (30 / 90 days) taken
+from the reading moment, so a corpus that slept for a season honestly shows them empty instead of
+sliding its horizon onto its own newest event.
+
+**Refusals (fail-closed).** A declaration naming a note the phase never surfaced, or an `evidence`
+string that names nothing, refuses the **whole call** — nothing is staged and nothing is logged — so
+the populations above never absorb junk.
+
+```sh
+# precision-of-use, all time, by note type
+cat "$EVENTS"/*.jsonl | jq -s '
+  [ .[] | select(.type == "workflow_step_applied") ] as $applied
+  | ([ $applied[] | select(.result_kind == "recall" and .bundle_notes != null)
+       | { key: (.run_id + " " + .phase_id), value: .bundle_notes } ] | from_entries) as $bundles
+  | [ $applied[] | select(.result_kind == "harvest" and .used_notes != null)
+      | { used: [ .used_notes[].id ], bundle: ($bundles[.run_id + " " + .phase_id] // []) } ]
+  | [ .[] | .bundle[] as $note | { type: $note.type, used: (if (.used | index($note.id)) then 1 else 0 end) } ]
+  | group_by(.type)
+  | map({ type: .[0].type, bundled: length, used: (map(.used) | add) })'
+
+# declaration coverage
+cat "$EVENTS"/*.jsonl | jq -s '
+  [ .[] | select(.type == "workflow_step_applied" and .result_kind == "harvest") ]
+  | { harvests: length, instrumented: ([ .[] | select(.used_notes != null) ] | length) }'
+```
+
+**Write-only for the agent.** These numbers are shown to a **human**, in `stats`, and nowhere else.
+They never enter recall ranking — not through `fuseAndFill`, not through a note field, not through a
+bundle filter — and they are never rendered into a surface where an agent forms a recommendation. An
+agent that can see its own usefulness score starts optimizing for the score (Goodhart) and the
+measurement dies; the same neutrality rule already governs (h) agreement.
+
+> **Schema note (v16).** `workflow_step_applied` gains two optional keys: `bundle_notes [{id, type}]`
+> on a recall application and `used_notes [{id, evidence}]` on a harvest application. Both are
+> optional in the shape (the v4 extend-never-repurpose rule), so pre-v16 events restore unchanged —
+> a recall without the key means "the bundle composition is unknown", which is **not** an empty
+> bundle, and a harvest without the key stays outside the coverage numerator.
+
 ## Offline replay
 
 The candidate list makes each recall decision **reproducible offline**. `scripts/replay.ts` rebuilds

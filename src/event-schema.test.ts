@@ -175,8 +175,8 @@ const AGENT_VOTE_MIRROR = {
 } as const satisfies Record<Vote, true>;
 
 describe("event-schema constants", () => {
-  test("SCHEMA_VERSION is 15", () => {
-    expect(SCHEMA_VERSION).toBe(15);
+  test("SCHEMA_VERSION is 16", () => {
+    expect(SCHEMA_VERSION).toBe(16);
   });
 
   test("EXECUTABLE_GATE_REASONS mirrors gate-runner's ExecutableGateReason in both directions", () => {
@@ -333,5 +333,45 @@ describe("eventSchema recall candidate window", () => {
 
   test("an unknown recall origin fails", () => {
     expect(eventSchema.safeParse(stamp(recallWith({ origin: "cron" }))).success).toBe(false);
+  });
+});
+
+describe("workflow_step_applied usefulness keys (v16)", () => {
+  const BUNDLE_NOTE = { id: "01ARZ3NDEKTSV4RRFFQ69G5FB0", type: "decision" };
+  const USED_NOTE = { id: "01ARZ3NDEKTSV4RRFFQ69G5FB0", evidence: "the fold's last-wins rule came from it" };
+
+  test("a recall application validates with its bundle composition", () => {
+    const stamped = stamp({ ...LIVE_EVENTS["workflow_step_applied_recall"]!, bundle_notes: [BUNDLE_NOTE] });
+
+    expect(eventSchema.safeParse(stamped).success).toBe(true);
+    expect(workflowStepAppliedRestore.safeParse(stamped).success).toBe(true);
+  });
+
+  test("a harvest application validates with a usage declaration and with an explicitly empty one", () => {
+    const declared = stamp({ ...LIVE_EVENTS["workflow_step_applied_recall"]!, used_notes: [USED_NOTE] });
+    const nothingUseful = stamp({ ...LIVE_EVENTS["workflow_step_applied_recall"]!, used_notes: [] });
+
+    expect(eventSchema.safeParse(declared).success).toBe(true);
+    expect(eventSchema.safeParse(nothingUseful).success).toBe(true);
+    expect(workflowStepAppliedRestore.safeParse(declared).success).toBe(true);
+  });
+
+  // The v4 extend rule in force: an event stamped before these keys existed still restores, and the
+  // absence of the key is preserved rather than defaulted to an empty array.
+  test("a pre-v16 application carries neither key and still validates on both schemas", () => {
+    const stamped = stamp(LIVE_EVENTS["workflow_step_applied_recall"]!);
+
+    expect("bundle_notes" in stamped).toBe(false);
+    expect("used_notes" in stamped).toBe(false);
+    expect(eventSchema.safeParse(stamped).success).toBe(true);
+    expect(workflowStepAppliedRestore.safeParse(stamped).success).toBe(true);
+  });
+
+  test("malformed entries are refused: a bundle note without a type, a used note without evidence", () => {
+    const badBundle = stamp({ ...LIVE_EVENTS["workflow_step_applied_recall"]!, bundle_notes: [{ id: BUNDLE_NOTE.id }] });
+    const badUsed = stamp({ ...LIVE_EVENTS["workflow_step_applied_recall"]!, used_notes: [{ id: USED_NOTE.id }] });
+
+    expect(eventSchema.safeParse(badBundle).success).toBe(false);
+    expect(eventSchema.safeParse(badUsed).success).toBe(false);
   });
 });

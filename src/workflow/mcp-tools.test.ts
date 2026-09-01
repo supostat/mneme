@@ -1277,3 +1277,184 @@ describe("workflow ready-phase visibility", () => {
     expect(serial).not.toContain("ready:");
   });
 });
+
+describe("workflow usage declaration", () => {
+  const NOTE_BODY = "Decision: the ranking probe module closes over its own evidence window";
+
+  function probePhase(id: string): string {
+    return serializePhaseDocument({
+      id,
+      deps: [],
+      agentRole: "coder",
+      description: "ranking probe module evidence window closure",
+      tasks: ["do the work"],
+      doneWhen: GREEN_GATE,
+      knowledge: [],
+    });
+  }
+
+  // The note crosses the REAL human gate (remember -> staging_resolve accept) so the bundle it later
+  // appears in is one the engine actually compiled, not a fixture planted behind its back.
+  async function acceptNote(bench: Workbench): Promise<string> {
+    const staged = await callText(bench.client, "remember", {
+      type: "decision",
+      body: NOTE_BODY,
+      anchors: ["src/a.ts"],
+    });
+    const noteId = /Staged note ([0-9a-fA-F-]{36}|[0-9A-Z]{26})/.exec(staged)?.[1];
+    if (noteId === undefined) throw new Error(`could not read the staged note id from: ${staged}`);
+    await callText(bench.client, "staging_resolve", { id: noteId, decision: "accept" });
+    return noteId;
+  }
+
+  async function openPhaseAndReachHarvest(bench: Workbench, runId: string): Promise<void> {
+    await callText(bench.client, "workflow_step", {});
+    await callText(bench.client, "workflow_step", {
+      run_id: runId,
+      step_result: stepResult("phase-one", "implement", 1, "success"),
+    });
+  }
+
+  function harvestEvents(events: StoredEvent[]): StoredEvent[] {
+    return eventsOfType(events, "workflow_step_applied").filter((event) => event.result_kind === "harvest");
+  }
+
+  test("a declaration naming a note of this phase's bundle is recorded on the harvest event", async () => {
+    const bench = await makeWorkbench();
+    const noteId = await acceptNote(bench);
+    const runId = await startRun(bench.client, startArgs([probePhase("phase-one")]));
+    const opened = await callText(bench.client, "workflow_step", {});
+    expect(opened).toContain(noteId);
+    await callText(bench.client, "workflow_step", {
+      run_id: runId,
+      step_result: stepResult("phase-one", "implement", 1, "success"),
+    });
+
+    const closed = await callText(bench.client, "workflow_step", {
+      run_id: runId,
+      harvest_artifacts: [],
+      used_notes: [{ id: noteId, evidence: "  its window rule shaped the closure check  " }],
+    });
+
+    expect(closed).toContain("the phase is closed");
+    const applied = harvestEvents(await loggedEvents(bench));
+    expect(applied.length).toBe(1);
+    // The evidence is stored trimmed, exactly as the boundary normalized it.
+    expect(applied[0]!.used_notes).toEqual([{ id: noteId, evidence: "its window rule shaped the closure check" }]);
+  });
+
+  test("a note that was never in the bundle refuses the WHOLE call: no harvest, no event", async () => {
+    const bench = await makeWorkbench();
+    await acceptNote(bench);
+    const runId = await startRun(bench.client, startArgs([probePhase("phase-one")]));
+    await openPhaseAndReachHarvest(bench, runId);
+
+    const result = await bench.client.callTool({
+      name: "workflow_step",
+      arguments: {
+        run_id: runId,
+        harvest_artifacts: [],
+        used_notes: [{ id: ulid(77), evidence: "claimed, but never surfaced" }],
+      },
+    });
+
+    expect(result.isError).toBe(true);
+    expect((result.content as Array<{ text: string }>)[0]!.text).toContain("was not in this phase's recall bundle");
+    const events = await loggedEvents(bench);
+    expect(harvestEvents(events).length).toBe(0);
+    // The phase is still open, so a correct call can still close it.
+    expect(await callText(bench.client, "workflow_step", {})).toContain("DIRECTIVE: harvest");
+  });
+
+  test("evidence that names nothing is refused at the SDK boundary — the log stays completely empty of it", async () => {
+    const bench = await makeWorkbench();
+    const noteId = await acceptNote(bench);
+    const runId = await startRun(bench.client, startArgs([probePhase("phase-one")]));
+    await openPhaseAndReachHarvest(bench, runId);
+    const before = await loggedEvents(bench);
+
+    const result = await bench.client.callTool({
+      name: "workflow_step",
+      arguments: { run_id: runId, harvest_artifacts: [], used_notes: [{ id: noteId, evidence: "   " }] },
+    });
+
+    expect(result.isError).toBe(true);
+    const after = await loggedEvents(bench);
+    expect(after.length).toBe(before.length);
+    expect(eventsOfType(after, "tool_error").length).toBe(0);
+    expect(harvestEvents(after).length).toBe(0);
+  });
+
+  test("an explicitly empty declaration and an absent one are recorded differently", async () => {
+    const declaring = await makeWorkbench();
+    const silent = await makeWorkbench();
+    for (const bench of [declaring, silent]) {
+      const runId = await startRun(bench.client, startArgs([probePhase("phase-one")]));
+      await openPhaseAndReachHarvest(bench, runId);
+      const args: Record<string, unknown> = { run_id: runId, harvest_artifacts: [] };
+      if (bench === declaring) args["used_notes"] = [];
+      await callText(bench.client, "workflow_step", args);
+    }
+
+    const declared = harvestEvents(await loggedEvents(declaring))[0]!;
+    const uninstrumented = harvestEvents(await loggedEvents(silent))[0]!;
+
+    expect(declared.used_notes).toEqual([]);
+    expect(uninstrumented.used_notes).toBeNull();
+  });
+
+  test("an empty declaration is legal even when the phase's bundle composition is unknown", async () => {
+    const bench = await makeWorkbench();
+    const runId = await startRun(bench.client, startArgs([probePhase("phase-one")]));
+    await openPhaseAndReachHarvest(bench, runId);
+
+    const closed = await callText(bench.client, "workflow_step", {
+      run_id: runId,
+      harvest_artifacts: [],
+      used_notes: [],
+    });
+
+    expect(closed).toContain("the phase is closed");
+  });
+
+  test("a declaration without a harvest submission is refused", async () => {
+    const bench = await makeWorkbench();
+    const runId = await startRun(bench.client, startArgs([probePhase("phase-one")]));
+    await callText(bench.client, "workflow_step", {});
+
+    const result = await bench.client.callTool({
+      name: "workflow_step",
+      arguments: {
+        run_id: runId,
+        step_result: stepResult("phase-one", "implement", 1, "success"),
+        used_notes: [{ id: ulid(78), evidence: "rides the wrong submission" }],
+      },
+    });
+
+    expect(result.isError).toBe(true);
+    expect((result.content as Array<{ text: string }>)[0]!.text).toContain("rides the harvest submission");
+  });
+
+  // Measurement neutrality: the agent that fills the field must never be shown what its filling
+  // scores, or it starts optimizing for the number instead of the truth.
+  test("no workflow response mentions the metric the declaration feeds", async () => {
+    const bench = await makeWorkbench();
+    const noteId = await acceptNote(bench);
+    const runId = await startRun(bench.client, startArgs([probePhase("phase-one")]));
+    const opened = await callText(bench.client, "workflow_step", {});
+    const stepped = await callText(bench.client, "workflow_step", {
+      run_id: runId,
+      step_result: stepResult("phase-one", "implement", 1, "success"),
+    });
+    const closed = await callText(bench.client, "workflow_step", {
+      run_id: runId,
+      harvest_artifacts: [],
+      used_notes: [{ id: noteId, evidence: "its window rule shaped the closure check" }],
+    });
+
+    for (const response of [opened, stepped, closed]) {
+      expect(response.toLowerCase()).not.toContain("precision");
+      expect(response.toLowerCase()).not.toContain("coverage");
+    }
+  });
+});

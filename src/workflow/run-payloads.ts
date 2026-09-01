@@ -16,12 +16,32 @@ export interface DedupRejection {
   similarity: number;
 }
 
+// One note as the phase's recall bundle carried it. The type rides along because the metric reads
+// its denominator from THIS event — a reader that had to look the type up in the corpus would stop
+// being a pure aggregation of the log.
+export interface BundleNoteRef {
+  id: string;
+  type: string;
+}
+
+// One declared use: the note the agent leaned on, and the place it influenced. The evidence string
+// is the anti-flattery mechanism — a declaration that cannot name a place is not a use.
+export interface UsedNoteRef {
+  id: string;
+  evidence: string;
+}
+
+// bundleNotes and usedNotes are three-valued on purpose: null means "this application says nothing
+// about it" (a non-recall / non-harvest kind, or an uninstrumented caller), while an empty array is
+// a positive statement — an empty bundle, or "nothing was useful".
 export interface StepApplication {
   result: StepResult;
   attempt: number | null;
   gates: GateReport | null;
   harvestedCount: number | null;
   dedupRejected: DedupRejection[] | null;
+  bundleNotes: BundleNoteRef[] | null;
+  usedNotes: UsedNoteRef[] | null;
 }
 
 export function runStartedPayload(
@@ -56,6 +76,14 @@ export function stepAppliedPayload(
             nearest_id: rejection.nearestId,
             similarity: rejection.similarity,
           })),
+    bundle_notes:
+      application.bundleNotes === null
+        ? null
+        : application.bundleNotes.map((note) => ({ id: note.id, type: note.type })),
+    used_notes:
+      application.usedNotes === null
+        ? null
+        : application.usedNotes.map((note) => ({ id: note.id, evidence: note.evidence })),
   };
 }
 

@@ -64,7 +64,16 @@ import { z } from "zod";
 //       corpus that drifted apart from this one (two working copies of a project used to derive two
 //       corpora). Notes cross WITHOUT re-staging — both sides already passed the human gate — so this
 //       event, not a staging_resolve, is where an adopted note's arrival is recorded.
-export const SCHEMA_VERSION = 15;
+//  16 — usefulness loop: workflow_step_applied gains bundle_notes [{id, type}] on a recall
+//       application (the phase's bundle as compiled — both the membership check's ground truth and
+//       the metric's DENOMINATOR) and used_notes [{id, evidence}] on a harvest application (the
+//       notes the agent declares it LEANED ON, each with the place it influenced). used_notes is
+//       three-valued and the distinction is load-bearing: absent/null = the call was not
+//       instrumented, [] = the agent explicitly declared nothing was useful — the coverage
+//       denominator counts instrumented harvests only (the v14 rule: never read emptiness as 0%).
+//       Both keys are optional (the v4 extend-never-repurpose rule): pre-16 events restore
+//       unchanged, with the bundle read as "composition unknown".
+export const SCHEMA_VERSION = 16;
 
 export const DEDUP_OUTCOMES = ["add", "supersede_suggest", "noop"] as const;
 // The closed v1 registry of digit-menu decision classes: curation rides staging_resolve, plan-fan
@@ -432,6 +441,19 @@ const workflowStepAppliedPayload = {
   // dedup_rejected key, and the restore envelope must keep parsing them (the v4 extend rule).
   dedup_rejected: z
     .array(z.object({ nearest_id: z.string(), similarity: z.number() }))
+    .nullable()
+    .optional(),
+  // The recall application's bundle as compiled — non-null only for result_kind "recall". Optional
+  // in the shape: a pre-v16 recall event carries no key at all, which the fold reads as "the
+  // composition of that phase's bundle is unknown" rather than "the bundle was empty".
+  bundle_notes: z
+    .array(z.object({ id: z.string(), type: z.string() }))
+    .nullable()
+    .optional(),
+  // The harvest application's usage declaration — non-null only for result_kind "harvest", where
+  // [] and absence mean DIFFERENT things (see the v16 changelog).
+  used_notes: z
+    .array(z.object({ id: z.string(), evidence: z.string() }))
     .nullable()
     .optional(),
 };

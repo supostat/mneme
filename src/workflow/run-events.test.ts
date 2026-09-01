@@ -77,7 +77,15 @@ function appendApplied(log: LogFixture, runId: string, branch: string, applicati
 }
 
 function application(result: StepResult, attempt: number | null = null): StepApplication {
-  return { result, attempt, gates: null, harvestedCount: null, dedupRejected: null };
+  return {
+    result,
+    attempt,
+    gates: null,
+    harvestedCount: null,
+    dedupRejected: null,
+    bundleNotes: null,
+    usedNotes: null,
+  };
 }
 
 function executeSuccess(phaseId: string, stepId: string, attempt: number): StepApplication {
@@ -463,5 +471,96 @@ describe("payload shape", () => {
     for (const payload of payloads) {
       expect(Object.keys(payload)).not.toContain("type");
     }
+  });
+});
+
+describe("restoreRuns carries each phase's recall bundle composition", () => {
+  function recallWith(phaseId: string, notes: Array<{ id: string; type: string }>): StepApplication {
+    return { ...application({ kind: "recall", phaseId }), bundleNotes: notes };
+  }
+
+  const FIRST_NOTE = { id: "01ARZ3NDEKTSV4RRFFQ69G5FB0", type: "decision" };
+  const SECOND_NOTE = { id: "01ARZ3NDEKTSV4RRFFQ69G5FB1", type: "pattern" };
+
+  test("the composition of the compiled bundle survives into the restored run", () => {
+    const log = makeLog();
+    const definition = makeDefinition([phaseDocument("phase-one")]);
+    appendStarted(log, RUN_ID, "main", definition);
+    appendApplied(log, RUN_ID, "main", recallWith("phase-one", [FIRST_NOTE, SECOND_NOTE]));
+
+    expect(onlyRun(log).bundleNotesByPhase).toEqual({ "phase-one": [FIRST_NOTE, SECOND_NOTE] });
+  });
+
+  // The fold never has to arbitrate between two recalls of one phase: the reducer refuses the second
+  // completion outright, so such a log is unreadable long before the composition is read. A crash
+  // between the recall effect and its append leaves NO event and the retry appends exactly one.
+  test("a phase cannot carry two recall applications — the run turns unreadable, not ambiguous", () => {
+    const log = makeLog();
+    const definition = makeDefinition([phaseDocument("phase-one")]);
+    appendStarted(log, RUN_ID, "main", definition);
+    appendApplied(log, RUN_ID, "main", recallWith("phase-one", [FIRST_NOTE]));
+    appendApplied(log, RUN_ID, "main", recallWith("phase-one", [FIRST_NOTE, SECOND_NOTE]));
+
+    expect(onlyUnreadable(log).problem).toContain("recall");
+  });
+
+  test("each phase keeps its own composition when a run walks several phases", () => {
+    const log = makeLog();
+    const definition = makeDefinition([phaseDocument("phase-one"), phaseDocument("phase-two", ["phase-one"])]);
+    appendStarted(log, RUN_ID, "main", definition);
+    appendApplied(log, RUN_ID, "main", recallWith("phase-one", [FIRST_NOTE]));
+    appendApplied(log, RUN_ID, "main", executeSuccess("phase-one", "implement", 1));
+    appendApplied(log, RUN_ID, "main", executeSuccess("phase-one", "verify", 1));
+    appendApplied(log, RUN_ID, "main", {
+      ...application({ kind: "harvest", phaseId: "phase-one" }),
+      harvestedCount: 0,
+    });
+    appendApplied(log, RUN_ID, "main", recallWith("phase-two", [SECOND_NOTE]));
+
+    expect(onlyRun(log).bundleNotesByPhase).toEqual({
+      "phase-one": [FIRST_NOTE],
+      "phase-two": [SECOND_NOTE],
+    });
+  });
+
+  test("a phase whose recall predates the field stays UNKNOWN, never an empty bundle", () => {
+    const log = makeLog();
+    const definition = makeDefinition([phaseDocument("phase-one")]);
+    appendStarted(log, RUN_ID, "main", definition);
+    appendApplied(log, RUN_ID, "main", application({ kind: "recall", phaseId: "phase-one" }));
+
+    const restored = onlyRun(log);
+
+    expect(restored.bundleNotesByPhase).toEqual({});
+    expect("phase-one" in restored.bundleNotesByPhase).toBe(false);
+  });
+
+  test("an empty bundle is recorded as empty — a positive statement, distinct from unknown", () => {
+    const log = makeLog();
+    const definition = makeDefinition([phaseDocument("phase-one")]);
+    appendStarted(log, RUN_ID, "main", definition);
+    appendApplied(log, RUN_ID, "main", recallWith("phase-one", []));
+
+    const restored = onlyRun(log);
+
+    expect(restored.bundleNotesByPhase).toEqual({ "phase-one": [] });
+    expect("phase-one" in restored.bundleNotesByPhase).toBe(true);
+  });
+
+  test("only a recall application contributes: a harvest carrying notes does not", () => {
+    const log = makeLog();
+    const definition = makeDefinition([phaseDocument("phase-one")]);
+    appendStarted(log, RUN_ID, "main", definition);
+    appendApplied(log, RUN_ID, "main", recallWith("phase-one", [FIRST_NOTE]));
+    appendApplied(log, RUN_ID, "main", executeSuccess("phase-one", "implement", 1));
+    appendApplied(log, RUN_ID, "main", executeSuccess("phase-one", "verify", 1));
+    appendApplied(log, RUN_ID, "main", {
+      ...application({ kind: "harvest", phaseId: "phase-one" }),
+      harvestedCount: 1,
+      bundleNotes: [SECOND_NOTE],
+      usedNotes: [{ id: FIRST_NOTE.id, evidence: "shaped the fold" }],
+    });
+
+    expect(onlyRun(log).bundleNotesByPhase).toEqual({ "phase-one": [FIRST_NOTE] });
   });
 });

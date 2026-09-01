@@ -31,6 +31,9 @@ CLAUDE.md
 docs/*
 !docs/METRICS.md
 !docs/BENCH.md
+# The test suite reads this one (tests/handoff-used-notes.test.ts pins the engine's contract texts
+# against it), so it must exist in a fresh clone — the same reason METRICS.md is tracked.
+!docs/HANDOFF-USED-NOTES.md
 
 # analytics package (generated, local-only)
 mneme-analytics/

@@ -5,7 +5,7 @@ import { z } from "zod";
 import { AGENT_VOTE_VALUES, WORKFLOW_ON_FAIL_ACTIONS, WORKFLOW_STEP_OUTCOMES } from "../event-schema";
 import { readEvents } from "../events";
 import { textResult } from "../mcp-rendering";
-import { validateAnchor } from "../note";
+import { isNoteId, validateAnchor } from "../note";
 import { countStagedNotes } from "../staging";
 import type { StagingDeps } from "../staging";
 import type { AgentVote, Vote } from "./converge";
@@ -43,6 +43,8 @@ import { abandonedRunIds, isFinalStep, pendingDirectiveOf, restoreRuns } from ".
 import type { ReadableRun, RunRetrievalConfig } from "./run-events";
 import { appendStepApplied, applyGatedFinalStep, applyHarvest, echoMatches, runEngineSteps } from "./run-executor";
 import { runAbandonedPayload, runStartedPayload } from "./run-payloads";
+import type { UsedNoteRef } from "./run-payloads";
+import { USED_NOTES_WITHOUT_HARVEST } from "./used-notes";
 import { surveyRuns } from "./run-survey";
 
 export class WorkflowToolError extends Error {}
@@ -62,7 +64,12 @@ export const WORKFLOW_STEP_DESCRIPTION =
   "phase's FINAL step succeeds - send agent_votes (one array per agent-judged criterion; a vote is " +
   '"pass"|"fail" or { vote, remarks }, and remarks of fail votes are replayed into the retry directive) ' +
   "with that submission; a failure never runs gates. When a harvest directive is pending, submit " +
-  "harvest_artifacts (an empty array is allowed) to close the phase.";
+  "harvest_artifacts (an empty array is allowed) to close the phase. That same call MAY carry " +
+  "used_notes: the notes from THIS phase's recall bundle you actually leaned on, each with " +
+  "evidence naming where it influenced the work (following its contract, avoiding a gotcha it " +
+  "named, quoting its decision). Sharing a topic is NOT use. An empty array is a legitimate, " +
+  "honest answer; a note that was not in the bundle, or evidence you cannot state, refuses the " +
+  "whole call.";
 export const WORKFLOW_ABANDON_DESCRIPTION =
   "Abandon an unfinished workflow run by run_id: a terminal human refusal, distinct from failure. " +
   "The run leaves every survey listing and can NEVER be resumed; its branch is untouched and a new " +
@@ -117,6 +124,18 @@ const harvestArtifact = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("decision"), decision: z.string(), rationale: z.string(), anchors: z.array(z.string()) }),
 ]);
 
+// The usage declaration's SHAPE is enforced here, at the SDK boundary (the MENU_INPUT precedent): a
+// refused call never reaches dispatch, so a malformed declaration leaves the log completely empty —
+// not even a tool_error — and cannot pollute the metric's populations. The evidence string is the
+// anti-flattery mechanism, so a blank one is a shape error: a use you cannot place is not a use.
+const submittedUsedNote = z.object({
+  id: z.string().refine(isNoteId, { message: "id is not a note id" }),
+  evidence: z
+    .string()
+    .refine((text) => text.trim().length > 0, { message: "evidence must name where the note influenced the work" })
+    .transform((text) => text.trim()),
+});
+
 export const WORKFLOW_STEP_INPUT = {
   run_id: z.string().optional(),
   step_result: z
@@ -129,6 +148,7 @@ export const WORKFLOW_STEP_INPUT = {
     .optional(),
   agent_votes: z.array(z.array(submittedAgentVote).min(1)).optional(),
   harvest_artifacts: z.array(harvestArtifact).optional(),
+  used_notes: z.array(submittedUsedNote).optional(),
 };
 
 export interface WorkflowStartArgs {
@@ -157,6 +177,7 @@ export interface WorkflowStepArgs {
   step_result?: SubmittedStepResult;
   agent_votes?: SubmittedAgentVote[][];
   harvest_artifacts?: PhaseArtifact[];
+  used_notes?: UsedNoteRef[];
 }
 
 export interface WorkflowMigrateArgs {
@@ -323,7 +344,7 @@ export async function workflowStepTool(deps: StagingDeps, args: WorkflowStepArgs
   if (args.step_result !== undefined) {
     sections.push(...(await applyIncomingStepResult(deps, active, args.step_result, args.agent_votes)));
   } else if (args.harvest_artifacts !== undefined) {
-    sections.push(...(await applyIncomingHarvest(deps, active, args.harvest_artifacts)));
+    sections.push(...(await applyIncomingHarvest(deps, active, args.harvest_artifacts, args.used_notes)));
   }
   // A harvest that opens the next phase leaves its recall PENDING here, NOT executed: renderCurrentDirective
   // renders that pending recall as a phase boundary, so the caller loops with another workflow_step to
@@ -364,7 +385,15 @@ async function applyIncomingStepResult(
     outcome: submitted.outcome,
   };
   active.run = applyStepResult(active.run, active.definition, result);
-  appendStepApplied(deps, active, { result, attempt: pending.attempt, gates: null, harvestedCount: null, dedupRejected: null });
+  appendStepApplied(deps, active, {
+    result,
+    attempt: pending.attempt,
+    gates: null,
+    harvestedCount: null,
+    dedupRejected: null,
+    bundleNotes: null,
+    usedNotes: null,
+  });
   return [`Applied ${submitted.outcome} for ${pending.phaseId}/${pending.stepId} (attempt ${pending.attempt}); gates were not run.`];
 }
 
@@ -406,12 +435,13 @@ async function applyIncomingHarvest(
   deps: StagingDeps,
   active: ReadableRun,
   artifacts: PhaseArtifact[],
+  usedNotes: UsedNoteRef[] | undefined,
 ): Promise<string[]> {
   const pending = pendingDirectiveOf(active);
   if (pending.kind !== "harvest") {
     return [renderReissueNotice(describePending(pending))];
   }
-  return applyHarvest(deps, active, pending, artifacts);
+  return applyHarvest(deps, active, pending, artifacts, usedNotes);
 }
 
 function validateStepArguments(args: WorkflowStepArgs): void {
@@ -420,6 +450,9 @@ function validateStepArguments(args: WorkflowStepArgs): void {
   }
   if (args.agent_votes !== undefined && args.step_result === undefined) {
     throw new WorkflowToolError("agent_votes are only valid alongside step_result");
+  }
+  if (args.used_notes !== undefined && args.harvest_artifacts === undefined) {
+    throw new WorkflowToolError(USED_NOTES_WITHOUT_HARVEST);
   }
   const submitting = args.step_result !== undefined || args.harvest_artifacts !== undefined;
   if (submitting && args.run_id === undefined) {

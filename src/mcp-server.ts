@@ -27,6 +27,7 @@ import { computeStats, formatStats } from "./stats";
 import { computeFriction, formatFriction } from "./stats-friction";
 import { computeGateAudit, formatGateAudit } from "./stats-gate";
 import { computeFootprint, formatFootprint } from "./stats-footprint";
+import { computeUseStats, formatUseStats } from "./stats-use";
 import type { StagingDeps, ResolveDecision } from "./staging";
 import { anchorSweep } from "./anchor-repair";
 import {
@@ -78,9 +79,12 @@ const STATS_DESCRIPTION =
   "Report proof metrics computed from the event log: cross-session reuse, never-retrieved fraction, " +
   "recall degradation, live corpus size by type, and NOOP confirmations; review friction (staged-to-" +
   "resolved latency median/p90 and resolution batch sizes); tool errors by tool; human-gate metrics " +
-  "(resolution outcomes, recommendation agreement, menu coverage, active review latency); and the log " +
-  "footprint (total bytes and events per type). Present the numbers to the human; the output contains " +
-  "no note bodies.";
+  "(resolution outcomes, recommendation agreement, menu coverage, active review latency); the log " +
+  "footprint (total bytes and events per type); and note usefulness (precision-of-use — of the notes " +
+  "a phase's recall bundle surfaced, how many the agent declared it leaned on — per note type and " +
+  "over calendar windows, plus declaration coverage; the number is SELF-DECLARED and therefore an " +
+  "upper bound, so read the trend rather than the level). Present the numbers to the human; the " +
+  "output contains no note bodies.";
 
 const NOTES_LIST_DESCRIPTION =
   "Curate ACCEPTED notes. Without id: one line per live note (id, type, first line, anchor count, " +
@@ -263,7 +267,7 @@ function registerTools(
     dispatch(context, "staging_resolve", (current) => stagingResolveTool(buildStagingDeps(current), args)),
   );
   server.registerTool("stats", { description: STATS_DESCRIPTION, inputSchema: {} }, () =>
-    dispatch(context, "stats", (current) => statsTool(current)),
+    dispatch(context, "stats", (current) => statsTool(current, clock)),
   );
   server.registerTool("workflow_start", { description: WORKFLOW_START_DESCRIPTION, inputSchema: WORKFLOW_START_INPUT }, (args) =>
     dispatch(context, "workflow_start", (current) => workflowStartTool(buildStagingDeps(current), args)),
@@ -279,7 +283,7 @@ function registerTools(
   );
 }
 
-function statsTool(context: ServerContext): CallToolResult {
+function statsTool(context: ServerContext, clock: () => Date): CallToolResult {
   const events = readEvents(context.corpus.eventsDir);
   return textResult(
     [
@@ -287,6 +291,9 @@ function statsTool(context: ServerContext): CallToolResult {
       formatFriction(computeFriction(events)),
       formatGateAudit(computeGateAudit(events)),
       formatFootprint(computeFootprint(context.corpus.eventsDir, events)),
+      // The only aggregator that needs the present moment: its windows are calendar windows, so a
+      // sleeping corpus must show them empty rather than sliding them onto its own last event.
+      formatUseStats(computeUseStats(events, clock())),
     ].join("\n\n"),
   );
 }
