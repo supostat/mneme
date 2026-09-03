@@ -19,12 +19,15 @@ same gate, and an accepted repair rewrites the address while the body stays immu
 `anchor_sweep` (batch-stage repairs by tracing renames in the project's git history: a single
 confident successor is staged, ambiguity and outright deletions are only reported, and a repaired
 corpus sweeps to silence), and `corpus_adopt` (merge a corpus that drifted apart from this one — see
-Merging corpora below). The remaining four drive the workflow engine: `workflow_start` opens a run anchored to
+Merging corpora below). The remaining five drive the workflow engine: `workflow_start` opens a run anchored to
 the current project branch; `workflow_step` is the live executor — it loops directives (recall at
 phase start, gated steps, harvest on close) decided by the reducer, resumes a branch's unfinished
 run from the event log after an interruption, and never silently resumes a run whose branch is gone;
-`workflow_migrate` converts a spec's gameplan into runnable phase files; and `workflow_abandon`
-records a terminal human refusal of an unfinished run, distinct from failure.
+`workflow_migrate` converts a spec's gameplan into runnable phase files; `workflow_abandon`
+records a terminal human refusal of an unfinished run, distinct from failure; and `workflow_survey`
+is the read-only orientation — the current branch's run, its pending directive and last activity,
+staged-note count, and runs elsewhere, as a map or (with `brief: true`) a single line — writing
+nothing: no event, no file, no stale mark.
 
 The server ships as a single self-contained compiled binary, distributed through the separate
 `mneme-plugin` repository. This repository is the source; the binary is built from it by the bridge

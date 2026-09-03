@@ -51,6 +51,10 @@ export interface ReadableRun {
   retrieval: RunRetrievalConfig;
   run: WorkflowRun;
   startedTs: string;
+  // The ts of the run's newest event — started until the first application, then the last
+  // step_applied the fold absorbed. Kept by the fold itself so a survey answers "when did this
+  // run last move" without a second pass over the log; an opaque string, never Date-parsed.
+  lastActivityTs: string;
   failedGatesHistory: FailedGatesRecord[];
   // What each phase's recall bundle actually held, keyed by phase id. A phase absent from the map
   // has an UNKNOWN composition (its recall predates schema v16, or it has not run yet) — which is
@@ -162,6 +166,7 @@ function restoredRunFrom(runId: string, payload: RunStartedPayload): ReadableRun
     },
     run: initialRun(definition),
     startedTs: payload.ts,
+    lastActivityTs: payload.ts,
     failedGatesHistory: [],
     bundleNotesByPhase: {},
   };
@@ -194,6 +199,7 @@ function absorbStepApplied(runsById: Map<string, RestoredRun>, event: StoredEven
     known.run = applyStepResult(known.run, known.definition, stepResultFromPayload(parsed.data));
     absorbGates(known, parsed.data);
     absorbBundleNotes(known, parsed.data);
+    known.lastActivityTs = parsed.data.ts;
   } catch (error) {
     setUnreadable(runsById, runId, known.branch, problemMessage(error));
   }

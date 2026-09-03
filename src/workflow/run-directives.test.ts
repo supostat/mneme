@@ -37,6 +37,7 @@ function activeRunFrom(definition: RunDefinition): ReadableRun {
     retrieval: { recallBudget: 2000, recallAnchors: {} },
     run: initialRun(definition),
     startedTs: "2026-07-06T10:00:00.000Z",
+    lastActivityTs: "2026-07-06T10:00:00.000Z",
     failedGatesHistory: [],
     bundleNotesByPhase: {},
   };

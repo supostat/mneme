@@ -50,10 +50,13 @@ import {
   WORKFLOW_START_INPUT,
   WORKFLOW_STEP_DESCRIPTION,
   WORKFLOW_STEP_INPUT,
+  WORKFLOW_SURVEY_DESCRIPTION,
+  WORKFLOW_SURVEY_INPUT,
   workflowAbandonTool,
   workflowMigrateTool,
   workflowStartTool,
   workflowStepTool,
+  workflowSurveyTool,
 } from "./workflow/mcp-tools";
 
 const MNEME_VERSION = packageJson.version;
@@ -280,6 +283,9 @@ function registerTools(
   );
   server.registerTool("workflow_abandon", { description: WORKFLOW_ABANDON_DESCRIPTION, inputSchema: WORKFLOW_ABANDON_INPUT }, (args) =>
     dispatch(context, "workflow_abandon", (current) => workflowAbandonTool(buildStagingDeps(current), args)),
+  );
+  server.registerTool("workflow_survey", { description: WORKFLOW_SURVEY_DESCRIPTION, inputSchema: WORKFLOW_SURVEY_INPUT }, (args) =>
+    dispatch(context, "workflow_survey", (current) => workflowSurveyTool(buildStagingDeps(current), args)),
   );
 }
 

@@ -45,7 +45,8 @@ import { appendStepApplied, applyGatedFinalStep, applyHarvest, echoMatches, runE
 import { runAbandonedPayload, runStartedPayload } from "./run-payloads";
 import type { UsedNoteRef } from "./run-payloads";
 import { USED_NOTES_WITHOUT_HARVEST } from "./used-notes";
-import { surveyRuns } from "./run-survey";
+import { inspectRuns, surveyRuns } from "./run-survey";
+import { renderSurveyLine, renderSurveyMap, renderSurveyOffBranch } from "./run-survey-rendering";
 
 export class WorkflowToolError extends Error {}
 
@@ -83,6 +84,15 @@ export const WORKFLOW_MIGRATE_DESCRIPTION =
   "whole migration - resolve it by hand, there is no force flag. A byte-identical target is skipped, " +
   "so re-migrating an unchanged spec is idempotent. Both responses carry the phase graph (id, deps, " +
   "done-when kinds); apply also carries the written paths and the /mneme:dev command that runs them.";
+export const WORKFLOW_SURVEY_DESCRIPTION =
+  "Orient on the CURRENT git branch's workflow state WITHOUT side effects: it reads everything " +
+  "(the event log, git) and writes NOTHING — no event, no file, no stale marks. The answer is the " +
+  "branch's unfinished run with its pending directive and last activity, the staged-note count, " +
+  "paused runs on other branches, orphan candidates whose branch is gone (they are only REPORTED " +
+  "here; the next workflow_start/workflow_step marks them), log anomalies, and the branch's last " +
+  "terminal run. A detached HEAD or a git error returns an informational text, never an error. " +
+  "Pass brief: true for a ONE-LINE summary instead of the map (for a session-start hook). This " +
+  "tool never starts, advances, or submits anything.";
 
 export const WORKFLOW_START_INPUT = {
   phases: z.array(z.string()).min(1),
@@ -109,6 +119,14 @@ export const WORKFLOW_ABANDON_INPUT = {
   run_id: z.string(),
   reason: z.string(),
 };
+
+export const WORKFLOW_SURVEY_INPUT = {
+  brief: z.boolean().optional(),
+};
+
+export interface WorkflowSurveyArgs {
+  brief?: boolean;
+}
 
 // The tool boundary accepts BOTH vote shapes: the bare "pass"|"fail" enum (every pre-remarks caller
 // stays valid) and the enriched { vote, remarks? } object. Normalization to the canonical AgentVote
@@ -223,6 +241,21 @@ export function workflowAbandonTool(deps: StagingDeps, args: WorkflowAbandonArgs
       "Abandoned is terminal — the run leaves the survey and can never be resumed. " +
         "Start a new run with workflow_start when the work still matters.",
     ].join("\n"),
+  );
+}
+
+// The read-only twin of the run-driving tools' survey: inspectRuns instead of surveyRuns, so proven
+// orphans are reported as candidates rather than marked. Off a branch the answer is informational —
+// a throw here would be logged as tool_error by dispatch, which would make the tool a writer.
+export async function workflowSurveyTool(deps: StagingDeps, args: WorkflowSurveyArgs): Promise<CallToolResult> {
+  const resolution = await resolveCurrentBranch(deps.projectRoot);
+  if (resolution.kind !== "branch") {
+    return textResult(renderSurveyOffBranch(resolution.kind));
+  }
+  const survey = await inspectRuns(deps, resolution.name);
+  const stagedNoteCount = countStagedNotes(deps.corpus);
+  return textResult(
+    args.brief === true ? renderSurveyLine(survey, stagedNoteCount) : renderSurveyMap(survey, stagedNoteCount),
   );
 }
 

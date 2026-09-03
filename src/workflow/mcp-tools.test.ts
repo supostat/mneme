@@ -1458,3 +1458,83 @@ describe("workflow usage declaration", () => {
     }
   });
 });
+
+describe("workflow_survey", () => {
+  test("the map names the branch, the active run, its pending directive, last activity and staged count, and appends nothing", async () => {
+    const bench = await makeWorkbench();
+    const runId = await startRun(bench.client, startArgs([phaseText("phase-one")]));
+    await callText(bench.client, "workflow_step", {});
+    const eventsBefore = (await loggedEvents(bench)).length;
+
+    const map = await callText(bench.client, "workflow_survey", {});
+
+    expect(map).toContain('Survey of branch "main". Nothing was written: no event, no file, no stale mark.');
+    expect(map).toContain(`Active run ${runId} status=running iterations=0/10`);
+    expect(map).toContain("started 2026-07-06T10:00:00.000Z · last activity 2026-07-06T10:00:00.000Z");
+    expect(map).toContain("phase phase-one · pending: execute_step phase-one/implement attempt 1");
+    expect(map).toContain("Staged notes awaiting review: 0");
+    expect(map).not.toContain("DIRECTIVE:");
+    expect((await loggedEvents(bench)).length).toBe(eventsBefore);
+  });
+
+  test("brief: true renders exactly one line for an active run", async () => {
+    const bench = await makeWorkbench();
+    const runId = await startRun(bench.client, startArgs([phaseText("phase-one")]));
+    await callText(bench.client, "workflow_step", {});
+
+    const line = await callText(bench.client, "workflow_survey", { brief: true });
+
+    expect(line).not.toContain("\n");
+    expect(line).toBe(
+      `main · run ${runId} [running] · phase phase-one [pending: execute_step phase-one/implement attempt 1] · staged 0 · last 2026-07-06T10:00:00.000Z`,
+    );
+  });
+
+  test("brief: true without a run reports the branch, the staged count and live runs elsewhere", async () => {
+    const bench = await makeWorkbench();
+    expect(await callText(bench.client, "workflow_survey", { brief: true })).toBe("main · no unfinished run · staged 0");
+
+    await runGit(bench.projectRoot, ["checkout", "-q", "-b", "feature"]);
+    await startRun(bench.client, startArgs([phaseText("feature-phase")]));
+    await runGit(bench.projectRoot, ["checkout", "-q", "main"]);
+
+    const line = await callText(bench.client, "workflow_survey", { brief: true });
+
+    expect(line).not.toContain("\n");
+    expect(line).toBe("main · no unfinished run · staged 0 · 1 live elsewhere");
+    expect(await callText(bench.client, "workflow_survey", {})).toContain("Paused runs on other branches:");
+  });
+
+  test("a detached HEAD answers informationally in both shapes, never as an error", async () => {
+    const bench = await makeWorkbench();
+    await runGit(bench.projectRoot, ["checkout", "-q", "--detach"]);
+    const eventsBefore = (await loggedEvents(bench)).length;
+
+    for (const args of [{}, { brief: true }]) {
+      const result = await bench.client.callTool({ name: "workflow_survey", arguments: args });
+      expect(result.isError).toBeUndefined();
+      const text = (result.content as Array<{ text: string }>).map((part) => part.text).join("\n");
+      expect(text).toContain("HEAD is detached");
+      expect(text).toContain("No run state was read or changed.");
+    }
+    expect((await loggedEvents(bench)).length).toBe(eventsBefore);
+  });
+
+  test("a run on a deleted branch is reported as an orphan candidate and NOT marked; the next step marks it", async () => {
+    const bench = await makeWorkbench();
+    await runGit(bench.projectRoot, ["checkout", "-q", "-b", "feature"]);
+    const featureRunId = await startRun(bench.client, startArgs([phaseText("phase-one")]));
+    await runGit(bench.projectRoot, ["checkout", "-q", "main"]);
+    await runGit(bench.projectRoot, ["branch", "-q", "-D", "feature"]);
+
+    const map = await callText(bench.client, "workflow_survey", {});
+
+    expect(map).toContain("ORPHAN CANDIDATES (not yet marked):");
+    expect(map).toContain(`- run ${featureRunId} on branch "feature": branch not found`);
+    expect(map).not.toContain("STALE RUNS");
+    expect(eventsOfType(await loggedEvents(bench), "workflow_run_marked_stale").length).toBe(0);
+
+    await callText(bench.client, "workflow_step", {});
+    expect(eventsOfType(await loggedEvents(bench), "workflow_run_marked_stale").length).toBe(1);
+  });
+});

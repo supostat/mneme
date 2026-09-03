@@ -5,13 +5,14 @@ import { join } from "node:path";
 import { defaultConfig } from "../config";
 import { resolveCorpus } from "../corpus";
 import { EventWriter, readEvents } from "../events";
+import { initRepo, runGit } from "../git";
 import type { StagingDeps } from "../staging";
 import type { PhaseDocument } from "./phase-document";
 import { buildPhaseGraph } from "./phase-graph";
 import type { RunDefinition } from "./reducer";
 import { surveySections } from "./run-directives";
 import { runAbandonedPayload, runStartedPayload } from "./run-payloads";
-import { surveyRuns } from "./run-survey";
+import { commitStaleMarks, inspectRuns, surveyRuns } from "./run-survey";
 
 const fixedClock = () => new Date("2026-07-06T10:00:00.000Z");
 const FOREIGN_RUN_ID = "01ARZ3NDEKTSV4RRFFQ69G5FB0";
@@ -94,5 +95,64 @@ describe("surveyRuns with unanswerable branch questions", () => {
     expect(survey.pausedRuns).toEqual([]);
     expect(survey.markedStale).toEqual([]);
     expect(surveySections(survey)).toEqual([]);
+  });
+});
+
+// projectRoot IS a git repository whose "feature" branch existed and was deleted: branchExists
+// answers "missing" with proof, which is the only verdict that may ever produce a stale mark.
+async function makeDeletedBranchDeps(): Promise<StagingDeps> {
+  const deps = await makeNonRepoDeps();
+  await initRepo(deps.projectRoot);
+  await runGit(deps.projectRoot, ["-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "init"]);
+  await runGit(deps.projectRoot, ["branch", "feature"]);
+  await runGit(deps.projectRoot, ["branch", "-D", "feature"]);
+  deps.eventWriter.append({
+    ...runStartedPayload(FOREIGN_RUN_ID, "feature", makeDefinition(), { recallBudget: 2000, recallAnchors: {} }),
+    type: "workflow_run_started",
+  });
+  return deps;
+}
+
+function staleEventsOf(deps: StagingDeps) {
+  return readEvents(deps.corpus.eventsDir).filter((event) => event.type === "workflow_run_marked_stale");
+}
+
+describe("inspectRuns reads, surveyRuns marks", () => {
+  test("inspectRuns surfaces a proven orphan as a candidate and appends NOTHING", async () => {
+    const deps = await makeDeletedBranchDeps();
+    const eventsBefore = readEvents(deps.corpus.eventsDir).length;
+
+    const survey = await inspectRuns(deps, "main");
+
+    expect(survey.orphanCandidates).toEqual([{ runId: FOREIGN_RUN_ID, branch: "feature" }]);
+    expect(survey.markedStale).toEqual([]);
+    expect(survey.pausedRuns).toEqual([]);
+    expect(survey.indeterminateRuns).toEqual([]);
+    expect(readEvents(deps.corpus.eventsDir).length).toBe(eventsBefore);
+    expect(staleEventsOf(deps)).toEqual([]);
+  });
+
+  test("surveyRuns marks the orphan exactly once and a repeat survey adds no second mark", async () => {
+    const deps = await makeDeletedBranchDeps();
+
+    const first = await surveyRuns(deps, "main");
+    const second = await surveyRuns(deps, "main");
+
+    expect(first.markedStale).toEqual([{ runId: FOREIGN_RUN_ID, branch: "feature" }]);
+    expect(first.orphanCandidates).toEqual([]);
+    expect(second.markedStale).toEqual([]);
+    expect(second.orphanCandidates).toEqual([]);
+    expect(staleEventsOf(deps).map((event) => event.run_id)).toEqual([FOREIGN_RUN_ID]);
+    expect(surveySections(first).join("\n\n")).toContain("STALE RUNS");
+  });
+
+  test("commitStaleMarks writes one marker per candidate and echoes the marks it wrote", async () => {
+    const deps = await makeDeletedBranchDeps();
+
+    const written = commitStaleMarks(deps, [{ runId: FOREIGN_RUN_ID, branch: "feature" }]);
+
+    expect(written).toEqual([{ runId: FOREIGN_RUN_ID, branch: "feature" }]);
+    expect(staleEventsOf(deps).map((event) => event.branch)).toEqual(["feature"]);
+    expect((await inspectRuns(deps, "main")).orphanCandidates).toEqual([]);
   });
 });

@@ -564,3 +564,47 @@ describe("restoreRuns carries each phase's recall bundle composition", () => {
     expect(onlyRun(log).bundleNotesByPhase).toEqual({ "phase-one": [FIRST_NOTE] });
   });
 });
+
+// A stepping clock stamps every event one minute later than the previous one, so the fold's
+// "newest event" claim is checkable against distinct timestamps instead of one frozen instant.
+function makeSteppingLog(): LogFixture {
+  const eventsDir = mkdtempSync(join(tmpdir(), "mneme-run-events-stepping-"));
+  let minute = 0;
+  const writer = new EventWriter(eventsDir, {
+    sessionId: "s-run-events",
+    mnemeVersion: "0.1.0",
+    clock: () => new Date(Date.UTC(2026, 6, 6, 10, minute++, 0)),
+  });
+  return { eventsDir, writer };
+}
+
+function runById(log: LogFixture, runId: string): ReadableRun {
+  const run = restoreLog(log).find((candidate) => candidate.runId === runId);
+  if (run === undefined || run.kind !== "restored") throw new Error(`expected a restored run ${runId}`);
+  return run;
+}
+
+describe("restoreRuns keeps the run's last activity timestamp", () => {
+  test("a run with no application reports its started ts as its last activity", () => {
+    const log = makeSteppingLog();
+    appendStarted(log, RUN_ID, "main", makeDefinition([phaseDocument("phase-one")]));
+
+    const run = onlyRun(log);
+
+    expect(run.lastActivityTs).toBe("2026-07-06T10:00:00.000Z");
+    expect(run.lastActivityTs).toBe(run.startedTs);
+  });
+
+  test("the last absorbed step_applied of THIS run wins, and a foreign run's later event never shifts it", () => {
+    const log = makeSteppingLog();
+    const definition = makeDefinition([phaseDocument("phase-one")]);
+    appendStarted(log, RUN_ID, "main", definition); // 10:00
+    appendStarted(log, SECOND_RUN_ID, "feature", definition); // 10:01
+    appendApplied(log, RUN_ID, "main", application({ kind: "recall", phaseId: "phase-one" })); // 10:02
+    appendApplied(log, RUN_ID, "main", executeSuccess("phase-one", "implement", 1)); // 10:03
+    appendApplied(log, SECOND_RUN_ID, "feature", application({ kind: "recall", phaseId: "phase-one" })); // 10:04
+
+    expect(runById(log, RUN_ID).lastActivityTs).toBe("2026-07-06T10:03:00.000Z");
+    expect(runById(log, SECOND_RUN_ID).lastActivityTs).toBe("2026-07-06T10:04:00.000Z");
+  });
+});
