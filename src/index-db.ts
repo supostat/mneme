@@ -76,6 +76,16 @@ function rebuildEvent(startedAt: number, finishedAt: number, outcome: RebuildOut
 // because switching the journal mode itself takes an exclusive lock — two sessions opening the index
 // at the same moment make the WAL pragma the one unprotected step, and it fails with
 // SQLITE_BUSY_RECOVERY unless the timeout is already armed.
+//
+// Readers do NOT use SQLite's readonly flag. A WAL database needs its -shm sidecar to be opened, and
+// a readonly connection is not allowed to create one — so an index whose sidecars were removed
+// (an upstream sqlite3 CLI deletes them on close; the engine's own Apple build keeps them) fails
+// with SQLITE_CANTOPEN on every read. Readers therefore open readwrite so the sidecars can be
+// recreated, refuse to CREATE the database (create: false — a missing index.db must stay missing,
+// because existsSync on it is the "rebuild first" signal for recall and the doctor), and lock the
+// connection with query_only so no SQL write can slip through. That guarantee is procedural rather
+// than file-level: query_only still lets the connection create sidecars and run a checkpoint, and
+// no reader in this codebase does either.
 const BUSY_TIMEOUT_MS = 5000;
 
 function openWritableDatabase(indexPath: string): Database {
@@ -85,9 +95,10 @@ function openWritableDatabase(indexPath: string): Database {
   return database;
 }
 
-function openReadOnlyDatabase(indexPath: string): Database {
-  const database = new Database(indexPath, { readonly: true });
+export function openReadOnlyDatabase(indexPath: string): Database {
+  const database = new Database(indexPath, { readwrite: true, create: false });
   database.run(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
+  database.run("PRAGMA query_only = 1");
   return database;
 }
 

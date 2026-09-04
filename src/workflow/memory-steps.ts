@@ -1,8 +1,7 @@
-import { Database } from "bun:sqlite";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { runGit } from "../git";
-import { rebuild } from "../index-db";
+import { openReadOnlyDatabase, rebuild } from "../index-db";
 import { MAX_BODY_CODE_POINTS, isAnchorNeutral, isNoteId, parseNote } from "../note";
 import type { Note, NoteType } from "../note";
 import { passesRecallThreshold, recall } from "../recall";
@@ -121,7 +120,7 @@ async function rebuildIndexWhenMissing(deps: StagingDeps): Promise<void> {
 // recall() itself appends the recall event, so an engine-invoked recall is logged by construction.
 // It is issued as the phase's memory step, hence the "workflow-step" origin on every event.
 async function runRecall(deps: StagingDeps, query: string, budget: number): Promise<RecallResult> {
-  const db = new Database(deps.corpus.indexPath, { readonly: true });
+  const db = openReadOnlyDatabase(deps.corpus.indexPath);
   try {
     return await recall(
       { db, embeddings: deps.embeddings, eventWriter: deps.eventWriter, clock: deps.clock },

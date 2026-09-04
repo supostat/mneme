@@ -1,9 +1,9 @@
 #!/usr/bin/env bun
-import { Database } from "bun:sqlite";
 import packageJson from "../../package.json";
 import type { EmbeddingsClient } from "../../src/embeddings";
 import { eventSchema } from "../../src/event-schema";
 import { EventWriter, readEvents } from "../../src/events";
+import { openReadOnlyDatabase } from "../../src/index-db";
 import { recall } from "../../src/recall";
 import type { IngestMode, IngestedCase } from "./ingest";
 import type { BenchQuestion, QuestionCategory } from "./normalize";
@@ -56,7 +56,7 @@ export async function runCase(
 ): Promise<CaseObservation> {
   const clock = deps.clock ?? (() => new Date());
   const budget = deps.budget ?? BENCH_RECALL_BUDGET;
-  const db = new Database(ingested.indexPath, { readonly: true });
+  const db = openReadOnlyDatabase(ingested.indexPath);
   const eventWriter = new EventWriter(ingested.eventsDir, {
     sessionId: `bench-run-${ingested.mode}`,
     clock,

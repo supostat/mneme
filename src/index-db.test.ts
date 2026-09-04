@@ -1,12 +1,12 @@
 import { test, expect, describe } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runGit, initRepo } from "./git";
 import { serializeNote } from "./note";
 import type { Note, NoteFrontmatter } from "./note";
-import { rebuild, dumpIndex, dumpVectors, nearestNeighbor } from "./index-db";
+import { rebuild, dumpIndex, dumpVectors, nearestNeighbor, openReadOnlyDatabase } from "./index-db";
 import type { RebuildDeps } from "./index-db";
 import { HttpEmbeddingsClient, EMBEDDING_DIMENSION, OLLAMA_BASE_URL } from "./embeddings";
 import type { EmbeddingsClient } from "./embeddings";
@@ -500,6 +500,97 @@ describe("rebuild with real Ollama", () => {
 
       expect(first).not.toBe("[]");
       expect(second).toBe(first);
+    },
+  );
+});
+
+// bun links the system SQLite on macOS (its source id ends in "aapl"); that build keeps a WAL
+// database's -wal/-shm sidecars on close AND refuses a readonly open without them. The upstream
+// build (CI's ubuntu bun) deletes the sidecars on close but lets a readonly reader recreate them, so
+// the sidecar scenario below passes there WITHOUT the fix — it is skipped by name rather than left
+// green for the wrong reason.
+const APPLE_SQLITE = (() => {
+  const probe = new Database(":memory:");
+  try {
+    const row = probe.query("SELECT sqlite_source_id() AS id").get() as { id: string };
+    return row.id.endsWith("aapl");
+  } finally {
+    probe.close();
+  }
+})();
+
+function sidecarPaths(indexPath: string): string[] {
+  return [`${indexPath}-wal`, `${indexPath}-shm`];
+}
+
+function metaCount(db: Database): number {
+  const row = db.query("SELECT COUNT(*) AS count FROM meta").get() as { count: number };
+  return row.count;
+}
+
+function sqliteErrorCode(action: () => void): string | undefined {
+  try {
+    action();
+    return undefined;
+  } catch (error) {
+    return (error as { code?: string }).code;
+  }
+}
+
+describe("openReadOnlyDatabase", () => {
+  test("a missing index throws and is NOT created (the absent file stays the rebuild signal)", () => {
+    const corpus = makeCorpus();
+
+    expect(() => openReadOnlyDatabase(corpus.indexPath)).toThrow();
+    expect(existsSync(corpus.indexPath)).toBe(false);
+  });
+
+  test("a write through the reader connection is refused with SQLITE_READONLY", async () => {
+    const { projectRoot } = await buildProjectRepo(["src/a.ts"]);
+    const corpus = makeCorpus();
+    writeNote(corpus.notesDir, note({ id: ulid(0) }, "reader must not write"));
+    await rebuild(rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, embeddings: offlineClient() }));
+
+    const db = openReadOnlyDatabase(corpus.indexPath);
+    try {
+      const rowsBefore = metaCount(db);
+      expect(sqliteErrorCode(() => db.run("INSERT INTO meta (id, type, staleness_boost) VALUES ('rogue', 'pattern', 0)"))).toBe("SQLITE_READONLY");
+      expect(sqliteErrorCode(() => db.run("CREATE TABLE rogue (id INTEGER)"))).toBe("SQLITE_READONLY");
+      expect(metaCount(db)).toBe(rowsBefore);
+      expect(rowsBefore).toBe(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  test.skipIf(!APPLE_SQLITE)(
+    "opens a WAL index whose -wal/-shm sidecars were removed (Apple SQLite only: the upstream build recreates them for readonly readers, so this passes there without the fix)",
+    async () => {
+      const { projectRoot } = await buildProjectRepo(["src/a.ts"]);
+      const corpus = makeCorpus();
+      writeNote(corpus.notesDir, note({ id: ulid(0) }, "survives a sidecar wipe"));
+      await rebuild(rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, embeddings: offlineClient() }));
+      for (const sidecar of sidecarPaths(corpus.indexPath)) rmSync(sidecar, { force: true });
+      expect(sidecarPaths(corpus.indexPath).some((path) => existsSync(path))).toBe(false);
+
+      // Control: the readonly flag the readers used to pass cannot read this file. The constructor
+      // itself succeeds (SQLite opens lazily); the refusal lands on the first statement.
+      const legacyReader = new Database(corpus.indexPath, { readonly: true });
+      try {
+        expect(sqliteErrorCode(() => legacyReader.query("SELECT COUNT(*) AS count FROM meta").get())).toBe(
+          "SQLITE_CANTOPEN",
+        );
+      } finally {
+        legacyReader.close();
+      }
+
+      const db = openReadOnlyDatabase(corpus.indexPath);
+      try {
+        const row = db.query("SELECT COUNT(*) AS count FROM meta").get() as { count: number };
+        expect(row.count).toBe(1);
+      } finally {
+        db.close();
+      }
     },
   );
 });

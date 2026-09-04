@@ -1,5 +1,4 @@
 #!/usr/bin/env bun
-import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -7,6 +6,7 @@ import { join } from "node:path";
 import { loadConfig } from "../../src/config";
 import { HttpEmbeddingsClient } from "../../src/embeddings";
 import type { EmbeddingsClient } from "../../src/embeddings";
+import { openReadOnlyDatabase } from "../../src/index-db";
 import { DATASET_SOURCES, DEFAULT_DATASETS_DIR } from "./download";
 import { IngestError, ingestCase } from "./ingest";
 import type { IngestMode } from "./ingest";
@@ -151,7 +151,7 @@ function embedderFromConfig(projectRoot: string): EmbeddingsClient {
 
 function readIndexStamp(indexPath: string): string | null {
   try {
-    const database = new Database(indexPath, { readonly: true });
+    const database = openReadOnlyDatabase(indexPath);
     try {
       const row = database.query("SELECT embedding_model FROM index_config LIMIT 1").get() as
         | { embedding_model: string }

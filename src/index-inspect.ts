@@ -23,6 +23,10 @@ export function inspectIndex(indexPath: string): IndexInspection {
   if (!existsSync(indexPath)) {
     return absentInspection();
   }
+  // The ONE reader that keeps SQLite's readonly flag instead of openReadOnlyDatabase: the doctor
+  // must not write a single byte into the corpus, and the readwrite reader would recreate the
+  // -wal/-shm sidecars of a WAL index. The price is that a WAL index whose sidecars are gone cannot
+  // be opened here at all — the doctor reports that state from the file header instead of healing it.
   const database = new Database(indexPath, { readonly: true });
   try {
     const tables = tableNames(database);

@@ -5,7 +5,6 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { Database } from "bun:sqlite";
 import packageJson from "../package.json";
 import { resolveCorpus } from "./corpus";
 import type { Corpus } from "./corpus";
@@ -16,7 +15,7 @@ import { loadConfig } from "./config";
 import type { MnemeConfig } from "./config";
 import { HttpEmbeddingsClient } from "./embeddings";
 import type { EmbeddingsClient } from "./embeddings";
-import { rebuild } from "./index-db";
+import { openReadOnlyDatabase, rebuild } from "./index-db";
 import { recall } from "./recall";
 import { NOTE_TYPES } from "./note";
 import type { NoteType } from "./note";
@@ -348,7 +347,7 @@ async function recallTool(
     const notesDir = context.corpus.notesDir;
     await rebuild({ indexPath, notesDir, projectRoot, embeddings, eventWriter: context.eventWriter, clock });
   }
-  const db = new Database(indexPath, { readonly: true });
+  const db = openReadOnlyDatabase(indexPath);
   try {
     const budget = args.budget ?? config.recall.budget;
     const result = await recall(
