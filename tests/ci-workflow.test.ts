@@ -11,6 +11,8 @@ const WORKFLOW_PATH = join(import.meta.dir, "..", ".github", "workflows", "ci.ym
 const GUARD_STEP_NAME =
   "Verify RELEASE_TOKEN can push a tag to this repository (widen the PAT to contents:write here and re-run this job)";
 const TAG_STEP_NAME = "Tag the release";
+const FETCH_TAGS_STEP_NAME = "Fetch release tags";
+const FETCH_TAGS_COMMAND = "git fetch --depth=1 origin '+refs/tags/v*:refs/tags/v*'";
 const TAGGING_CONDITIONS = [
   "github.event_name == 'push'",
   "github.ref == 'refs/heads/main'",
@@ -87,10 +89,17 @@ describe("CI workflow", () => {
     expect(commands).toContain("bun test");
   });
 
-  test("checkout fetches tags, otherwise the version gate sees no release and passes vacuously", () => {
+  test("release tags are fetched by an explicit git command before the version gate, not by checkout's flag", () => {
+    // actions/checkout's fetch-tags did not fetch tags on a depth-1 checkout (run 33860152621), and
+    // a gate that sees no tag calls every version unreleased. The workflow owns the fetch itself.
     const checkout = steps().find((step) => step.uses?.startsWith("actions/checkout"));
     expect(checkout).toBeDefined();
-    expect(checkout!.with?.["fetch-tags"]).toBe(true);
+    expect(checkout!.with?.["fetch-tags"]).toBeUndefined();
+    const fetchTags = stepNamed(FETCH_TAGS_STEP_NAME);
+    expect(fetchTags.run).toBe(FETCH_TAGS_COMMAND);
+    const fetchIndex = indexOfStep((step) => step.name === FETCH_TAGS_STEP_NAME);
+    const versionIndex = indexOfStep((step) => step.id === "version");
+    expect(fetchIndex).toBeLessThan(versionIndex);
   });
 
   test("the version step runs the gate in decide mode under the id the tagging steps route on", () => {

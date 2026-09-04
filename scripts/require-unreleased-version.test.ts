@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initRepo, runGit } from "../src/git";
 import {
+  NO_TAG_VISIBLE_MESSAGE,
   applyDecideMode,
   compareSemver,
   decideOutputs,
@@ -137,17 +138,51 @@ describe("latestReleaseTag", () => {
     expect(await latestReleaseTag(repoDir)).toBe("v0.10.0");
   });
 
-  test("main refuses an unknown flag with a named message before touching git", async () => {
+  async function mainCapturingStderr(repoDir: string, argv: string[], outputPath: string): Promise<{ code: number; stderr: string[] }> {
     const original = console.error;
-    const messages: string[] = [];
+    const stderr: string[] = [];
     console.error = (message: string) => {
-      messages.push(message);
+      stderr.push(message);
     };
     try {
-      expect(await main(await makeRepo(), ["--bogus"])).toBe(1);
+      return { code: await main(repoDir, argv, outputPath), stderr };
     } finally {
       console.error = original;
     }
-    expect(messages).toEqual(['unknown argument "--bogus": the only flag is --decide']);
+  }
+
+  function outputFile(): string {
+    const path = join(mkdtempSync(join(tmpdir(), "mneme-github-output-")), "output");
+    writeFileSync(path, "");
+    return path;
+  }
+
+  test("main refuses an unknown flag with a named message before touching git", async () => {
+    const { code, stderr } = await mainCapturingStderr(await makeRepo(), ["--bogus"], outputFile());
+
+    expect(code).toBe(1);
+    expect(stderr).toEqual(['unknown argument "--bogus": the only flag is --decide']);
+  });
+
+  test("decide mode refuses a checkout with no v* tag in sight instead of calling every version unreleased", async () => {
+    const outputPath = outputFile();
+
+    const { code, stderr } = await mainCapturingStderr(await makeRepo(), ["--decide"], outputPath);
+
+    expect(code).toBe(1);
+    expect(stderr).toEqual([NO_TAG_VISIBLE_MESSAGE]);
+    expect(readFileSync(outputPath, "utf8")).toBe("");
+  });
+
+  test("decide mode with a visible tag routes the outputs into the file it was handed", async () => {
+    const repoDir = await makeRepo();
+    await runGit(repoDir, ["tag", "v0.0.1"]);
+    const outputPath = outputFile();
+
+    const { code, stderr } = await mainCapturingStderr(repoDir, ["--decide"], outputPath);
+
+    expect(code).toBe(0);
+    expect(stderr).toEqual([]);
+    expect(readFileSync(outputPath, "utf8")).toMatch(/^unreleased=true\nversion=\d+\.\d+\.\d+\n$/);
   });
 });

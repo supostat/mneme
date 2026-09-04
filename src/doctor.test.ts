@@ -1,5 +1,4 @@
 import { test, expect, describe } from "bun:test";
-import { Database } from "bun:sqlite";
 import { existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,6 +13,7 @@ import { EMBEDDING_DIMENSION } from "./embeddings";
 import type { EmbeddingsClient } from "./embeddings";
 import { runDoctor, renderDoctorReport } from "./doctor";
 import type { DoctorReport, DoctorComponentReport } from "./doctor";
+import { isAppleSqlite } from "../tests/sqlite-build";
 
 const CLOCK = (): Date => new Date("2026-07-06T10:00:00.000Z");
 const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
@@ -307,19 +307,11 @@ describe("runDoctor output is machine-readable with a human render on top", () =
   });
 });
 
-// bun links Apple's SQLite on macOS (source id ends in "aapl"), which refuses a readonly open of a
-// WAL database without its sidecars; the upstream build (CI) lets a readonly reader recreate them,
-// so the doctor's real probe SUCCEEDS there and the sidecar detail never appears. The real-probe test
-// is therefore skipped by name off Apple; the portable test injects the failing probe instead.
-const APPLE_SQLITE = (() => {
-  const probe = new Database(":memory:");
-  try {
-    const row = probe.query("SELECT sqlite_source_id() AS id").get() as { id: string };
-    return row.id.endsWith("aapl");
-  } finally {
-    probe.close();
-  }
-})();
+// Apple SQLite refuses a readonly open of a WAL database without its sidecars; the upstream build
+// (CI) lets a readonly reader recreate them, so the doctor's real probe SUCCEEDS there and the
+// sidecar detail never appears. The real-probe test is therefore skipped by name off Apple; the
+// portable test injects the failing probe instead.
+const APPLE_SQLITE = isAppleSqlite();
 
 function removeSidecars(indexPath: string): void {
   rmSync(`${indexPath}-wal`, { force: true });

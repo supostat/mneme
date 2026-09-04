@@ -14,14 +14,17 @@ import { createServer } from "../src/mcp-server";
 import type { CreateServerOptions } from "../src/mcp-server";
 import { serializeNote } from "../src/note";
 import type { Note } from "../src/note";
+import { isAppleSqlite } from "./sqlite-build";
 
-// The wire test of the reader-mode change, end to end on REAL modules and on properties that hold
-// on every SQLite build: a real MCP client over a real server, a real git repository, a real corpus.
-// It plays the rollout an existing corpus goes through — a .gitignore written by an older engine,
-// then the first tool call of the new one — and proves three things without touching the Apple-only
-// failure (that one lives in src/index-db.test.ts under its named skip): recall reads the WAL index,
-// the sidecars the read leaves behind are covered by the appended ignore rules, and a deleted index
-// still triggers a rebuild instead of a zero-byte file. The only stand-in is the embedder.
+// The wire test of the reader-mode change, end to end on REAL modules: a real MCP client over a
+// real server, a real git repository, a real corpus. It plays the rollout an existing corpus goes
+// through — a .gitignore written by an older engine, then the first tool call of the new one — and
+// proves three things without touching the Apple-only failure (that one lives in src/index-db.test.ts
+// under its named skip): recall reads the WAL index, the appended ignore rules cover the sidecars on
+// every build, and a deleted index still triggers a rebuild instead of a zero-byte file. Whether the
+// sidecars are still on disk after the read is a property of the SQLite build — Apple keeps them,
+// upstream deletes them when the last connection closes — so that expectation is compared against
+// the platform, never assumed. The only stand-in is the embedder.
 
 const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 const fixedClock = () => new Date("2026-09-04T10:00:00.000Z");
@@ -127,11 +130,12 @@ describe("index readers over a real server", () => {
       expect(answer).toContain(NOTE_BODY);
       expect(readFileSync(join(corpus.corpusDir, ".gitignore"), "utf8")).toBe(`${LEGACY_GITIGNORE}index.db-wal\nindex.db-shm\n`);
       for (const suffix of SIDECAR_SUFFIXES) {
-        expect(existsSync(`${corpus.indexPath}${suffix}`)).toBe(true);
+        expect(existsSync(`${corpus.indexPath}${suffix}`)).toBe(isAppleSqlite());
         expect(await isIgnored(corpus.corpusDir, `index.db${suffix}`)).toBe(true);
       }
-      // The ONLY change git can see is the appended .gitignore: index.db and both sidecars are hidden
-      // by the rules, so nothing the read produced leaks into the corpus's status.
+      // The ONLY change git can see is the appended .gitignore: the rules were written before the
+      // reader opened the index, so whatever this build leaves on disk — both sidecars, or nothing —
+      // is already ignored, and the status is the same on Apple and upstream alike.
       const status = (await runGit(corpus.corpusDir, ["status", "--porcelain"])).stdout.trimEnd();
       expect(status).toBe(" M .gitignore");
     },

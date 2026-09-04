@@ -13,14 +13,19 @@ import { runGit } from "../src/git";
 // - --decide, the CI mode: `above` and `equal` both exit 0 — a push whose version was already
 //   released is a quiet no-op, not a red build — and the outcome goes to $GITHUB_OUTPUT as
 //   `unreleased=` and `version=` so the tagging steps route on it; `below` and a malformed
-//   version still exit 1.
+//   version still exit 1. Decide mode also REFUSES a checkout with no v* tag in sight: a CI
+//   checkout that did not fetch tags would otherwise call every version unreleased and tag every
+//   push, so "no tags" is a red step there, never a pass.
 //
-// A repository with no v* tag has released nothing, so any version counts as above. The
-// gate-runner spawns one argv without a shell, which is why this is a script and not a one-liner.
+// In strict mode a repository with no v* tag has released nothing, so any version counts as above.
+// The gate-runner spawns one argv without a shell, which is why this is a script and not a
+// one-liner.
 
 const SEMVER_PATTERN = /^v?(\d+)\.(\d+)\.(\d+)$/;
 const RELEASE_TAG_GLOB = "v*";
 const DECIDE_FLAG = "--decide";
+export const NO_TAG_VISIBLE_MESSAGE =
+  "no v* tag is visible: the checkout did not fetch tags (push the first tag by hand)";
 
 export type VersionOrder = "above" | "equal" | "below" | "invalid";
 
@@ -117,7 +122,7 @@ function parseMode(argv: string[]): Mode {
   throw new Error(`unknown argument "${argv.join(" ")}": the only flag is ${DECIDE_FLAG}`);
 }
 
-export async function main(repoDir: string, argv: string[]): Promise<number> {
+export async function main(repoDir: string, argv: string[], githubOutputPath: string | undefined): Promise<number> {
   let mode: Mode;
   try {
     mode = parseMode(argv);
@@ -125,12 +130,17 @@ export async function main(repoDir: string, argv: string[]): Promise<number> {
     console.error((error as Error).message);
     return 1;
   }
-  const judged = judgeUnreleasedVersion(packageJson.version, await latestReleaseTag(repoDir));
-  return mode === "decide" ? applyDecideMode(judged, process.env.GITHUB_OUTPUT) : applyStrictMode(judged);
+  const latestTag = await latestReleaseTag(repoDir);
+  if (mode === "decide" && latestTag === null) {
+    console.error(NO_TAG_VISIBLE_MESSAGE);
+    return 1;
+  }
+  const judged = judgeUnreleasedVersion(packageJson.version, latestTag);
+  return mode === "decide" ? applyDecideMode(judged, githubOutputPath) : applyStrictMode(judged);
 }
 
 if (import.meta.main) {
-  main(process.cwd(), process.argv.slice(2)).then((code) => {
+  main(process.cwd(), process.argv.slice(2), process.env.GITHUB_OUTPUT).then((code) => {
     process.exitCode = code;
   });
 }

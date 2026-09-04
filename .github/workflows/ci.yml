@@ -9,11 +9,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-tags: true
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
+      - name: Fetch release tags
+        run: git fetch --depth=1 origin '+refs/tags/v*:refs/tags/v*'
       - id: version
         run: bun scripts/require-unreleased-version.ts --decide
       - run: bun test

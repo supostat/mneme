@@ -123,14 +123,16 @@ npm version patch --no-git-tag-version   # or edit package.json by hand
 git commit -am "Raise the engine to <version>" && git push
 ```
 
-CI (`.github/workflows/ci.yml`) tags the release itself. On every run it compares `package.json`
-with the highest `v*` tag (`bun scripts/require-unreleased-version.ts --decide`, after a checkout
-with `fetch-tags: true`). On a push to `main` whose version is above that tag, and only after the
-full suite is green, it pushes `v<version>` under `RELEASE_TOKEN` — first as a `git push --dry-run`
-guard, then for real. A push whose version equals the tag is a quiet no-op; a version below the tag
-fails the run. Any other branch and every pull request only runs the gates. A manual `git tag
-v<version> && git push --tags` remains a valid fallback — the release pipeline triggers on any `v*`
-tag, whoever pushes it.
+CI (`.github/workflows/ci.yml`) tags the release itself. On every run it fetches the `v*` tags
+with an explicit `git fetch` (checkout's own `fetch-tags` does not deliver them on a depth-1
+checkout) and compares `package.json` with the highest one
+(`bun scripts/require-unreleased-version.ts --decide`). On a push to `main` whose version is above
+that tag, and only after the full suite is green, it pushes `v<version>` under `RELEASE_TOKEN` —
+first as a `git push --dry-run` guard, then for real. A push whose version equals the tag is a quiet
+no-op; a version below the tag fails the run; a checkout with no `v*` tag in sight fails the version
+step rather than tag blindly, so the FIRST tag of a repository is always pushed by hand. Any other
+branch and every pull request only runs the gates. A manual `git tag v<version> && git push --tags`
+remains a valid fallback — the release pipeline triggers on any `v*` tag, whoever pushes it.
 
 If the guard step fails, `RELEASE_TOKEN` cannot write to this repository: widen the PAT (below) and
 re-run the failed job on the same commit — nothing was written before the dry-run, so the re-run

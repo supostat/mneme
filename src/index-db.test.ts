@@ -11,6 +11,7 @@ import type { RebuildDeps } from "./index-db";
 import { HttpEmbeddingsClient, EMBEDDING_DIMENSION, OLLAMA_BASE_URL } from "./embeddings";
 import type { EmbeddingsClient } from "./embeddings";
 import { EventWriter, readEvents } from "./events";
+import { isAppleSqlite } from "../tests/sqlite-build";
 
 const fixedClock = () => new Date("2026-07-06T10:00:00.000Z");
 
@@ -504,20 +505,11 @@ describe("rebuild with real Ollama", () => {
   );
 });
 
-// bun links the system SQLite on macOS (its source id ends in "aapl"); that build keeps a WAL
-// database's -wal/-shm sidecars on close AND refuses a readonly open without them. The upstream
-// build (CI's ubuntu bun) deletes the sidecars on close but lets a readonly reader recreate them, so
-// the sidecar scenario below passes there WITHOUT the fix — it is skipped by name rather than left
-// green for the wrong reason.
-const APPLE_SQLITE = (() => {
-  const probe = new Database(":memory:");
-  try {
-    const row = probe.query("SELECT sqlite_source_id() AS id").get() as { id: string };
-    return row.id.endsWith("aapl");
-  } finally {
-    probe.close();
-  }
-})();
+// Apple SQLite keeps a WAL database's -wal/-shm sidecars on close AND refuses a readonly open
+// without them; the upstream build (CI's ubuntu bun) lets a readonly reader recreate them, so the
+// sidecar scenario below passes there WITHOUT the fix — it is skipped by name rather than left green
+// for the wrong reason.
+const APPLE_SQLITE = isAppleSqlite();
 
 function sidecarPaths(indexPath: string): string[] {
   return [`${indexPath}-wal`, `${indexPath}-shm`];
