@@ -55,7 +55,7 @@ describe("resolveCorpus first initialization", () => {
 
     expect(await isRepo(corpus.corpusDir)).toBe(true);
     expect(readFileSync(join(corpus.corpusDir, ".gitignore"), "utf8")).toBe(
-      "index.db\nevents/\nstaging/\n*.dedup.json\n",
+      "index.db\nindex.db-wal\nindex.db-shm\nevents/\nstaging/\n*.dedup.json\n",
     );
 
     expect(corpus.indexPath).toBe(join(corpus.corpusDir, "index.db"));
@@ -376,5 +376,51 @@ describe("named corpus", () => {
     expect(corpus.corpusDir).toBe(join(corpusHome, mungePath(canonicalize(projectRoot))));
     expect(corpusDirFor(projectRoot, corpusHome).corpusDir).toBe(corpus.corpusDir);
     expect("name" in JSON.parse(readFileSync(corpus.manifestPath, "utf8"))).toBe(false);
+  });
+});
+
+describe("resolveCorpus keeps an existing .gitignore current", () => {
+  test("appends the entries an older corpus lacks and keeps what a person added", async () => {
+    const projectRoot = tempProject();
+    const corpusHome = tempHome();
+    const corpus = await resolveCorpus(projectRoot, { corpusHome, clock: fixedClock });
+    const gitignorePath = join(corpus.corpusDir, ".gitignore");
+    // The file an engine older than the sidecar rules wrote, plus a line a person added by hand.
+    writeFileSync(gitignorePath, "index.db\nevents/\nstaging/\n*.dedup.json\nscratch/\n");
+
+    await resolveCorpus(projectRoot, { corpusHome, clock: fixedClock });
+
+    expect(readFileSync(gitignorePath, "utf8")).toBe(
+      "index.db\nevents/\nstaging/\n*.dedup.json\nscratch/\nindex.db-wal\nindex.db-shm\n",
+    );
+  });
+
+  test("appends on its own line even when the existing file has no trailing newline", async () => {
+    const projectRoot = tempProject();
+    const corpusHome = tempHome();
+    const corpus = await resolveCorpus(projectRoot, { corpusHome, clock: fixedClock });
+    const gitignorePath = join(corpus.corpusDir, ".gitignore");
+    writeFileSync(gitignorePath, "index.db");
+
+    await resolveCorpus(projectRoot, { corpusHome, clock: fixedClock });
+
+    expect(readFileSync(gitignorePath, "utf8")).toBe(
+      "index.db\nindex.db-wal\nindex.db-shm\nevents/\nstaging/\n*.dedup.json\n",
+    );
+  });
+
+  test("a file that already carries every entry is not rewritten (idempotent across resolves)", async () => {
+    const projectRoot = tempProject();
+    const corpusHome = tempHome();
+    const corpus = await resolveCorpus(projectRoot, { corpusHome, clock: fixedClock });
+    const gitignorePath = join(corpus.corpusDir, ".gitignore");
+    const afterFirst = readFileSync(gitignorePath, "utf8");
+    const mtimeAfterFirst = statSync(gitignorePath).mtimeMs;
+
+    await resolveCorpus(projectRoot, { corpusHome, clock: fixedClock });
+    await resolveCorpus(projectRoot, { corpusHome, clock: fixedClock });
+
+    expect(readFileSync(gitignorePath, "utf8")).toBe(afterFirst);
+    expect(statSync(gitignorePath).mtimeMs).toBe(mtimeAfterFirst);
   });
 });

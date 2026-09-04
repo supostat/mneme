@@ -12,4 +12,5 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
+      - run: bun scripts/require-unreleased-version.ts
       - run: bun test

@@ -51,7 +51,10 @@ const CURRENT_FORMAT_VERSION = 3;
 const MIGRATABLE_FORMAT_VERSIONS = new Set([1, 2]);
 const MANIFEST_FILENAME = "manifest.json";
 const GITIGNORE_FILENAME = ".gitignore";
-const GITIGNORE_CONTENT = "index.db\nevents/\nstaging/\n*.dedup.json\n";
+// The index's WAL sidecars are listed because readers now recreate them on every open (see
+// openReadOnlyDatabase), so they appear in every corpus, not only where a writer ran.
+const GITIGNORE_ENTRIES = ["index.db", "index.db-wal", "index.db-shm", "events/", "staging/", "*.dedup.json"];
+const GITIGNORE_CONTENT = `${GITIGNORE_ENTRIES.join("\n")}\n`;
 const DEFAULT_CORPUS_DIRECTORY_NAME = ".mneme";
 
 export function canonicalize(path: string): string {
@@ -249,9 +252,21 @@ async function ensureGitRepository(corpusDir: string): Promise<void> {
   }
 }
 
+// A fresh corpus gets the whole list; an existing .gitignore is only ever APPENDED to with the
+// entries it lacks. Lines a person added by hand stay untouched, and a file that already carries
+// every entry is not rewritten — resolveCorpus runs on every tool call, so this must converge.
 function ensureGitignore(corpusDir: string): void {
   const gitignorePath = join(corpusDir, GITIGNORE_FILENAME);
   if (!existsSync(gitignorePath)) {
     writeFileSync(gitignorePath, GITIGNORE_CONTENT);
+    return;
   }
+  const existing = readFileSync(gitignorePath, "utf8");
+  const present = new Set(existing.split("\n").map((line) => line.trim()));
+  const missing = GITIGNORE_ENTRIES.filter((entry) => !present.has(entry));
+  if (missing.length === 0) {
+    return;
+  }
+  const separator = existing === "" || existing.endsWith("\n") ? "" : "\n";
+  writeFileSync(gitignorePath, `${existing}${separator}${missing.join("\n")}\n`);
 }
