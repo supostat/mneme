@@ -9,10 +9,14 @@ import { join } from "node:path";
 
 const WORKFLOW_PATH = join(import.meta.dir, "..", ".github", "workflows", "ci.yml");
 const GUARD_STEP_NAME =
-  "Verify RELEASE_TOKEN can push a tag to this repository (widen the PAT to contents:write here and re-run this job)";
+  "Verify the release tag can be pushed under RELEASE_TOKEN (a 403 here means the PAT lacks contents:write on this repository or has expired; fix it and re-run this job)";
 const TAG_STEP_NAME = "Tag the release";
 const FETCH_TAGS_STEP_NAME = "Fetch release tags";
 const FETCH_TAGS_COMMAND = "git fetch --depth=1 origin '+refs/tags/v*:refs/tags/v*'";
+const CREDENTIAL_OVERRIDE = "-c http.https://github.com/.extraheader=";
+// The guard and the real tag push. A third push step may be added later and this pin covers it
+// automatically, but two is the floor: fewer means the tagging path itself went missing.
+const MINIMUM_PUSH_COMMANDS = 2;
 const TAGGING_CONDITIONS = [
   "github.event_name == 'push'",
   "github.ref == 'refs/heads/main'",
@@ -59,6 +63,17 @@ function indexOfStep(predicate: (step: Step) => boolean): number {
   const index = steps().findIndex(predicate);
   expect(index).toBeGreaterThanOrEqual(0);
   return index;
+}
+
+// Every line of the workflow that invokes `git … push`, wherever it lives. Lines, not whole run
+// blocks: the credential override has to sit on the pushing command itself, and a step whose
+// FIRST line carried it would otherwise vouch for a second, unprotected push below it.
+function pushLines(run: string): string[] {
+  return run.split("\n").filter((line) => /^\s*git\b.*\bpush\b/.test(line));
+}
+
+function allPushLines(): string[] {
+  return runCommands().flatMap(pushLines);
 }
 
 function expectTaggingConditions(step: Step): void {
@@ -109,14 +124,28 @@ describe("CI workflow", () => {
     expect(runCommands()).not.toContain("bun scripts/require-unreleased-version.ts");
   });
 
+  test("every push clears the credentials checkout persisted, so the PAT in the URL is the one that authenticates", () => {
+    // Without the override git sends checkout's own AUTHORIZATION header and the push runs as
+    // github-actions[bot] — run 33886735530 died on exactly that with a 403, while the PAT's
+    // permissions were correct. The floor guards against the vacuous reading of "every push":
+    // zero pushes would satisfy it silently.
+    const pushes = allPushLines();
+    expect(pushes.length).toBeGreaterThanOrEqual(MINIMUM_PUSH_COMMANDS);
+    for (const push of pushes) {
+      expect(push).toContain(CREDENTIAL_OVERRIDE);
+    }
+  });
+
   test("the guard dry-runs the tag push under the token, only on an unreleased push to main", () => {
     const guard = stepNamed(GUARD_STEP_NAME);
     expectTaggingConditions(guard);
     expect(guard.env?.["RELEASE_TOKEN"]).toBe("${{ secrets.RELEASE_TOKEN }}");
     expect(guard.env?.["VERSION"]).toBe("${{ steps.version.outputs.version }}");
     expect(guard.run).toContain('git tag "v$VERSION"');
-    expect(guard.run).toContain("git push --dry-run");
-    expect(guard.run).toContain("x-access-token:${RELEASE_TOKEN}@github.com/${GITHUB_REPOSITORY}");
+    const [guardPush, ...extraGuardPushes] = pushLines(guard.run!);
+    expect(extraGuardPushes).toEqual([]);
+    expect(guardPush).toContain("push --dry-run");
+    expect(guardPush).toContain("x-access-token:${RELEASE_TOKEN}@github.com/${GITHUB_REPOSITORY}");
   });
 
   test("the tag step pushes for real under the same conditions and the same token", () => {
@@ -124,10 +153,11 @@ describe("CI workflow", () => {
     expectTaggingConditions(tag);
     expect(tag.env?.["RELEASE_TOKEN"]).toBe("${{ secrets.RELEASE_TOKEN }}");
     expect(tag.env?.["VERSION"]).toBe("${{ steps.version.outputs.version }}");
-    expect(tag.run).toContain("git push ");
-    expect(tag.run).not.toContain("--dry-run");
-    expect(tag.run).toContain("x-access-token:${RELEASE_TOKEN}@github.com/${GITHUB_REPOSITORY}");
-    expect(tag.run).toContain('"v$VERSION"');
+    const [tagPush, ...extraTagPushes] = pushLines(tag.run!);
+    expect(extraTagPushes).toEqual([]);
+    expect(tagPush).not.toContain("--dry-run");
+    expect(tagPush).toContain("x-access-token:${RELEASE_TOKEN}@github.com/${GITHUB_REPOSITORY}");
+    expect(tagPush).toContain('"v$VERSION"');
   });
 
   test("the suite runs before the guard, and the guard before the tag push", () => {

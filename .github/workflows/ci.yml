@@ -17,17 +17,21 @@ jobs:
       - id: version
         run: bun scripts/require-unreleased-version.ts --decide
       - run: bun test
-      - name: Verify RELEASE_TOKEN can push a tag to this repository (widen the PAT to contents:write here and re-run this job)
+      # checkout leaves its own credentials in the repository config as an http.extraheader, and
+      # that header outranks the token in a push URL — without clearing it the push authenticates
+      # as github-actions[bot], which has no write access, and dies with a 403. An EMPTY value
+      # resets the header list, so every push here must carry this -c override.
+      - name: Verify the release tag can be pushed under RELEASE_TOKEN (a 403 here means the PAT lacks contents:write on this repository or has expired; fix it and re-run this job)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.version.outputs.unreleased == 'true'
         env:
           RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           git tag "v$VERSION"
-          git push --dry-run "https://x-access-token:${RELEASE_TOKEN}@github.com/${GITHUB_REPOSITORY}" "v$VERSION"
+          git -c http.https://github.com/.extraheader= push --dry-run "https://x-access-token:${RELEASE_TOKEN}@github.com/${GITHUB_REPOSITORY}" "v$VERSION"
       - name: Tag the release
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.version.outputs.unreleased == 'true'
         env:
           RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
           VERSION: ${{ steps.version.outputs.version }}
-        run: git push "https://x-access-token:${RELEASE_TOKEN}@github.com/${GITHUB_REPOSITORY}" "v$VERSION"
+        run: git -c http.https://github.com/.extraheader= push "https://x-access-token:${RELEASE_TOKEN}@github.com/${GITHUB_REPOSITORY}" "v$VERSION"
