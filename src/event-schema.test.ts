@@ -107,7 +107,7 @@ const LIVE_EVENTS: Record<string, EventInput> = {
   staging_resolve_reject: { type: "staging_resolve", note_id: "n1", decision: "reject", staged_to_resolved_ms: null, commit: null, superseded_id: null, suggested: null, accepted_body_len: null, accepted_anchors_n: null },
   staging_resolve_supersede: { type: "staging_resolve", note_id: "n1", decision: "supersede", staged_to_resolved_ms: 5, commit: "abc1234", superseded_id: "n0", suggested: true, accepted_body_len: 20, accepted_anchors_n: 2, menu: null },
   staging_listed: { type: "staging_listed", count: 1, liveness: [{ id: "n1", anchors: [{ path: "src/a.ts", liveness: "tracked" }] }] },
-  rebuild: { type: "rebuild", duration_ms: 0, notes_n: 2, embedded_n: 2, dead_anchors_n: 1, staleness: [0, -1], ollama: { available: true, retries: 0 } },
+  rebuild: { type: "rebuild", duration_ms: 0, notes_n: 2, embedded_n: 2, bodies_n: 2, chunks_n: 1, chunks_ok_n: 1, dead_anchors_n: 1, staleness: [0, -1], ollama: { available: true, retries: 0 } },
   session_start: { type: "session_start" },
   session_end: { type: "session_end" },
   tool_error: { type: "tool_error", tool: "recall", message: "boom" },
@@ -176,7 +176,7 @@ const AGENT_VOTE_MIRROR = {
 
 describe("event-schema constants", () => {
   test("SCHEMA_VERSION is 16", () => {
-    expect(SCHEMA_VERSION).toBe(16);
+    expect(SCHEMA_VERSION).toBe(17);
   });
 
   test("EXECUTABLE_GATE_REASONS mirrors gate-runner's ExecutableGateReason in both directions", () => {

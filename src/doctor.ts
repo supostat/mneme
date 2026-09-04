@@ -204,10 +204,21 @@ function checkIndex(probe: IndexProbe, indexPath: string): CheckOutcome {
       detail: `index schema is incomplete (rebuild required); tables: ${inspection.tables.join(", ")}`,
     };
   }
+  // A rebuild embeds in chunks and keeps what it got when the embedder stops answering, so an
+  // index can hold vectors for SOME notes: the count of the rest is the number the next rebuild
+  // still has to embed. Whether that rebuild will succeed is the embeddings component's verdict,
+  // reported on its own line — this one only says how far the index got.
   if (inspection.noteCount > 0 && inspection.vectorCount === 0) {
     return {
       status: "degraded",
-      detail: `index holds ${inspection.noteCount} note(s) but no stored vectors (recall runs FTS-only until rebuild)`,
+      detail: `index holds ${inspection.noteCount} note(s) but no stored vectors (the next rebuild embeds them)`,
+    };
+  }
+  if (inspection.vectorCount < inspection.noteCount) {
+    const missing = inspection.noteCount - inspection.vectorCount;
+    return {
+      status: "degraded",
+      detail: `index holds ${inspection.noteCount} note(s), ${missing} without stored vectors (the next rebuild embeds the rest)`,
     };
   }
   return { status: "ok", detail: `${inspection.noteCount} note(s), ${inspection.vectorCount} vector(s)` };

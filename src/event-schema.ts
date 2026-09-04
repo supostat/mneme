@@ -73,7 +73,13 @@ import { z } from "zod";
 //       denominator counts instrumented harvests only (the v14 rule: never read emptiness as 0%).
 //       Both keys are optional (the v4 extend-never-repurpose rule): pre-16 events restore
 //       unchanged, with the bundle read as "composition unknown".
-export const SCHEMA_VERSION = 16;
+//  17 — chunked embedding: rebuild gains bodies_n (distinct bodies the embedder was asked for —
+//       the ones no cached vector covered), chunks_n (requests those bodies were cut into) and
+//       chunks_ok_n (requests answered). A rebuild stops at the first chunk the embedder cannot
+//       answer and keeps what it got, so chunks_ok_n < chunks_n is a PARTIAL index that the next
+//       rebuild completes; ollama.available now means "every chunk answered". The ollama key keeps
+//       its name for the openai format too (extend never repurpose).
+export const SCHEMA_VERSION = 17;
 
 export const DEDUP_OUTCOMES = ["add", "supersede_suggest", "noop"] as const;
 // The closed v1 registry of digit-menu decision classes: curation rides staging_resolve, plan-fan
@@ -245,6 +251,9 @@ const rebuildEvent = z.object({
   duration_ms: z.number(),
   notes_n: z.number(),
   embedded_n: z.number(),
+  bodies_n: z.number(),
+  chunks_n: z.number(),
+  chunks_ok_n: z.number(),
   dead_anchors_n: z.number(),
   staleness: z.array(z.number()),
   ollama: z.object({ available: z.boolean(), retries: z.number() }),

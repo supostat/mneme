@@ -230,6 +230,56 @@ describe("runDoctor broken components are named, isolated, and typed", () => {
     expect(report.overall).toBe("degraded");
   });
 
+  // A second note whose body the embedder never answered: the rebuild keeps the first note's cached
+  // vector and leaves the second without one — the state a chunked rebuild leaves behind when the
+  // embedder goes away mid-way.
+  async function corpusWithOneUnembeddedNote(): Promise<Corpus> {
+    const corpus = await buildHealthyCorpus();
+    const projectRoot = (JSON.parse(readFileSync(corpus.manifestPath, "utf8")) as { path: string }).path;
+    const second: Note = {
+      frontmatter: { id: ulid(1), type: "pattern", anchors: ["src/a.ts"], commit: "abc1234", created: "2026-07-06T10:00:00.000Z" },
+      body: "a second note the embedder never got to",
+    };
+    writeFileSync(join(corpus.notesDir, `${second.frontmatter.id}.md`), serializeNote(second));
+    const eventWriter = new EventWriter(corpus.eventsDir, { sessionId: "s-doctor", mnemeVersion: "0.1.0", clock: CLOCK });
+    await rebuild({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, embeddings: offlineClient(), eventWriter, clock: CLOCK });
+    return corpus;
+  }
+
+  test("an index with vectors for only some notes names the count still to embed while a reachable embedder stays ok", async () => {
+    const corpus = await corpusWithOneUnembeddedNote();
+
+    const report = await runDoctor({ corpusDir: corpus.corpusDir, embedder: bagOfWordsClient() });
+
+    const index = byName(report).get("index")!;
+    expect(index.status).toBe("degraded");
+    expect(index.detail).toBe("index holds 2 note(s), 1 without stored vectors (the next rebuild embeds the rest)");
+    expect(byName(report).get("embeddings")!.status).toBe("ok");
+    expect(report.overall).toBe("degraded");
+  });
+
+  test("the same partial index next to an unreachable embedder reads as two separate faults", async () => {
+    const corpus = await corpusWithOneUnembeddedNote();
+
+    const report = await runDoctor({ corpusDir: corpus.corpusDir, embedder: offlineClient() });
+
+    const index = byName(report).get("index")!;
+    expect(index.status).toBe("degraded");
+    expect(index.detail).toContain("1 without stored vectors");
+    expect(byName(report).get("embeddings")!.status).toBe("fail");
+    expect(report.overall).toBe("fail");
+  });
+
+  test("an index with notes but no vectors at all says the next rebuild embeds them", async () => {
+    const corpus = await buildHealthyCorpus(offlineClient());
+
+    const report = await runDoctor({ corpusDir: corpus.corpusDir, embedder: bagOfWordsClient() });
+
+    const index = byName(report).get("index")!;
+    expect(index.status).toBe("degraded");
+    expect(index.detail).toBe("index holds 1 note(s) but no stored vectors (the next rebuild embeds them)");
+  });
+
   test("a missing corpus directory fails corpus_root", async () => {
     const corpusHome = mkdtempSync(join(tmpdir(), "mneme-doctor-home-"));
     const corpusDir = join(corpusHome, "does-not-exist");

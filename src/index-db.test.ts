@@ -657,7 +657,40 @@ describe("rebuild telemetry event", () => {
     const emitted = events[0]!;
     expect(emitted.notes_n).toBe(2);
     expect(emitted.embedded_n).toBe(0);
+    expect(emitted.bodies_n).toBe(2);
+    expect(emitted.chunks_n).toBe(1);
+    expect(emitted.chunks_ok_n).toBe(0);
     expect((emitted.ollama as { available: boolean; retries: number }).available).toBe(false);
+  });
+
+  test("a partial rebuild records how many chunks were asked for and answered; the completing rebuild records the remainder", async () => {
+    const { corpus, projectRoot } = await fortyNoteCorpus();
+    const eventsDir = mkdtempSync(join(tmpdir(), "mneme-index-events-"));
+    const eventWriter = new EventWriter(eventsDir, { sessionId: "s-index", mnemeVersion: "0.1.0", clock: fixedClock });
+    const base = { indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, eventWriter, clock: fixedClock };
+
+    await rebuild({ ...base, embeddings: failingOnCallClient({ calls: [] }, 2) });
+    await rebuild({ ...base, embeddings: jitterClient({ calls: [] }) });
+
+    const [partial, completing] = readEvents(eventsDir).filter((event) => event.type === "rebuild");
+    expect(partial).toMatchObject({ notes_n: 40, bodies_n: 40, chunks_n: 3, chunks_ok_n: 1, embedded_n: 16 });
+    expect((partial!.ollama as { available: boolean; retries: number })).toEqual({ available: false, retries: 1 });
+    expect(completing).toMatchObject({ notes_n: 40, bodies_n: 24, chunks_n: 2, chunks_ok_n: 2, embedded_n: 40 });
+    expect((completing!.ollama as { available: boolean; retries: number })).toEqual({ available: true, retries: 0 });
+  });
+
+  test("a rebuild with every vector cached asks for nothing and reports zero chunks as available", async () => {
+    const { corpus, projectRoot } = await fortyNoteCorpus();
+    const eventsDir = mkdtempSync(join(tmpdir(), "mneme-index-events-"));
+    const eventWriter = new EventWriter(eventsDir, { sessionId: "s-index", mnemeVersion: "0.1.0", clock: fixedClock });
+    const deps = { indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, eventWriter, clock: fixedClock, embeddings: jitterClient({ calls: [] }) };
+
+    await rebuild(deps);
+    await rebuild(deps);
+
+    const [, cached] = readEvents(eventsDir).filter((event) => event.type === "rebuild");
+    expect(cached).toMatchObject({ bodies_n: 0, chunks_n: 0, chunks_ok_n: 0, embedded_n: 40 });
+    expect((cached!.ollama as { available: boolean; retries: number }).available).toBe(true);
   });
 });
 
