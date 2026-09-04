@@ -10,6 +10,7 @@ import { EventWriter, readEvents } from "../src/events";
 import { initRepo, runGit } from "../src/git";
 import { createServer } from "../src/mcp-server";
 import type { CreateServerOptions } from "../src/mcp-server";
+import { EMBEDDING_MODEL } from "../src/embeddings";
 
 // The human-gate metrics lifecycle on REAL modules end-to-end: a plan-fan remember, a shown queue,
 // a batch accept riding one curation menu, an accept after an on-disk edit, a reject, a second
@@ -32,6 +33,7 @@ function sequentialIds(from: number): () => string {
 
 function offlineClient(): EmbeddingsClient {
   return {
+    model: EMBEDDING_MODEL,
     embed: async (inputs) =>
       inputs.length === 0
         ? { available: true, embeddings: [], retries: 0 }

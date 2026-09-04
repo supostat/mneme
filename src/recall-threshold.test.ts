@@ -9,7 +9,7 @@ import type { Note, NoteFrontmatter } from "./note";
 import { rebuild } from "./index-db";
 import { recall, RECALL_BUNDLE_COSINE_THRESHOLD, RECALL_LOW_CONFIDENCE_FLOOR } from "./recall";
 import type { RecallDeps } from "./recall";
-import { EMBEDDING_DIMENSION } from "./embeddings";
+import { EMBEDDING_DIMENSION, EMBEDDING_MODEL } from "./embeddings";
 import type { EmbeddingsClient } from "./embeddings";
 import { EventWriter, readEvents } from "./events";
 import type { StoredEvent } from "./events";
@@ -55,6 +55,7 @@ function vectorFrom(components: number[]): Float32Array {
 // vector, so cosine scores land on the intended side of the threshold without a live embedder.
 function keyedClient(byText: Map<string, number[]>): EmbeddingsClient {
   return {
+    model: EMBEDDING_MODEL,
     embed: async (inputs) => {
       if (inputs.length === 0) return { available: true, embeddings: [], retries: 0 };
       return {

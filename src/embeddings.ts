@@ -6,6 +6,13 @@ export const EMBED_ATTEMPTS = 2;
 export const RECALL_EMBED_TIMEOUT_MS = 2000;
 export const RECALL_EMBED_ATTEMPTS = 1;
 export const EMBED_RETRY_BACKOFF_MS = 50;
+// A rebuild embeds the corpus chunk by chunk. The embedder costs ~100 ms per body whatever the
+// batch size (each input is its own task on the server), so the chunk only sets how much one
+// timeout can lose; 16 bodies take ~1.6 s, and 10 s absorbs a slower machine, a model load, or a
+// foreign request queued ahead of ours.
+export const REBUILD_EMBED_CHUNK_SIZE = 16;
+export const REBUILD_EMBED_TIMEOUT_MS = 10000;
+export const REBUILD_EMBED_ATTEMPTS = 2;
 
 // Two wire dialects, one client: ollama (native /api/embed) and openai (/v1/embeddings, the shape
 // LM Studio, llama.cpp-server and cloud endpoints speak). Both take the same {model, input} body;
@@ -50,7 +57,11 @@ export interface EmbedOptions {
   attempts?: number;
 }
 
+// The model name travels with the client: the index stamps it into index_config so a cache built
+// by one model is never reused by another, which only works if the rebuild reads the name from the
+// same object that makes the requests.
 export interface EmbeddingsClient {
+  readonly model: string;
   embed(inputs: string[], options?: EmbedOptions): Promise<EmbedResult>;
 }
 
@@ -75,7 +86,7 @@ export class HttpEmbeddingsClient implements EmbeddingsClient {
   constructor(
     private readonly baseUrl: string = OLLAMA_BASE_URL,
     private readonly fetchImplementation: FetchImplementation = (url, init) => fetch(url, init),
-    private readonly model: string = EMBEDDING_MODEL,
+    readonly model: string = EMBEDDING_MODEL,
     private readonly format: EmbedderFormat = "ollama",
   ) {}
 

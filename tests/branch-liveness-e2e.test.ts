@@ -16,6 +16,7 @@ import { DEAD_ANCHOR_SINK } from "../src/staleness";
 import { remember, stagingList } from "../src/staging";
 import type { StagingDeps } from "../src/staging";
 import { listReanchorRequests, listRetagRequests } from "../src/curation";
+import { EMBEDDING_MODEL } from "../src/embeddings";
 
 // The branch-aware path on REAL modules end-to-end: three anchors with three different truths — one
 // parked on an unmerged branch, one a concept git never saw, one honestly deleted — must travel
@@ -40,6 +41,7 @@ const fixedClock = () => new Date("2026-07-06T10:00:00.000Z");
 
 function offlineClient(): EmbeddingsClient {
   return {
+    model: EMBEDDING_MODEL,
     embed: async (inputs) =>
       inputs.length === 0
         ? { available: true, embeddings: [], retries: 0 }

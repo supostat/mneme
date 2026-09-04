@@ -18,6 +18,7 @@ import { stagingResolve } from "./staging";
 import { listReanchorRequests, listRetagRequests, readReanchorRequest } from "./curation";
 import { RENAME_SCORE_FLOOR, anchorSweep } from "./anchor-repair";
 import { formatSweepReport } from "./mcp-rendering";
+import { EMBEDDING_MODEL } from "./embeddings";
 
 // Every case spawns a real git repository and runs a real rename trace over it.
 setDefaultTimeout(30_000);
@@ -39,6 +40,7 @@ const fixedClock = () => new Date("2026-07-06T10:00:00.000Z");
 
 function offlineClient(): EmbeddingsClient {
   return {
+    model: EMBEDDING_MODEL,
     embed: async (inputs) =>
       inputs.length === 0
         ? { available: true, embeddings: [], retries: 0 }

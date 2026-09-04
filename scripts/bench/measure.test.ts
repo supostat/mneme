@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { EMBEDDING_DIMENSION } from "../../src/embeddings";
+import { EMBEDDING_DIMENSION, EMBEDDING_MODEL } from "../../src/embeddings";
 import type { EmbeddingsClient } from "../../src/embeddings";
 import { ingestCase } from "./ingest";
 import type { IngestMode } from "./ingest";
@@ -28,6 +28,7 @@ function fixtureCase(caseId: string): BenchCase {
 // FTS channel alone drives ranking in these tests.
 function oneHotClient(): EmbeddingsClient {
   return {
+    model: EMBEDDING_MODEL,
     async embed(inputs) {
       return {
         available: true,

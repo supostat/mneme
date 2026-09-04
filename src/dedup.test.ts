@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { serializeNote } from "./note";
 import type { Note, NoteFrontmatter } from "./note";
 import { rebuild } from "./index-db";
-import { EMBEDDING_DIMENSION } from "./embeddings";
+import { EMBEDDING_DIMENSION, EMBEDDING_MODEL } from "./embeddings";
 import type { EmbeddingsClient } from "./embeddings";
 import { EventWriter } from "./events";
 import { classifyCandidate, DEDUP_SUPERSEDE_THRESHOLD, DEDUP_NOOP_THRESHOLD } from "./dedup";
@@ -42,6 +42,7 @@ function vectorFrom(components: number[]): Float32Array {
 
 function keyedClient(byBody: Map<string, number[]>): EmbeddingsClient {
   return {
+    model: EMBEDDING_MODEL,
     embed: async (inputs) => {
       if (inputs.length === 0) return { available: true, embeddings: [], retries: 0 };
       return {
@@ -59,6 +60,7 @@ function keyedClient(byBody: Map<string, number[]>): EmbeddingsClient {
 
 function offlineClient(): EmbeddingsClient {
   return {
+    model: EMBEDDING_MODEL,
     embed: async (inputs) =>
       inputs.length === 0
         ? { available: true, embeddings: [], retries: 0 }

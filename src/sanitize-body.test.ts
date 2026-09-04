@@ -10,6 +10,7 @@ import type { EmbeddingsClient } from "./embeddings";
 import { remember } from "./staging";
 import type { StagingDeps } from "./staging";
 import { assertCleanNoteBody, findForbiddenMarkup, ForbiddenMarkupError } from "./sanitize-body";
+import { EMBEDDING_MODEL } from "./embeddings";
 
 // Dangerous tokens are assembled from pieces so this test file never carries a live tool-calling tag,
 // harness tag, or raw framing-breaking character as source text.
@@ -90,6 +91,7 @@ const fixedClock = (): Date => new Date("2026-07-06T10:00:00.000Z");
 
 function offlineClient(): EmbeddingsClient {
   return {
+    model: EMBEDDING_MODEL,
     embed: async (inputs) =>
       inputs.length === 0
         ? { available: true, embeddings: [], retries: 0 }

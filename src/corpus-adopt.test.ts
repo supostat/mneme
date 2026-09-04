@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { defaultConfig } from "./config";
 import { canonicalize, resolveCorpus } from "./corpus";
 import type { Corpus } from "./corpus";
-import { EMBEDDING_DIMENSION } from "./embeddings";
+import { EMBEDDING_DIMENSION, EMBEDDING_MODEL } from "./embeddings";
 import type { EmbeddingsClient } from "./embeddings";
 import { EventWriter, readEvents } from "./events";
 import type { StoredEvent } from "./events";
@@ -51,11 +51,12 @@ function bagVector(text: string): Float32Array {
 }
 
 function bagOfWordsClient(): EmbeddingsClient {
-  return { embed: async (inputs) => ({ available: true, embeddings: inputs.map(bagVector), retries: 0 }) };
+  return { model: EMBEDDING_MODEL, embed: async (inputs) => ({ available: true, embeddings: inputs.map(bagVector), retries: 0 }) };
 }
 
 function offlineClient(): EmbeddingsClient {
   return {
+    model: EMBEDDING_MODEL,
     embed: async (inputs) =>
       inputs.length === 0
         ? { available: true, embeddings: [], retries: 0 }

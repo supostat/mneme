@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { EMBEDDING_DIMENSION } from "../../src/embeddings";
+import { EMBEDDING_DIMENSION, EMBEDDING_MODEL } from "../../src/embeddings";
 import type { EmbeddingsClient } from "../../src/embeddings";
 import { readActiveNotes } from "../../src/index-db";
 import { MAX_BODY_CODE_POINTS } from "../../src/note";
@@ -27,6 +27,7 @@ function updateCase(): BenchCase {
 
 function hashClient(): EmbeddingsClient {
   return {
+    model: EMBEDDING_MODEL,
     async embed(inputs) {
       return {
         available: true,
@@ -45,6 +46,7 @@ function hashClient(): EmbeddingsClient {
 }
 
 const offlineClient: EmbeddingsClient = {
+  model: EMBEDDING_MODEL,
   async embed() {
     return { available: false, retries: 1, embeddings: [] };
   },

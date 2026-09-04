@@ -24,6 +24,7 @@ import {
   showNote,
 } from "./curation";
 import { formatStagingList } from "./mcp-rendering";
+import { EMBEDDING_MODEL } from "./embeddings";
 
 const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
@@ -42,6 +43,7 @@ const fixedClock = () => new Date("2026-07-06T10:00:00.000Z");
 
 function offlineClient(): EmbeddingsClient {
   return {
+    model: EMBEDDING_MODEL,
     embed: async (inputs) =>
       inputs.length === 0
         ? { available: true, embeddings: [], retries: 0 }

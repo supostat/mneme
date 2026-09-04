@@ -2,10 +2,15 @@ import { test, expect, describe } from "bun:test";
 import {
   HttpEmbeddingsClient,
   EMBEDDING_DIMENSION,
+  EMBEDDING_MODEL,
   EMBED_ATTEMPTS,
   EMBED_TIMEOUT_MS,
+  OLLAMA_BASE_URL,
   RECALL_EMBED_ATTEMPTS,
   RECALL_EMBED_TIMEOUT_MS,
+  REBUILD_EMBED_ATTEMPTS,
+  REBUILD_EMBED_CHUNK_SIZE,
+  REBUILD_EMBED_TIMEOUT_MS,
 } from "./embeddings";
 import type { EmbeddingsHttpRequest, EmbeddingsHttpResponse, FetchImplementation } from "./embeddings";
 
@@ -261,5 +266,15 @@ describe("HttpEmbeddingsClient per-call retry and timeout overrides", () => {
     expect(EMBED_ATTEMPTS).toBe(2);
     expect(RECALL_EMBED_TIMEOUT_MS).toBe(2000);
     expect(RECALL_EMBED_ATTEMPTS).toBe(1);
+    expect(REBUILD_EMBED_CHUNK_SIZE).toBe(16);
+    expect(REBUILD_EMBED_TIMEOUT_MS).toBe(10000);
+    expect(REBUILD_EMBED_ATTEMPTS).toBe(2);
+  });
+
+  test("the client exposes the model it requests, defaulting to the engine's model", () => {
+    expect(new HttpEmbeddingsClient().model).toBe(EMBEDDING_MODEL);
+    expect(new HttpEmbeddingsClient(OLLAMA_BASE_URL, async () => ({ ok: false, json: async () => ({}) }), "nomic-embed-text").model).toBe(
+      "nomic-embed-text",
+    );
   });
 });

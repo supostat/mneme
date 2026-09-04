@@ -18,6 +18,7 @@ import { recall } from "../src/recall";
 import { DEAD_ANCHOR_SINK } from "../src/staleness";
 import { countStagedNotes, remember, stagingList, stagingResolve } from "../src/staging";
 import type { StagingDeps } from "../src/staging";
+import { EMBEDDING_MODEL } from "../src/embeddings";
 
 // The tags lifecycle on REAL modules end-to-end — the b52c6722 scenario from the corpus
 // measurement: a note whose nine anchors are all CONCEPTS (class names, domain terms, DB columns)
@@ -43,6 +44,7 @@ const fixedClock = () => new Date("2026-07-06T10:00:00.000Z");
 
 function offlineClient(): EmbeddingsClient {
   return {
+    model: EMBEDDING_MODEL,
     embed: async (inputs) =>
       inputs.length === 0
         ? { available: true, embeddings: [], retries: 0 }

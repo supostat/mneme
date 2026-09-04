@@ -10,7 +10,7 @@ import { EventWriter, readEvents } from "./events";
 import type { StoredEvent } from "./events";
 import { parseNote, serializeNote, NoteValidationError } from "./note";
 import type { EmbeddingsClient } from "./embeddings";
-import { EMBEDDING_DIMENSION } from "./embeddings";
+import { EMBEDDING_DIMENSION, EMBEDDING_MODEL } from "./embeddings";
 import { dumpIndex } from "./index-db";
 import { remember, stagingList, stagingResolve, StagingError } from "./staging";
 import type { StagingDeps } from "./staging";
@@ -49,6 +49,7 @@ async function buildProjectRepo(): Promise<string> {
 
 function offlineClient(): EmbeddingsClient {
   return {
+    model: EMBEDDING_MODEL,
     embed: async (inputs) =>
       inputs.length === 0
         ? { available: true, embeddings: [], retries: 0 }
@@ -66,6 +67,7 @@ function vectorFrom(components: number[]): Float32Array {
 
 function keyedClient(byBody: Map<string, number[]>): EmbeddingsClient {
   return {
+    model: EMBEDDING_MODEL,
     embed: async (inputs) => {
       if (inputs.length === 0) return { available: true, embeddings: [], retries: 0 };
       return {
@@ -101,6 +103,7 @@ function bagVector(text: string): Float32Array {
 
 function bagClient(): EmbeddingsClient {
   return {
+    model: EMBEDDING_MODEL,
     embed: async (inputs) => ({ available: true, embeddings: inputs.map(bagVector), retries: 0 }),
   };
 }

@@ -17,6 +17,7 @@ import { createLivenessContext } from "../src/anchor-liveness";
 import { countStagedNotes, stagingList, stagingResolve } from "../src/staging";
 import type { StagingDeps } from "../src/staging";
 import { listReanchorRequests, listRetireRequests } from "../src/curation";
+import { EMBEDDING_MODEL } from "../src/embeddings";
 
 // The main path on REAL modules end-to-end: a project rename kills an anchor, the sweep traces it,
 // the staging surface shows it, a human accept repairs it, and the repaired note leaves the
@@ -32,6 +33,7 @@ const fixedClock = () => new Date("2026-07-06T10:00:00.000Z");
 
 function offlineClient(): EmbeddingsClient {
   return {
+    model: EMBEDDING_MODEL,
     embed: async (inputs) =>
       inputs.length === 0
         ? { available: true, embeddings: [], retries: 0 }

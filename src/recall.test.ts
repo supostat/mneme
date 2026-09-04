@@ -9,7 +9,7 @@ import type { Note, NoteFrontmatter, NoteType } from "./note";
 import { rebuild } from "./index-db";
 import { recall } from "./recall";
 import type { RecallDeps } from "./recall";
-import { EMBEDDING_DIMENSION } from "./embeddings";
+import { EMBEDDING_DIMENSION, EMBEDDING_MODEL } from "./embeddings";
 import type { EmbeddingsClient } from "./embeddings";
 import { EventWriter, readEvents } from "./events";
 import type { StoredEvent } from "./events";
@@ -61,12 +61,14 @@ function bagVector(text: string): Float32Array {
 
 function bagOfWordsClient(): EmbeddingsClient {
   return {
+    model: EMBEDDING_MODEL,
     embed: async (inputs) => ({ available: true, embeddings: inputs.map(bagVector), retries: 0 }),
   };
 }
 
 function offlineClient(): EmbeddingsClient {
   return {
+    model: EMBEDDING_MODEL,
     embed: async (inputs) =>
       inputs.length === 0
         ? { available: true, embeddings: [], retries: 0 }
@@ -485,6 +487,7 @@ describe("recall cross-lingual and mixed queries", () => {
   // A multilingual embedder maps a Cyrillic query to the same concept vector as an English note.
   function crossLingualClient(translations: Map<string, string>): EmbeddingsClient {
     return {
+      model: EMBEDDING_MODEL,
       embed: async (inputs) => ({
         available: true,
         embeddings: inputs.map((input) => bagVector(translations.get(input) ?? input)),
@@ -556,6 +559,7 @@ describe("recall RRF determinism", () => {
 // terms still carries a vector signal — the only way to reach the vector_only channel gate.
 function constantVectorClient(): EmbeddingsClient {
   return {
+    model: EMBEDDING_MODEL,
     embed: async (inputs) =>
       inputs.length === 0
         ? { available: true, embeddings: [], retries: 0 }

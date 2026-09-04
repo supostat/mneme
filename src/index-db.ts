@@ -7,7 +7,13 @@ import type { Note } from "./note";
 import { isAnchorNeutral } from "./note";
 import { stalenessBoost, DEAD_ANCHOR_SINK } from "./staleness";
 import { createLivenessContext } from "./anchor-liveness";
-import { EMBEDDING_MODEL, cosineSimilarity, floatsFromBlob } from "./embeddings";
+import {
+  REBUILD_EMBED_ATTEMPTS,
+  REBUILD_EMBED_CHUNK_SIZE,
+  REBUILD_EMBED_TIMEOUT_MS,
+  cosineSimilarity,
+  floatsFromBlob,
+} from "./embeddings";
 import type { EmbeddingsClient } from "./embeddings";
 import type { EventInput, EventWriter } from "./events";
 
@@ -27,12 +33,9 @@ export interface RebuildDeps {
   clock: () => Date;
 }
 
-interface RebuildOutcome {
+interface RebuildOutcome extends VectorOutcome {
   notesCount: number;
   boosts: number[];
-  available: boolean;
-  retries: number;
-  embeddedCount: number;
 }
 
 export async function rebuild(deps: RebuildDeps): Promise<void> {
@@ -42,7 +45,7 @@ export async function rebuild(deps: RebuildDeps): Promise<void> {
 }
 
 async function buildFreshIndex(deps: RebuildDeps): Promise<RebuildOutcome> {
-  const cache = loadEmbeddingCache(deps.indexPath);
+  const cache = loadEmbeddingCache(deps.indexPath, deps.embeddings.model);
   rmSync(deps.indexPath, { force: true });
   const database = freshDatabase(deps.indexPath);
   try {
@@ -108,22 +111,22 @@ function freshDatabase(indexPath: string): Database {
   return database;
 }
 
-function loadEmbeddingCache(indexPath: string): Map<string, Uint8Array> {
+function loadEmbeddingCache(indexPath: string, model: string): Map<string, Uint8Array> {
   if (!existsSync(indexPath)) return new Map();
   try {
-    return readEmbeddingCache(indexPath);
+    return readEmbeddingCache(indexPath, model);
   } catch {
     return new Map();
   }
 }
 
-function readEmbeddingCache(indexPath: string): Map<string, Uint8Array> {
+function readEmbeddingCache(indexPath: string, model: string): Map<string, Uint8Array> {
   const database = openReadOnlyDatabase(indexPath);
   try {
     const config = database.query("SELECT embedding_model FROM index_config").get() as
       | { embedding_model: string }
       | null;
-    if (config?.embedding_model !== EMBEDDING_MODEL) return new Map();
+    if (config?.embedding_model !== model) return new Map();
     const cache = new Map<string, Uint8Array>();
     const rows = database.query("SELECT content_hash, embedding FROM vec").all() as Array<{
       content_hash: string;
@@ -192,6 +195,9 @@ interface VectorOutcome {
   available: boolean;
   retries: number;
   embeddedCount: number;
+  bodiesCount: number;
+  chunksCount: number;
+  chunksOkCount: number;
 }
 
 async function insertVectors(
@@ -203,10 +209,60 @@ async function insertVectors(
   const bodies = [...new Set(notes.map((note) => note.body))];
   const hashByBody = new Map(bodies.map((body) => [body, sha256Hex(body)]));
   const toEmbed = bodies.filter((body) => !cache.has(hashByBody.get(body)!));
-  const fresh = await embeddings.embed(toEmbed);
-  const bytesByHash = resolveBytes(bodies, hashByBody, cache, toEmbed, fresh.available ? fresh.embeddings : []);
-  const embeddedCount = writeVectors(database, notes, hashByBody, bytesByHash);
-  return { available: fresh.available, retries: fresh.retries, embeddedCount };
+  const fresh = await embedInChunks(embeddings, toEmbed);
+  const bytesByHash = resolveBytes(bodies, hashByBody, cache, toEmbed, fresh.embeddings);
+  const embeddedCount = writeVectors(database, notes, hashByBody, bytesByHash, embeddings.model);
+  return {
+    available: fresh.available,
+    retries: fresh.retries,
+    embeddedCount,
+    bodiesCount: toEmbed.length,
+    chunksCount: fresh.chunksCount,
+    chunksOkCount: fresh.chunksOkCount,
+  };
+}
+
+interface ChunkedEmbedding {
+  embeddings: Float32Array[];
+  available: boolean;
+  retries: number;
+  chunksCount: number;
+  chunksOkCount: number;
+}
+
+// Bodies go to the embedder chunk by chunk, so one timeout costs one chunk instead of the whole
+// corpus. The FIRST chunk that stays unavailable after its attempts ends the pass: the embedder is
+// taken as down, what was embedded so far is kept (the vectors below are a prefix of `bodies`, so
+// positions still line up), and the rest waits for the next rebuild — which finds these vectors in
+// the cache and only asks for the remainder. Nothing is asked for an empty list.
+async function embedInChunks(embeddings: EmbeddingsClient, bodies: string[]): Promise<ChunkedEmbedding> {
+  const chunks = chunksOf(bodies, REBUILD_EMBED_CHUNK_SIZE);
+  const collected: Float32Array[] = [];
+  let retries = 0;
+  let chunksOkCount = 0;
+  for (const chunk of chunks) {
+    const result = await embeddings.embed(chunk, {
+      timeoutMs: REBUILD_EMBED_TIMEOUT_MS,
+      attempts: REBUILD_EMBED_ATTEMPTS,
+    });
+    retries += result.retries;
+    if (!result.available) break;
+    collected.push(...result.embeddings);
+    chunksOkCount += 1;
+  }
+  return {
+    embeddings: collected,
+    available: chunksOkCount === chunks.length,
+    retries,
+    chunksCount: chunks.length,
+    chunksOkCount,
+  };
+}
+
+function chunksOf<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let start = 0; start < items.length; start += size) chunks.push(items.slice(start, start + size));
+  return chunks;
 }
 
 function resolveBytes(
@@ -233,6 +289,7 @@ function writeVectors(
   notes: Note[],
   hashByBody: Map<string, string>,
   bytesByHash: Map<string, Uint8Array>,
+  model: string,
 ): number {
   const insertVec = database.query("INSERT INTO vec(id, content_hash, embedding) VALUES (?, ?, ?)");
   let written = 0;
@@ -246,7 +303,7 @@ function writeVectors(
     }
   });
   write();
-  if (written > 0) database.run("INSERT INTO index_config(embedding_model) VALUES (?)", [EMBEDDING_MODEL]);
+  if (written > 0) database.run("INSERT INTO index_config(embedding_model) VALUES (?)", [model]);
   return written;
 }
 

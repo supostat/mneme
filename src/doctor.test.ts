@@ -9,7 +9,7 @@ import { serializeNote } from "./note";
 import type { Note } from "./note";
 import { rebuild } from "./index-db";
 import { EventWriter } from "./events";
-import { EMBEDDING_DIMENSION } from "./embeddings";
+import { EMBEDDING_DIMENSION, EMBEDDING_MODEL } from "./embeddings";
 import type { EmbeddingsClient } from "./embeddings";
 import { runDoctor, renderDoctorReport } from "./doctor";
 import type { DoctorReport, DoctorComponentReport } from "./doctor";
@@ -53,13 +53,14 @@ function bagVector(text: string): Float32Array {
 // A local Ollama stand-in that stores full-dimension vectors, exercising the healthy embeddings path
 // without a live server.
 function bagOfWordsClient(): EmbeddingsClient {
-  return { embed: async (inputs) => ({ available: true, embeddings: inputs.map(bagVector), retries: 0 }) };
+  return { model: EMBEDDING_MODEL, embed: async (inputs) => ({ available: true, embeddings: inputs.map(bagVector), retries: 0 }) };
 }
 
 // Models Ollama being unreachable: any non-empty embed reports unavailable, like the real client on a
 // refused connection.
 function offlineClient(): EmbeddingsClient {
   return {
+    model: EMBEDDING_MODEL,
     embed: async (inputs) =>
       inputs.length === 0
         ? { available: true, embeddings: [], retries: 0 }
@@ -70,6 +71,7 @@ function offlineClient(): EmbeddingsClient {
 // Models a swapped embedding model whose output dimension no longer matches the stored vectors.
 function wrongDimensionClient(dimension: number): EmbeddingsClient {
   return {
+    model: EMBEDDING_MODEL,
     embed: async (inputs) => ({
       available: true,
       embeddings: inputs.map(() => new Float32Array(dimension)),

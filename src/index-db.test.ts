@@ -8,8 +8,15 @@ import { serializeNote } from "./note";
 import type { Note, NoteFrontmatter } from "./note";
 import { rebuild, dumpIndex, dumpVectors, nearestNeighbor, openReadOnlyDatabase } from "./index-db";
 import type { RebuildDeps } from "./index-db";
-import { HttpEmbeddingsClient, EMBEDDING_DIMENSION, OLLAMA_BASE_URL } from "./embeddings";
-import type { EmbeddingsClient } from "./embeddings";
+import {
+  HttpEmbeddingsClient,
+  EMBEDDING_DIMENSION,
+  EMBEDDING_MODEL,
+  OLLAMA_BASE_URL,
+  REBUILD_EMBED_ATTEMPTS,
+  REBUILD_EMBED_TIMEOUT_MS,
+} from "./embeddings";
+import type { EmbedOptions, EmbeddingsClient } from "./embeddings";
 import { EventWriter, readEvents } from "./events";
 import { isAppleSqlite } from "../tests/sqlite-build";
 
@@ -81,6 +88,7 @@ interface EmbedLog {
 
 function offlineClient(): EmbeddingsClient {
   return {
+    model: EMBEDDING_MODEL,
     embed: async (inputs) =>
       inputs.length === 0
         ? { available: true, embeddings: [], retries: 0 }
@@ -88,9 +96,10 @@ function offlineClient(): EmbeddingsClient {
   };
 }
 
-function jitterClient(log: EmbedLog): EmbeddingsClient {
+function jitterClient(log: EmbedLog, model: string = EMBEDDING_MODEL): EmbeddingsClient {
   let generation = 0;
   return {
+    model,
     embed: async (inputs) => {
       log.calls.push(inputs);
       if (inputs.length === 0) return { available: true, embeddings: [], retries: 0 };
@@ -112,6 +121,16 @@ function configCount(indexPath: string): number {
   try {
     const row = db.query("SELECT COUNT(*) AS count FROM index_config").get() as { count: number };
     return row.count;
+  } finally {
+    db.close();
+  }
+}
+
+function stampedModel(indexPath: string): string | null {
+  const db = new Database(indexPath, { readonly: true });
+  try {
+    const row = db.query("SELECT embedding_model FROM index_config").get() as { embedding_model: string } | null;
+    return row === null ? null : row.embedding_model;
   } finally {
     db.close();
   }
@@ -214,7 +233,7 @@ describe("rebuild empty corpus", () => {
     expect(dumpIndex(corpus.indexPath)).toBe("[]");
     expect(dumpVectors(corpus.indexPath)).toBe("[]");
     expect(configCount(corpus.indexPath)).toBe(0);
-    expect(log.calls).toEqual([[]]);
+    expect(log.calls).toEqual([]);
   });
 });
 
@@ -254,7 +273,7 @@ describe("rebuild content-hash embedding cache", () => {
     const second = dumpVectors(corpus.indexPath);
 
     expect(second).toBe(first);
-    expect(log.calls).toEqual([[]]);
+    expect(log.calls).toEqual([]);
     expect(configCount(corpus.indexPath)).toBe(1);
   });
 
@@ -289,7 +308,7 @@ describe("rebuild content-hash embedding cache", () => {
 
     // The vector/dedup key is the pure body: tags change the FTS document, never the embedding.
     expect(dumpVectors(corpus.indexPath)).toBe(first);
-    expect(log.calls).toEqual([[]]);
+    expect(log.calls).toEqual([]);
   });
 
   test("a changed embedding model forces a full re-embed", async () => {
@@ -309,6 +328,120 @@ describe("rebuild content-hash embedding cache", () => {
 
     expect(log.calls.flat().sort()).toEqual(["alpha body", "beta body"]);
   });
+
+  test("a client announcing a different model than the index stamp forces a full re-embed and restamps", async () => {
+    const { projectRoot, commit } = await buildProjectRepo(["src/a.ts", "src/b.ts"]);
+    const corpus = makeCorpus();
+    writeNote(corpus.notesDir, note({ id: ulid(0), anchors: ["src/a.ts"], commit }, "alpha body"));
+    writeNote(corpus.notesDir, note({ id: ulid(1), anchors: ["src/b.ts"], commit }, "beta body"));
+    const log: EmbedLog = { calls: [] };
+    const base = { indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot };
+
+    await rebuild(rebuildDeps({ ...base, embeddings: jitterClient(log, "model-a") }));
+    expect(stampedModel(corpus.indexPath)).toBe("model-a");
+    log.calls = [];
+    await rebuild(rebuildDeps({ ...base, embeddings: jitterClient(log, "model-b") }));
+
+    expect(log.calls.flat().sort()).toEqual(["alpha body", "beta body"]);
+    expect(stampedModel(corpus.indexPath)).toBe("model-b");
+  });
+});
+
+// A client that answers every chunk until the Nth call, which it reports unavailable — the shape of
+// an embedder that dies (or times out) mid-rebuild.
+function failingOnCallClient(log: EmbedLog, failingCall: number): EmbeddingsClient {
+  const healthy = jitterClient(log);
+  let calls = 0;
+  return {
+    model: EMBEDDING_MODEL,
+    embed: async (inputs, options) => {
+      calls += 1;
+      if (calls === failingCall) {
+        log.calls.push(inputs);
+        return { available: false, embeddings: [], retries: 1 };
+      }
+      return healthy.embed(inputs, options);
+    },
+  };
+}
+
+function bodyOf(index: number): string {
+  return `distinct note body number ${index}`;
+}
+
+async function fortyNoteCorpus(): Promise<{ corpus: { notesDir: string; indexPath: string }; projectRoot: string }> {
+  const { projectRoot, commit } = await buildProjectRepo(["src/a.ts"]);
+  const corpus = makeCorpus();
+  for (let index = 0; index < 40; index++) {
+    writeNote(corpus.notesDir, note({ id: ulid(index), anchors: ["src/a.ts"], commit }, bodyOf(index)));
+  }
+  return { corpus, projectRoot };
+}
+
+describe("rebuild embeds in chunks and keeps what it got", () => {
+  test("bodies go to the embedder in chunks of REBUILD_EMBED_CHUNK_SIZE with the rebuild timeout and attempts", async () => {
+    const { corpus, projectRoot } = await fortyNoteCorpus();
+    const seen: Array<{ inputs: string[]; options: EmbedOptions | undefined }> = [];
+    const healthy = jitterClient({ calls: [] });
+    const recording: EmbeddingsClient = {
+      model: EMBEDDING_MODEL,
+      embed: async (inputs, options) => {
+        seen.push({ inputs, options });
+        return healthy.embed(inputs, options);
+      },
+    };
+
+    await rebuild(rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, embeddings: recording }));
+
+    expect(seen.map((call) => call.inputs.length)).toEqual([16, 16, 8]);
+    expect(seen.map((call) => call.options)).toEqual(
+      seen.map(() => ({ timeoutMs: REBUILD_EMBED_TIMEOUT_MS, attempts: REBUILD_EMBED_ATTEMPTS })),
+    );
+    expect(seen.flatMap((call) => call.inputs)).toEqual(Array.from({ length: 40 }, (_, index) => bodyOf(index)));
+    expect(JSON.parse(dumpVectors(corpus.indexPath))).toHaveLength(40);
+  });
+
+  test("a chunk the embedder cannot answer ends the pass: the first chunk is kept, later chunks are never asked for", async () => {
+    const { corpus, projectRoot } = await fortyNoteCorpus();
+    const log: EmbedLog = { calls: [] };
+
+    await rebuild(rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, embeddings: failingOnCallClient(log, 2) }));
+
+    expect(log.calls.map((call) => call.length)).toEqual([16, 16]);
+    const rows = JSON.parse(dumpVectors(corpus.indexPath)) as Array<{ id: string }>;
+    expect(rows.map((row) => row.id)).toEqual(Array.from({ length: 16 }, (_, index) => ulid(index)));
+    expect(configCount(corpus.indexPath)).toBe(1);
+  });
+
+  test("the next rebuild after a partial one only asks for the bodies that still lack a vector", async () => {
+    const { corpus, projectRoot } = await fortyNoteCorpus();
+    const base = { indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot };
+    await rebuild(rebuildDeps({ ...base, embeddings: failingOnCallClient({ calls: [] }, 2) }));
+    const firstSixteen = (JSON.parse(dumpVectors(corpus.indexPath)) as Array<{ id: string; embedding: string }>).map(
+      (row) => row.embedding,
+    );
+    const log: EmbedLog = { calls: [] };
+
+    await rebuild(rebuildDeps({ ...base, embeddings: jitterClient(log) }));
+
+    expect(log.calls.map((call) => call.length)).toEqual([16, 8]);
+    expect(log.calls.flat()).toEqual(Array.from({ length: 24 }, (_, index) => bodyOf(index + 16)));
+    const rows = JSON.parse(dumpVectors(corpus.indexPath)) as Array<{ id: string; embedding: string }>;
+    expect(rows).toHaveLength(40);
+    // The sixteen vectors from the partial pass survive byte for byte — they came from the cache.
+    expect(rows.slice(0, 16).map((row) => row.embedding)).toEqual(firstSixteen);
+  });
+
+  test("an embedder that fails on the very first chunk writes no vectors and no model stamp", async () => {
+    const { corpus, projectRoot } = await fortyNoteCorpus();
+    const log: EmbedLog = { calls: [] };
+
+    await rebuild(rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, embeddings: failingOnCallClient(log, 1) }));
+
+    expect(log.calls.map((call) => call.length)).toEqual([16]);
+    expect(dumpVectors(corpus.indexPath)).toBe("[]");
+    expect(configCount(corpus.indexPath)).toBe(0);
+  });
 });
 
 function vectorFrom(components: number[]): Float32Array {
@@ -321,6 +454,7 @@ function vectorFrom(components: number[]): Float32Array {
 
 function keyedVectorClient(byBody: Map<string, number[]>): EmbeddingsClient {
   return {
+    model: EMBEDDING_MODEL,
     embed: async (inputs) => {
       if (inputs.length === 0) return { available: true, embeddings: [], retries: 0 };
       return {

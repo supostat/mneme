@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultConfig } from "../config";
 import { resolveCorpus } from "../corpus";
-import { EMBEDDING_DIMENSION } from "../embeddings";
+import { EMBEDDING_DIMENSION, EMBEDDING_MODEL } from "../embeddings";
 import type { EmbeddingsClient } from "../embeddings";
 import { EventWriter, readEvents } from "../events";
 import type { StoredEvent } from "../events";
@@ -63,12 +63,14 @@ function bagVector(text: string): Float32Array {
 
 function bagClient(): EmbeddingsClient {
   return {
+    model: EMBEDDING_MODEL,
     embed: async (inputs) => ({ available: true, embeddings: inputs.map(bagVector), retries: 0 }),
   };
 }
 
 function offlineClient(): EmbeddingsClient {
   return {
+    model: EMBEDDING_MODEL,
     embed: async (inputs) =>
       inputs.length === 0
         ? { available: true, embeddings: [], retries: 0 }
@@ -86,6 +88,7 @@ function vectorFrom(components: number[]): Float32Array {
 
 function keyedClient(byText: Map<string, number[]>): EmbeddingsClient {
   return {
+    model: EMBEDDING_MODEL,
     embed: async (inputs) => {
       if (inputs.length === 0) return { available: true, embeddings: [], retries: 0 };
       return {

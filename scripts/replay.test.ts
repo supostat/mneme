@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { EMBEDDING_DIMENSION } from "../src/embeddings";
+import { EMBEDDING_DIMENSION, EMBEDDING_MODEL } from "../src/embeddings";
 import type { EmbeddingsClient } from "../src/embeddings";
 import { SCHEMA_VERSION } from "../src/event-schema";
 import { EVENT_FILE_EXTENSION, EventWriter, readEvents } from "../src/events";
@@ -36,7 +36,7 @@ function bagVector(text: string): Float32Array {
 }
 
 function bagClient(): EmbeddingsClient {
-  return { embed: async (inputs) => ({ available: true, embeddings: inputs.map(bagVector), retries: 0 }) };
+  return { model: EMBEDDING_MODEL, embed: async (inputs) => ({ available: true, embeddings: inputs.map(bagVector), retries: 0 }) };
 }
 
 interface NoteRow {

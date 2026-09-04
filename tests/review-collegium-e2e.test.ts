@@ -17,6 +17,7 @@ import { pendingDirectiveOf, restoreRuns } from "../src/workflow/run-events";
 import type { ReadableRun } from "../src/workflow/run-events";
 import { applyGatedFinalStep, runEngineSteps } from "../src/workflow/run-executor";
 import { runStartedPayload } from "../src/workflow/run-payloads";
+import { EMBEDDING_MODEL } from "../src/embeddings";
 
 // The review-collegium loop on REAL modules end-to-end: two agent-judged criteria on different
 // axes fail on different attempts, and the attempt-3 retry directive must replay BOTH attempts'
@@ -36,6 +37,7 @@ const STANDARDS_REMARK = "the helper name abbreviates its subject";
 
 function offlineClient(): EmbeddingsClient {
   return {
+    model: EMBEDDING_MODEL,
     embed: async (inputs) =>
       inputs.length === 0
         ? { available: true, embeddings: [], retries: 0 }
@@ -93,6 +95,7 @@ async function buildFixture(maxAttempts: number): Promise<{ deps: StagingDeps; a
     retrieval: { recallBudget: 2000, recallAnchors: {} },
     run: initialRun(definition),
     startedTs: "2026-07-06T10:00:00.000Z",
+    lastActivityTs: "2026-07-06T10:00:00.000Z",
     failedGatesHistory: [],
     bundleNotesByPhase: {},
   };

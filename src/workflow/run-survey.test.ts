@@ -13,6 +13,7 @@ import type { RunDefinition } from "./reducer";
 import { surveySections } from "./run-directives";
 import { runAbandonedPayload, runStartedPayload } from "./run-payloads";
 import { commitStaleMarks, inspectRuns, surveyRuns } from "./run-survey";
+import { EMBEDDING_MODEL } from "../embeddings";
 
 const fixedClock = () => new Date("2026-07-06T10:00:00.000Z");
 const FOREIGN_RUN_ID = "01ARZ3NDEKTSV4RRFFQ69G5FB0";
@@ -46,7 +47,7 @@ async function makeNonRepoDeps(): Promise<StagingDeps> {
     config: defaultConfig(),
     clock: fixedClock,
     idFactory: () => FOREIGN_RUN_ID,
-    embeddings: { embed: async () => ({ available: false, embeddings: [], retries: 0 }) },
+    embeddings: { model: EMBEDDING_MODEL, embed: async () => ({ available: false, embeddings: [], retries: 0 }) },
     eventWriter: new EventWriter(corpus.eventsDir, { sessionId: "s-survey", clock: fixedClock, mnemeVersion: "0.1.0" }),
   };
 }

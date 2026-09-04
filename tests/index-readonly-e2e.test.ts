@@ -6,7 +6,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { resolveCorpus } from "../src/corpus";
 import type { Corpus } from "../src/corpus";
-import { EMBEDDING_DIMENSION } from "../src/embeddings";
+import { EMBEDDING_DIMENSION, EMBEDDING_MODEL } from "../src/embeddings";
 import type { EmbeddingsClient } from "../src/embeddings";
 import { initRepo, runGit } from "../src/git";
 import { inspectIndex } from "../src/index-inspect";
@@ -59,7 +59,7 @@ function bagVector(text: string): Float32Array {
 }
 
 function bagClient(): EmbeddingsClient {
-  return { embed: async (inputs) => ({ available: true, embeddings: inputs.map(bagVector), retries: 0 }) };
+  return { model: EMBEDDING_MODEL, embed: async (inputs) => ({ available: true, embeddings: inputs.map(bagVector), retries: 0 }) };
 }
 
 async function connect(options: CreateServerOptions): Promise<Client> {
