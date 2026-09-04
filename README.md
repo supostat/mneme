@@ -116,12 +116,25 @@ plugin path or an invalid manifest exits with code 1 before anything is written.
 
 ## Releasing
 
-A release is one manual step: bump the version, tag, push the tag.
+A release is one manual step: raise the version in `package.json`, commit, push to `main`.
 
 ```sh
-npm version patch        # or edit package.json and commit
-git push && git push --tags
+npm version patch --no-git-tag-version   # or edit package.json by hand
+git commit -am "Raise the engine to <version>" && git push
 ```
+
+CI (`.github/workflows/ci.yml`) tags the release itself. On every run it compares `package.json`
+with the highest `v*` tag (`bun scripts/require-unreleased-version.ts --decide`, after a checkout
+with `fetch-tags: true`). On a push to `main` whose version is above that tag, and only after the
+full suite is green, it pushes `v<version>` under `RELEASE_TOKEN` — first as a `git push --dry-run`
+guard, then for real. A push whose version equals the tag is a quiet no-op; a version below the tag
+fails the run. Any other branch and every pull request only runs the gates. A manual `git tag
+v<version> && git push --tags` remains a valid fallback — the release pipeline triggers on any `v*`
+tag, whoever pushes it.
+
+If the guard step fails, `RELEASE_TOKEN` cannot write to this repository: widen the PAT (below) and
+re-run the failed job on the same commit — nothing was written before the dry-run, so the re-run
+tags and releases as if it were the first attempt.
 
 Pushing a `v*` tag triggers `.github/workflows/release.yml`, which runs automatically:
 
@@ -137,9 +150,13 @@ Pushing a `v*` tag triggers `.github/workflows/release.yml`, which runs automati
 4. `gh api .../dispatches` sends the `engine-release` event with `{version, assets, sha256}` — the
    asset URLs and per-target digests the plugin repo pins into its `release.json`.
 
-The workflow uses a single secret, `RELEASE_TOKEN` (a fine-grained PAT with contents:write and
-dispatch access to `mneme-plugin`); `tests/release-workflow.test.ts` pins the workflow's structure,
-including that no other secret is referenced.
+Both workflows use a single secret, `RELEASE_TOKEN`: a fine-grained PAT with contents:write on
+`supostat/mneme` (CI pushes the release tag with it — a tag pushed under the default `GITHUB_TOKEN`
+would not trigger `release.yml`) and contents:write plus dispatch access on `supostat/mneme-plugin`
+(the release publishes there). `tests/ci-workflow.test.ts` and `tests/release-workflow.test.ts` pin
+both workflows' structure, including that no other secret is referenced. What the tests cannot
+prove is that GitHub starts `release.yml` for a tag CI pushed — that is confirmed by the first live
+release after any change to the tagging steps.
 
 If a release fails partway: delete the tag, fix the problem, and re-tag with a NEW version — never
 reuse a tag name. Published release assets are immutable; the plugin repo's pins reference them

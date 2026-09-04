@@ -9,8 +9,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-tags: true
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
-      - run: bun scripts/require-unreleased-version.ts
+      - id: version
+        run: bun scripts/require-unreleased-version.ts --decide
       - run: bun test
+      - name: Verify RELEASE_TOKEN can push a tag to this repository (widen the PAT to contents:write here and re-run this job)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.version.outputs.unreleased == 'true'
+        env:
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          git tag "v$VERSION"
+          git push --dry-run "https://x-access-token:${RELEASE_TOKEN}@github.com/${GITHUB_REPOSITORY}" "v$VERSION"
+      - name: Tag the release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.version.outputs.unreleased == 'true'
+        env:
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: git push "https://x-access-token:${RELEASE_TOKEN}@github.com/${GITHUB_REPOSITORY}" "v$VERSION"
