@@ -5,7 +5,13 @@ import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { resolveCorpus } from "../src/corpus";
 import { commitPaths, CorpusBusyError } from "../src/corpus-git";
-import { scanEventLog, readEvents } from "../src/events";
+import { EMBEDDING_DIMENSION } from "../src/embeddings";
+import type { EmbeddingsClient } from "../src/embeddings";
+import { EventWriter, scanEventLog, readEvents } from "../src/events";
+import { initRepo, runGit } from "../src/git";
+import { dumpIndex, dumpVectors, rebuild } from "../src/index-db";
+import { serializeNote } from "../src/note";
+import type { Note } from "../src/note";
 
 // Two working copies of one project now address ONE corpus, so two live sessions write to the same
 // event log, the same index and the same git repo. These tests drive the three shared resources from
@@ -20,13 +26,17 @@ function tempDirectory(prefix: string): string {
   return mkdtempSync(join(tmpdir(), prefix));
 }
 
-async function runConcurrently(scriptPath: string, argumentLists: string[][]): Promise<void> {
-  const processes = argumentLists.map((args) =>
-    Bun.spawn({ cmd: ["bun", "run", scriptPath, ...args], stdout: "pipe", stderr: "pipe" }),
-  );
+// Every process must exit clean; the returned stdouts (one per argument list, in order) let a test
+// read what a process observed.
+async function runConcurrently(scriptPaths: string | string[], argumentLists: string[][]): Promise<string[]> {
+  const processes = argumentLists.map((args, index) => {
+    const scriptPath = typeof scriptPaths === "string" ? scriptPaths : scriptPaths[index]!;
+    return Bun.spawn({ cmd: ["bun", "run", scriptPath, ...args], stdout: "pipe", stderr: "pipe" });
+  });
   const outcomes = await Promise.all(
     processes.map(async (subprocess) => ({
       exitCode: await subprocess.exited,
+      stdout: await new Response(subprocess.stdout).text(),
       stderr: await new Response(subprocess.stderr).text(),
     })),
   );
@@ -34,6 +44,7 @@ async function runConcurrently(scriptPath: string, argumentLists: string[][]): P
     expect(outcome.stderr).toBe("");
     expect(outcome.exitCode).toBe(0);
   }
+  return outcomes.map((outcome) => outcome.stdout);
 }
 
 describe("event log with two live writers", () => {
@@ -133,6 +144,148 @@ database.close();
     expect(mode.journal_mode).toBe("wal");
     expect(rows).toEqual([{ id: 1 }]);
   });
+});
+
+// The rebuild rewrites the index IN PLACE inside one short IMMEDIATE transaction. Two processes
+// rebuilding at once must serialize on that transaction and a third process reading the whole
+// time must never see an error, a half-written table, or a failed integrity check — the failure
+// modes the old delete-and-recreate rebuild produced ("disk I/O error" on the other session's
+// connection, an empty 4096-byte file). The embedder stand-in sleeps so the two writers really
+// overlap; the notes are anchor-neutral so the git scan does not dominate the timing.
+const REBUILD_NOTES = 12;
+const REBUILD_SLEEP_MS = 300;
+const READER_DURATION_MS = 1500;
+const READER_INTERVAL_MS = 25;
+const SEED_MODEL = "seed-model";
+const WRITER_MODEL = "writer-model";
+const fixedClock = () => new Date("2026-09-04T10:00:00.000Z");
+
+function noteId(index: number): string {
+  const crockford = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+  return "01ARZ3NDEKTSV4RRFFQ69G5F" + crockford[Math.floor(index / 32) % 32]! + crockford[index % 32]!;
+}
+
+function instantClient(model: string): EmbeddingsClient {
+  return {
+    model,
+    embed: async (inputs) => ({
+      available: true,
+      embeddings: inputs.map(() => new Float32Array(EMBEDDING_DIMENSION).fill(0.01)),
+      retries: 0,
+    }),
+  };
+}
+
+async function projectWithOneCommit(): Promise<{ projectRoot: string; commit: string }> {
+  const projectRoot = tempDirectory("mneme-rebuild-project-");
+  await initRepo(projectRoot);
+  mkdirSync(join(projectRoot, "src"), { recursive: true });
+  writeFileSync(join(projectRoot, "src", "a.ts"), "export const a = 1;\n");
+  await runGit(projectRoot, ["add", "."]);
+  const committed = await runGit(projectRoot, ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init"]);
+  if (committed.exitCode !== 0) throw new Error(committed.stderr);
+  return { projectRoot, commit: (await runGit(projectRoot, ["rev-parse", "HEAD"])).stdout.trim() };
+}
+
+describe("index rebuild with two live writers and a reader", () => {
+  test(
+    "two processes rebuilding at once serialize cleanly while a third process never sees a broken index",
+    async () => {
+      const { projectRoot, commit } = await projectWithOneCommit();
+      const corpusHome = tempDirectory("mneme-rebuild-home-");
+      const corpus = await resolveCorpus(projectRoot, { corpusHome, clock: fixedClock });
+      for (let index = 0; index < REBUILD_NOTES; index++) {
+        const note: Note = {
+          frontmatter: { id: noteId(index), type: "pattern", anchors: ["src/a.ts"], commit, created: "2026-09-04T10:00:00.000Z" },
+          body: `rebuild probe body ${index}`,
+        };
+        writeFileSync(join(corpus.notesDir, `${note.frontmatter.id}.md`), serializeNote(note));
+      }
+      const seedEventsDir = tempDirectory("mneme-rebuild-seed-events-");
+      await rebuild({
+        indexPath: corpus.indexPath,
+        notesDir: corpus.notesDir,
+        projectRoot,
+        embeddings: instantClient(SEED_MODEL),
+        eventWriter: new EventWriter(seedEventsDir, { sessionId: "seed", mnemeVersion: "0.1.0", clock: fixedClock }),
+        clock: fixedClock,
+      });
+      const seeded = dumpIndex(corpus.indexPath);
+      const scriptsDir = tempDirectory("mneme-rebuild-scripts-");
+      const writerScript = join(scriptsDir, "rebuild.ts");
+      const readerScript = join(scriptsDir, "read.ts");
+      writeFileSync(
+        writerScript,
+        `import { rebuild } from ${JSON.stringify(join(REPO_ROOT, "src", "index-db.ts"))};
+import { EventWriter } from ${JSON.stringify(join(REPO_ROOT, "src", "events.ts"))};
+import { EMBEDDING_DIMENSION } from ${JSON.stringify(join(REPO_ROOT, "src", "embeddings.ts"))};
+const [indexPath, notesDir, projectRoot, eventsDir, sessionId] = process.argv.slice(2);
+const clock = () => new Date("2026-09-04T10:00:00.000Z");
+// Sleeps before answering so the two writers are guaranteed to overlap in their slow phase.
+const sleepyEmbedder = {
+  model: ${JSON.stringify(WRITER_MODEL)},
+  embed: async (inputs: string[]) => {
+    await Bun.sleep(${REBUILD_SLEEP_MS});
+    return { available: true, embeddings: inputs.map(() => new Float32Array(EMBEDDING_DIMENSION).fill(0.02)), retries: 0 };
+  },
+};
+await rebuild({
+  indexPath: indexPath!,
+  notesDir: notesDir!,
+  projectRoot: projectRoot!,
+  embeddings: sleepyEmbedder,
+  eventWriter: new EventWriter(eventsDir!, { sessionId: sessionId!, mnemeVersion: "0.1.0", clock }),
+  clock,
+});
+`,
+      );
+      writeFileSync(
+        readerScript,
+        `import { openReadOnlyDatabase } from ${JSON.stringify(join(REPO_ROOT, "src", "index-db.ts"))};
+const [indexPath, expectedNotes] = process.argv.slice(2);
+const anomalies: string[] = [];
+const deadline = Date.now() + ${READER_DURATION_MS};
+let ticks = 0;
+while (Date.now() < deadline) {
+  ticks += 1;
+  try {
+    const database = openReadOnlyDatabase(indexPath!);
+    try {
+      const count = (database.query("SELECT COUNT(*) AS count FROM meta").get() as { count: number }).count;
+      if (count !== Number(expectedNotes)) anomalies.push("count " + count);
+      const integrity = (database.query("PRAGMA integrity_check").get() as { integrity_check: string }).integrity_check;
+      if (integrity !== "ok") anomalies.push("integrity " + integrity);
+    } finally {
+      database.close();
+    }
+  } catch (error) {
+    anomalies.push("error " + String(error));
+  }
+  await Bun.sleep(${READER_INTERVAL_MS});
+}
+console.log(JSON.stringify({ ticks, anomalies }));
+`,
+      );
+
+      const [, , readerStdout] = await runConcurrently(
+        [writerScript, writerScript, readerScript],
+        [
+          [corpus.indexPath, corpus.notesDir, projectRoot, corpus.eventsDir, "writer-a"],
+          [corpus.indexPath, corpus.notesDir, projectRoot, corpus.eventsDir, "writer-b"],
+          [corpus.indexPath, String(REBUILD_NOTES)],
+        ],
+      );
+
+      const observed = JSON.parse(readerStdout!) as { ticks: number; anomalies: string[] };
+      expect(observed.anomalies).toEqual([]);
+      expect(observed.ticks).toBeGreaterThan(10);
+      const rebuilds = readEvents(corpus.eventsDir).filter((event) => event.type === "rebuild");
+      expect(rebuilds.map((event) => event.session_id).sort()).toEqual(["writer-a", "writer-b"]);
+      expect(dumpIndex(corpus.indexPath)).toBe(seeded);
+      expect(JSON.parse(dumpVectors(corpus.indexPath))).toHaveLength(REBUILD_NOTES);
+    },
+    30000,
+  );
 });
 
 describe("corpus commits under a held git lock", () => {

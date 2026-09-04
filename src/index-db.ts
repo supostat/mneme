@@ -17,12 +17,18 @@ import {
 import type { EmbeddingsClient } from "./embeddings";
 import type { EventInput, EventWriter } from "./events";
 
+// IF NOT EXISTS is what lets a rebuild open whatever is at the index path — a healthy index, an
+// empty file, a file with half the tables — and heal the schema in place instead of recreating the
+// file. The one state it cannot heal is a file that is not a database at all (see
+// openIndexForRebuild).
 const SCHEMA_STATEMENTS = [
-  "CREATE VIRTUAL TABLE fts USING fts5(id UNINDEXED, body, tokenize = 'porter unicode61')",
-  "CREATE TABLE meta (id TEXT PRIMARY KEY, type TEXT NOT NULL, staleness_boost REAL NOT NULL)",
-  "CREATE TABLE vec (id TEXT PRIMARY KEY, content_hash TEXT NOT NULL, embedding BLOB NOT NULL)",
-  "CREATE TABLE index_config (embedding_model TEXT NOT NULL)",
+  "CREATE VIRTUAL TABLE IF NOT EXISTS fts USING fts5(id UNINDEXED, body, tokenize = 'porter unicode61')",
+  "CREATE TABLE IF NOT EXISTS meta (id TEXT PRIMARY KEY, type TEXT NOT NULL, staleness_boost REAL NOT NULL)",
+  "CREATE TABLE IF NOT EXISTS vec (id TEXT PRIMARY KEY, content_hash TEXT NOT NULL, embedding BLOB NOT NULL)",
+  "CREATE TABLE IF NOT EXISTS index_config (embedding_model TEXT NOT NULL)",
 ];
+const INDEX_TABLES = ["fts", "meta", "vec", "index_config"] as const;
+const NOT_A_DATABASE_CODE = "SQLITE_NOTADB";
 
 export interface RebuildDeps {
   indexPath: string;
@@ -40,22 +46,50 @@ interface RebuildOutcome extends VectorOutcome {
 
 export async function rebuild(deps: RebuildDeps): Promise<void> {
   const startedAt = deps.clock().getTime();
-  const outcome = await buildFreshIndex(deps);
+  const outcome = await rebuildInPlace(deps);
   deps.eventWriter.append(rebuildEvent(startedAt, deps.clock().getTime(), outcome));
 }
 
-async function buildFreshIndex(deps: RebuildDeps): Promise<RebuildOutcome> {
-  const cache = loadEmbeddingCache(deps.indexPath, deps.embeddings.model);
-  rmSync(deps.indexPath, { force: true });
-  const database = freshDatabase(deps.indexPath);
+// The index file is never deleted under other sessions' connections: a connection whose file was
+// unlinked or replaced fails every later statement with SQLITE_IOERR ("disk I/O error"), and a
+// renamed-in replacement inherits a non-empty -wal from the old file and corrupts. Instead the
+// existing file is opened, its schema healed, and its CONTENTS swapped inside one short IMMEDIATE
+// transaction: readers on any connection see the old index or the new one, never a mix, and a
+// second rebuild waits on BEGIN IMMEDIATE for the first to commit. Everything slow — reading the
+// notes, the git anchor scan, the embedder round-trips — happens BEFORE that transaction, so the
+// write lock is held for milliseconds, well inside every connection's busy timeout.
+async function rebuildInPlace(deps: RebuildDeps): Promise<RebuildOutcome> {
+  const database = openIndexForRebuild(deps.indexPath);
   try {
+    const cache = readEmbeddingCache(database, deps.embeddings.model);
     const notes = readActiveNotes(deps.notesDir);
-    const boosts = await insertFtsAndMeta(database, notes, deps.projectRoot);
-    const vectors = await insertVectors(database, notes, cache, deps.embeddings);
-    return { notesCount: notes.length, boosts, ...vectors };
+    const boosts = await stalenessBoosts(notes, deps.projectRoot);
+    const vectors = await embedBodies(notes, cache, deps.embeddings);
+    const embeddedCount = replaceIndexContents(database, notes, boosts, vectors, deps.embeddings.model);
+    return { notesCount: notes.length, boosts, embeddedCount, ...vectors.outcome };
   } finally {
     database.close();
   }
+}
+
+function replaceIndexContents(
+  database: Database,
+  notes: Note[],
+  boosts: number[],
+  vectors: VectorPlan,
+  model: string,
+): number {
+  const insertFts = database.query("INSERT INTO fts(id, body) VALUES (?, ?)");
+  const insertMeta = database.query("INSERT INTO meta(id, type, staleness_boost) VALUES (?, ?, ?)");
+  const swap = database.transaction((): number => {
+    for (const table of INDEX_TABLES) database.run(`DELETE FROM ${table}`);
+    notes.forEach((note, index) => {
+      insertFts.run(note.frontmatter.id, ftsDocument(note));
+      insertMeta.run(note.frontmatter.id, note.frontmatter.type, boosts[index]!);
+    });
+    return writeVectors(database, notes, vectors.hashByBody, vectors.bytesByHash, model);
+  });
+  return swap.immediate();
 }
 
 function rebuildEvent(startedAt: number, finishedAt: number, outcome: RebuildOutcome): EventInput {
@@ -93,9 +127,44 @@ const BUSY_TIMEOUT_MS = 5000;
 
 function openWritableDatabase(indexPath: string): Database {
   const database = new Database(indexPath, { create: true });
-  database.run(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
-  database.run("PRAGMA journal_mode = WAL");
-  return database;
+  try {
+    database.run(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
+    database.run("PRAGMA journal_mode = WAL");
+    return database;
+  } catch (error) {
+    database.close();
+    throw error;
+  }
+}
+
+// Opens the index for a rebuild, healing its schema in place. The constructor never reads the
+// file; the first statement that does is the WAL pragma, and on a file that is not a database it
+// fails with SQLITE_NOTADB. Such a file can have no live connections (they would all fail the same
+// way), so deleting it together with its -wal/-shm and starting over is safe — the only case where
+// a rebuild removes the index file at all.
+function openIndexForRebuild(indexPath: string): Database {
+  try {
+    return openIndexWithSchema(indexPath);
+  } catch (error) {
+    if (!isNotADatabase(error)) throw error;
+    for (const path of [indexPath, `${indexPath}-wal`, `${indexPath}-shm`]) rmSync(path, { force: true });
+    return openIndexWithSchema(indexPath);
+  }
+}
+
+function openIndexWithSchema(indexPath: string): Database {
+  const database = openWritableDatabase(indexPath);
+  try {
+    for (const statement of SCHEMA_STATEMENTS) database.run(statement);
+    return database;
+  } catch (error) {
+    database.close();
+    throw error;
+  }
+}
+
+function isNotADatabase(error: unknown): boolean {
+  return typeof error === "object" && error !== null && (error as { code?: unknown }).code === NOT_A_DATABASE_CODE;
 }
 
 export function openReadOnlyDatabase(indexPath: string): Database {
@@ -105,38 +174,22 @@ export function openReadOnlyDatabase(indexPath: string): Database {
   return database;
 }
 
-function freshDatabase(indexPath: string): Database {
-  const database = openWritableDatabase(indexPath);
-  for (const statement of SCHEMA_STATEMENTS) database.run(statement);
-  return database;
-}
-
-function loadEmbeddingCache(indexPath: string, model: string): Map<string, Uint8Array> {
-  if (!existsSync(indexPath)) return new Map();
-  try {
-    return readEmbeddingCache(indexPath, model);
-  } catch {
-    return new Map();
-  }
-}
-
-function readEmbeddingCache(indexPath: string, model: string): Map<string, Uint8Array> {
-  const database = openReadOnlyDatabase(indexPath);
-  try {
-    const config = database.query("SELECT embedding_model FROM index_config").get() as
-      | { embedding_model: string }
-      | null;
-    if (config?.embedding_model !== model) return new Map();
-    const cache = new Map<string, Uint8Array>();
-    const rows = database.query("SELECT content_hash, embedding FROM vec").all() as Array<{
-      content_hash: string;
-      embedding: Uint8Array;
-    }>;
-    for (const row of rows) cache.set(row.content_hash, row.embedding);
-    return cache;
-  } finally {
-    database.close();
-  }
+// The vector cache is read from the SAME connection the rebuild will write through, before its
+// transaction: a snapshot of whatever the last committed rebuild left, stamped with its model. A
+// stamp from another model — or no stamp, the mark of an index that never got a vector — empties
+// the cache, so every body is embedded afresh.
+function readEmbeddingCache(database: Database, model: string): Map<string, Uint8Array> {
+  const config = database.query("SELECT embedding_model FROM index_config").get() as
+    | { embedding_model: string }
+    | null;
+  if (config?.embedding_model !== model) return new Map();
+  const cache = new Map<string, Uint8Array>();
+  const rows = database.query("SELECT content_hash, embedding FROM vec").all() as Array<{
+    content_hash: string;
+    embedding: Uint8Array;
+  }>;
+  for (const row of rows) cache.set(row.content_hash, row.embedding);
+  return cache;
 }
 
 // The single definition of "active": not superseded and not retired. Rebuild indexes exactly this
@@ -169,26 +222,17 @@ function ftsDocument(note: Note): string {
   return tags === undefined ? note.body : `${note.body}\n${tags.join("\n")}`;
 }
 
-async function insertFtsAndMeta(database: Database, notes: Note[], projectRoot: string): Promise<number[]> {
-  // The branch-tips map is built ONCE for the whole rebuild; per-note scoring only does lookups.
+// The git anchor scan, done once per rebuild and entirely outside the write transaction. The
+// branch-tips map is built ONCE; per-note scoring only does lookups.
+async function stalenessBoosts(notes: Note[], projectRoot: string): Promise<number[]> {
   const context = await createLivenessContext(projectRoot);
-  const boosts = await Promise.all(
+  return Promise.all(
     notes.map((note) =>
       isAnchorNeutral(note.frontmatter.type) || note.frontmatter.anchors.length === 0
         ? ANCHOR_NEUTRAL_STALENESS_BOOST
         : stalenessBoost(context, note.frontmatter.anchors, note.frontmatter.commit),
     ),
   );
-  const insertFts = database.query("INSERT INTO fts(id, body) VALUES (?, ?)");
-  const insertMeta = database.query("INSERT INTO meta(id, type, staleness_boost) VALUES (?, ?, ?)");
-  const write = database.transaction(() => {
-    notes.forEach((note, index) => {
-      insertFts.run(note.frontmatter.id, ftsDocument(note));
-      insertMeta.run(note.frontmatter.id, note.frontmatter.type, boosts[index]!);
-    });
-  });
-  write();
-  return boosts;
 }
 
 interface VectorOutcome {
@@ -200,25 +244,30 @@ interface VectorOutcome {
   chunksOkCount: number;
 }
 
-async function insertVectors(
-  database: Database,
-  notes: Note[],
-  cache: Map<string, Uint8Array>,
-  embeddings: EmbeddingsClient,
-): Promise<VectorOutcome> {
+// Everything the transaction needs to write the vec table, computed beforehand: the embedder
+// round-trips are the slowest part of a rebuild and must not run under the write lock.
+interface VectorPlan {
+  hashByBody: Map<string, string>;
+  bytesByHash: Map<string, Uint8Array>;
+  outcome: Omit<VectorOutcome, "embeddedCount">;
+}
+
+async function embedBodies(notes: Note[], cache: Map<string, Uint8Array>, embeddings: EmbeddingsClient): Promise<VectorPlan> {
   const bodies = [...new Set(notes.map((note) => note.body))];
   const hashByBody = new Map(bodies.map((body) => [body, sha256Hex(body)]));
   const toEmbed = bodies.filter((body) => !cache.has(hashByBody.get(body)!));
   const fresh = await embedInChunks(embeddings, toEmbed);
   const bytesByHash = resolveBytes(bodies, hashByBody, cache, toEmbed, fresh.embeddings);
-  const embeddedCount = writeVectors(database, notes, hashByBody, bytesByHash, embeddings.model);
   return {
-    available: fresh.available,
-    retries: fresh.retries,
-    embeddedCount,
-    bodiesCount: toEmbed.length,
-    chunksCount: fresh.chunksCount,
-    chunksOkCount: fresh.chunksOkCount,
+    hashByBody,
+    bytesByHash,
+    outcome: {
+      available: fresh.available,
+      retries: fresh.retries,
+      bodiesCount: toEmbed.length,
+      chunksCount: fresh.chunksCount,
+      chunksOkCount: fresh.chunksOkCount,
+    },
   };
 }
 
@@ -291,18 +340,16 @@ function writeVectors(
   bytesByHash: Map<string, Uint8Array>,
   model: string,
 ): number {
+  // Runs INSIDE the caller's transaction — never opens one of its own.
   const insertVec = database.query("INSERT INTO vec(id, content_hash, embedding) VALUES (?, ?, ?)");
   let written = 0;
-  const write = database.transaction(() => {
-    for (const note of notes) {
-      const hash = hashByBody.get(note.body)!;
-      const bytes = bytesByHash.get(hash);
-      if (bytes === undefined) continue;
-      insertVec.run(note.frontmatter.id, hash, bytes);
-      written += 1;
-    }
-  });
-  write();
+  for (const note of notes) {
+    const hash = hashByBody.get(note.body)!;
+    const bytes = bytesByHash.get(hash);
+    if (bytes === undefined) continue;
+    insertVec.run(note.frontmatter.id, hash, bytes);
+    written += 1;
+  }
   if (written > 0) database.run("INSERT INTO index_config(embedding_model) VALUES (?)", [model]);
   return written;
 }

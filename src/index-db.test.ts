@@ -1,6 +1,6 @@
 import { test, expect, describe } from "bun:test";
 import { Database } from "bun:sqlite";
-import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runGit, initRepo } from "./git";
@@ -248,11 +248,100 @@ describe("rebuild corrupt index recovery", () => {
     const healthy = dumpIndex(corpus.indexPath);
 
     writeFileSync(corpus.indexPath, "not a sqlite database at all");
+    // Sidecars left behind by whatever wrote the garbage go with it: a fresh file must not inherit
+    // a stranger's -wal/-shm.
+    const junk = "junk sidecar";
+    for (const sidecar of sidecarPaths(corpus.indexPath)) writeFileSync(sidecar, junk);
     await expect(rebuild(deps)).resolves.toBeUndefined();
 
     expect(dumpIndex(corpus.indexPath)).toBe(healthy);
     const ids = (JSON.parse(dumpIndex(corpus.indexPath)) as Array<{ id: string }>).map((row) => row.id);
     expect(ids).toEqual([ulid(0)]);
+    for (const sidecar of sidecarPaths(corpus.indexPath)) {
+      expect(existsSync(sidecar) && statSync(sidecar).size === junk.length).toBe(false);
+    }
+  });
+
+  test("an index with only half its tables is healed in place and rebuilt, not recreated", async () => {
+    const corpus = makeCorpus();
+    const projectRoot = mkdtempSync(join(tmpdir(), "mneme-norepo-"));
+    writeNote(corpus.notesDir, note({ id: ulid(0) }, "durable note body"));
+    const halfSchema = new Database(corpus.indexPath, { create: true });
+    halfSchema.run("PRAGMA journal_mode = WAL");
+    halfSchema.run("CREATE VIRTUAL TABLE fts USING fts5(id UNINDEXED, body, tokenize = 'porter unicode61')");
+    halfSchema.run("CREATE TABLE meta (id TEXT PRIMARY KEY, type TEXT NOT NULL, staleness_boost REAL NOT NULL)");
+    halfSchema.run("INSERT INTO meta(id, type, staleness_boost) VALUES ('stale-row', 'pattern', 0)");
+    halfSchema.close();
+    const inodeBefore = statSync(corpus.indexPath).ino;
+
+    await rebuild(rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, embeddings: offlineClient() }));
+
+    expect(statSync(corpus.indexPath).ino).toBe(inodeBefore);
+    const ids = (JSON.parse(dumpIndex(corpus.indexPath)) as Array<{ id: string }>).map((row) => row.id);
+    expect(ids).toEqual([ulid(0)]);
+    expect(dumpVectors(corpus.indexPath)).toBe("[]");
+    expect(configCount(corpus.indexPath)).toBe(0);
+  });
+});
+
+describe("rebuild keeps the index file and its readers alive", () => {
+  test("two rebuilds leave the inode untouched — the file is rewritten, never replaced", async () => {
+    const corpus = makeCorpus();
+    const projectRoot = mkdtempSync(join(tmpdir(), "mneme-norepo-"));
+    writeNote(corpus.notesDir, note({ id: ulid(0) }, "first body"));
+    const deps = rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, embeddings: offlineClient() });
+
+    await rebuild(deps);
+    const inode = statSync(corpus.indexPath).ino;
+    writeNote(corpus.notesDir, note({ id: ulid(1) }, "second body"));
+    await rebuild(deps);
+
+    expect(statSync(corpus.indexPath).ino).toBe(inode);
+    expect((JSON.parse(dumpIndex(corpus.indexPath)) as Array<{ id: string }>).length).toBe(2);
+  });
+
+  test("a reader connection opened before a rebuild keeps working and sees the new contents after it", async () => {
+    const corpus = makeCorpus();
+    const projectRoot = mkdtempSync(join(tmpdir(), "mneme-norepo-"));
+    writeNote(corpus.notesDir, note({ id: ulid(0) }, "first body"));
+    const deps = rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, embeddings: offlineClient() });
+    await rebuild(deps);
+    const reader = openReadOnlyDatabase(corpus.indexPath);
+    const countNotes = () => (reader.query("SELECT COUNT(*) AS count FROM meta").get() as { count: number }).count;
+    try {
+      expect(countNotes()).toBe(1);
+      writeNote(corpus.notesDir, note({ id: ulid(1) }, "second body"));
+
+      await rebuild(deps);
+
+      expect(countNotes()).toBe(2);
+      expect((reader.query("PRAGMA integrity_check").get() as { integrity_check: string }).integrity_check).toBe("ok");
+    } finally {
+      reader.close();
+    }
+  });
+
+  test("a reader inside an open transaction keeps its snapshot across a rebuild and moves on after commit", async () => {
+    const corpus = makeCorpus();
+    const projectRoot = mkdtempSync(join(tmpdir(), "mneme-norepo-"));
+    writeNote(corpus.notesDir, note({ id: ulid(0) }, "first body"));
+    const deps = rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, embeddings: offlineClient() });
+    await rebuild(deps);
+    const reader = openReadOnlyDatabase(corpus.indexPath);
+    const countNotes = () => (reader.query("SELECT COUNT(*) AS count FROM meta").get() as { count: number }).count;
+    try {
+      reader.run("BEGIN");
+      expect(countNotes()).toBe(1);
+      writeNote(corpus.notesDir, note({ id: ulid(1) }, "second body"));
+
+      await rebuild(deps);
+
+      expect(countNotes()).toBe(1);
+      reader.run("COMMIT");
+      expect(countNotes()).toBe(2);
+    } finally {
+      reader.close();
+    }
   });
 });
 
