@@ -1,5 +1,6 @@
 import { test, expect, describe } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { Database } from "bun:sqlite";
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runGit, initRepo } from "./git";
@@ -304,4 +305,84 @@ describe("runDoctor output is machine-readable with a human render on top", () =
     }
     expect(rendered).toContain("overall");
   });
+});
+
+// bun links Apple's SQLite on macOS (source id ends in "aapl"), which refuses a readonly open of a
+// WAL database without its sidecars; the upstream build (CI) lets a readonly reader recreate them,
+// so the doctor's real probe SUCCEEDS there and the sidecar detail never appears. The real-probe test
+// is therefore skipped by name off Apple; the portable test injects the failing probe instead.
+const APPLE_SQLITE = (() => {
+  const probe = new Database(":memory:");
+  try {
+    const row = probe.query("SELECT sqlite_source_id() AS id").get() as { id: string };
+    return row.id.endsWith("aapl");
+  } finally {
+    probe.close();
+  }
+})();
+
+function removeSidecars(indexPath: string): void {
+  rmSync(`${indexPath}-wal`, { force: true });
+  rmSync(`${indexPath}-shm`, { force: true });
+}
+
+function sidecarsExist(indexPath: string): boolean {
+  return existsSync(`${indexPath}-wal`) || existsSync(`${indexPath}-shm`);
+}
+
+describe("runDoctor on a WAL index whose sidecars are gone", () => {
+  test("names the missing-sidecars state when the probe fails (portable: the probe is injected)", async () => {
+    const corpus = await buildHealthyCorpus();
+    removeSidecars(corpus.indexPath);
+
+    const report = await runDoctor({
+      corpusDir: corpus.corpusDir,
+      embedder: bagOfWordsClient(),
+      inspectIndex: () => {
+        throw new Error("unable to open database file");
+      },
+    });
+
+    const index = byName(report).get("index")!;
+    expect(index.status).toBe("degraded");
+    expect(index.detail).toContain("-wal/-shm sidecars are missing");
+    expect(index.detail).toContain("rebuild");
+    expect(index.detail).toContain("unable to open database file");
+    expect(report.overall).toBe("degraded");
+  });
+
+  test("a probe failure on an index whose header is NOT WAL keeps the generic unreadable detail", async () => {
+    const corpus = await buildHealthyCorpus();
+    rmSync(corpus.indexPath);
+    writeFileSync(corpus.indexPath, new Uint8Array(100));
+
+    const report = await runDoctor({
+      corpusDir: corpus.corpusDir,
+      embedder: bagOfWordsClient(),
+      inspectIndex: () => {
+        throw new Error("file is not a database");
+      },
+    });
+
+    const index = byName(report).get("index")!;
+    expect(index.status).toBe("degraded");
+    expect(index.detail).toContain("unreadable but rebuildable");
+    expect(index.detail).not.toContain("sidecars");
+  });
+
+  test.skipIf(!APPLE_SQLITE)(
+    "the REAL readonly probe fails on that state, the detail names it, and the doctor created no sidecar (Apple SQLite only: upstream readers recreate sidecars, so the probe passes there)",
+    async () => {
+      const corpus = await buildHealthyCorpus();
+      removeSidecars(corpus.indexPath);
+      expect(sidecarsExist(corpus.indexPath)).toBe(false);
+
+      const report = await runDoctor({ corpusDir: corpus.corpusDir, embedder: bagOfWordsClient() });
+
+      const index = byName(report).get("index")!;
+      expect(index.status).toBe("degraded");
+      expect(index.detail).toContain("-wal/-shm sidecars are missing");
+      expect(sidecarsExist(corpus.indexPath)).toBe(false);
+    },
+  );
 });

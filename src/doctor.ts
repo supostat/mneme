@@ -3,6 +3,7 @@ import { basename } from "node:path";
 import { corpusPaths, readManifest, mungePath } from "./corpus";
 import type { CorpusManifest, CorpusPaths } from "./corpus";
 import { scanEventLog } from "./events";
+import { readIndexJournalMode, walSidecarsPresent } from "./index-header";
 import { inspectIndex } from "./index-inspect";
 import type { IndexInspection } from "./index-inspect";
 import { runGit } from "./git";
@@ -30,11 +31,16 @@ export interface DoctorReport {
 }
 
 export type GitRunner = (repoDir: string, args: string[]) => Promise<GitResult>;
+export type IndexInspector = (indexPath: string) => IndexInspection;
 
+// git and inspectIndex are injectable for the same reason: both reach outside the process (a git
+// binary, a SQLite build whose behaviour differs per platform), and a test that needs a specific
+// answer from them must not depend on the machine it runs on.
 export interface DoctorDeps {
   corpusDir: string;
   embedder: EmbeddingsClient;
   git?: GitRunner;
+  inspectIndex?: IndexInspector;
   expectedDimension?: number;
   probeText?: string;
 }
@@ -52,7 +58,7 @@ const STATUS_SEVERITY: Record<DoctorStatus, number> = { ok: 0, degraded: 1, fail
 
 export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
   const paths = corpusPaths(deps.corpusDir);
-  const indexProbe = probeIndex(paths.indexPath);
+  const indexProbe = probeIndex(paths.indexPath, deps.inspectIndex ?? inspectIndex);
   const gitRunner = deps.git ?? runGit;
   const expectedDimension = deps.expectedDimension ?? EMBEDDING_DIMENSION;
   const probeText = deps.probeText ?? DOCTOR_PROBE_TEXT;
@@ -61,7 +67,7 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
     runGuarded("manifest", () => checkManifest(paths)),
     runGuarded("note_store", () => checkNoteStore(paths)),
     runGuarded("event_log", () => checkEventLog(paths.eventsDir)),
-    runGuarded("index", () => checkIndex(indexProbe)),
+    runGuarded("index", () => checkIndex(indexProbe, paths.indexPath)),
     runGuarded("embeddings", () => checkEmbeddings(deps.embedder, indexProbe, expectedDimension, probeText)),
     runGuarded("git", () => checkGit(gitRunner, deps.corpusDir)),
     runGuarded("note_bodies", () => checkNoteBodies(paths)),
@@ -98,9 +104,9 @@ async function runGuarded(
 
 // One read-only open of the index cache, shared by the index and embeddings checks. Computed
 // defensively before any check runs so a corrupt db surfaces as data, never an abort.
-function probeIndex(indexPath: string): IndexProbe {
+function probeIndex(indexPath: string, inspect: IndexInspector): IndexProbe {
   try {
-    return { ok: true, inspection: inspectIndex(indexPath) };
+    return { ok: true, inspection: inspect(indexPath) };
   } catch (error) {
     return { ok: false, error: errorMessage(error) };
   }
@@ -184,9 +190,9 @@ function checkEventLog(eventsDir: string): CheckOutcome {
 
 // The index is a DISPOSABLE cache (delete -> rebuild -> identical), so every index fault is reduced,
 // not fatal: absent, incomplete, unreadable, or vector-less all degrade rather than fail.
-function checkIndex(probe: IndexProbe): CheckOutcome {
+function checkIndex(probe: IndexProbe, indexPath: string): CheckOutcome {
   if (!probe.ok) {
-    return { status: "degraded", detail: `index is unreadable but rebuildable: ${probe.error}` };
+    return { status: "degraded", detail: unreadableIndexDetail(probe.error, indexPath) };
   }
   const inspection = probe.inspection;
   if (!inspection.present) {
@@ -205,6 +211,20 @@ function checkIndex(probe: IndexProbe): CheckOutcome {
     };
   }
   return { status: "ok", detail: `${inspection.noteCount} note(s), ${inspection.vectorCount} vector(s)` };
+}
+
+// One unreadable state is worth naming: a WAL index whose -wal/-shm sidecars are gone. The doctor's
+// readonly probe cannot open it (a readonly connection may not recreate the sidecars), while the
+// engine's readers can — so the detail says exactly that instead of a generic "unreadable", and it
+// is derived from the file header and the directory, never from opening the database.
+function unreadableIndexDetail(error: string, indexPath: string): string {
+  if (readIndexJournalMode(indexPath) === "wal" && !walSidecarsPresent(indexPath)) {
+    return (
+      "index is a WAL database whose -wal/-shm sidecars are missing: the doctor's readonly open cannot " +
+      `recreate them (recall can; a rebuild restores everything): ${error}`
+    );
+  }
+  return `index is unreadable but rebuildable: ${error}`;
 }
 
 // Ollama unreachable is fatal to recall's semantic channel -> fail. A reachable embedder whose output
