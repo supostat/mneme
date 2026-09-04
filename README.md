@@ -51,6 +51,23 @@ index is opened in WAL mode with a busy timeout, event-log lines are appended at
 session that loses the race for the corpus repo's git lock is told to retry rather than left with a
 half-written commit.
 
+### What a rebuild guarantees
+
+The index is rebuilt often — every accepted note triggers one — and never deleted while it is
+rebuilt. The engine opens the existing `index.db`, reads the notes, scans git and asks the embedder
+for the vectors it does not already have, and only then replaces the contents in a single short
+transaction. So a session reading the index during someone else's rebuild sees either the whole old
+index or the whole new one, and a rebuild that starts while another is committing waits for it
+instead of failing. The one file the engine does delete is a corrupt one: something at that path
+that is not a database at all is removed with its `-wal`/`-shm` sidecars and built again.
+
+The vectors are asked for in small chunks. If the embedder stops answering part way — it is down,
+or a request times out — the rebuild keeps the vectors it already received and stops there rather
+than losing the whole pass; the notes left without a vector are embedded by the next rebuild, which
+asks only for those. Nothing has to be repaired by hand: accepting the next note is enough.
+`mneme-doctor` reports how far the index got ("41 note(s), 17 without stored vectors"), and whether
+the embedder can finish the job is the separate `embeddings` line of the same report.
+
 ### Moving an existing corpus onto a name
 
 Renaming is a manual, reversible move — the engine deliberately does not relocate corpora for you:
