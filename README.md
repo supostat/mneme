@@ -27,7 +27,9 @@ run from the event log after an interruption, and never silently resumes a run w
 records a terminal human refusal of an unfinished run, distinct from failure; and `workflow_survey`
 is the read-only orientation — the current branch's run, its pending directive and last activity,
 staged-note count, and runs elsewhere, as a map or (with `brief: true`) a single line — writing
-nothing: no event, no file, no stale mark.
+nothing: no event, no file, no stale mark. The same binary answers `mneme survey --brief` from a
+shell: the brief line when the current branch has an unfinished run, nothing otherwise, exit 0
+either way and writing nothing — the orientation line a SessionStart hook prints.
 
 The server ships as a single self-contained compiled binary, distributed through the separate
 `mneme-plugin` repository. This repository is the source; the binary is built from it by the bridge
