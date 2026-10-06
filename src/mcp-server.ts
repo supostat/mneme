@@ -6,6 +6,7 @@ import { z } from "zod";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import packageJson from "../package.json";
+import { runSurveyCli } from "./cli/survey";
 import { resolveCorpus } from "./corpus";
 import type { Corpus } from "./corpus";
 import { EventWriter, readEvents } from "./events";
@@ -458,9 +459,27 @@ async function main(): Promise<void> {
   await server.connect(new StdioServerTransport());
 }
 
+// The binary has two entries. No argv is the MCP server: main() provisions the corpus and logs the
+// session before any tool call, exactly as before. Anything else is the survey CLI, branched HERE —
+// before main() — because the hook's survey must write nothing and main() writes by construction.
 if (import.meta.main) {
-  main().catch((error: unknown) => {
-    process.stderr.write(`${String(error)}\n`);
-    process.exit(1);
-  });
+  const argv = process.argv.slice(2);
+  if (argv.length === 0) {
+    main().catch((error: unknown) => {
+      process.stderr.write(`${String(error)}\n`);
+      process.exit(1);
+    });
+  } else {
+    runSurveyCli(argv, {
+      projectRoot: process.cwd(),
+      stdout: (text) => {
+        process.stdout.write(text);
+      },
+      stderr: (text) => {
+        process.stderr.write(text);
+      },
+    }).then((code) => {
+      process.exitCode = code;
+    });
+  }
 }

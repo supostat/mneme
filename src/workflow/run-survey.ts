@@ -20,6 +20,11 @@ export interface StaleMark {
   branch: string;
 }
 
+// Everything the reading half needs: the corpus (its event log) and the project root (git). A caller
+// that holds only these two — the survey CLI — cannot write by construction: no EventWriter exists
+// on its path, so "writes nothing" is a property of the types, not of discipline.
+export type RunInspectionDeps = Pick<StagingDeps, "corpus" | "projectRoot">;
+
 export interface RunSurvey {
   branch: string;
   activeRun: ReadableRun | null;
@@ -36,7 +41,7 @@ export interface RunSurvey {
   lastTerminalRun: ReadableRun | null;
 }
 
-export async function inspectRuns(deps: StagingDeps, branch: string): Promise<RunSurvey> {
+export async function inspectRuns(deps: RunInspectionDeps, branch: string): Promise<RunSurvey> {
   const events = readEvents(deps.corpus.eventsDir);
   const runs = restoreRuns(events);
   const staleRunIds = staleMarkedRunIds(events);
@@ -95,7 +100,7 @@ interface OrphanVerdicts {
   indeterminate: ReadableRun[];
 }
 
-async function classifyOrphans(deps: StagingDeps, otherBranchRuns: ReadableRun[]): Promise<OrphanVerdicts> {
+async function classifyOrphans(deps: RunInspectionDeps, otherBranchRuns: ReadableRun[]): Promise<OrphanVerdicts> {
   const verdicts: OrphanVerdicts = { paused: [], orphanCandidates: [], indeterminate: [] };
   // Branch checks stay strictly sequential: unbounded parallel git spawns are a named debt.
   for (const run of otherBranchRuns) {
