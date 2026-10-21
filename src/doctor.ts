@@ -2,7 +2,9 @@ import { existsSync, statSync } from "node:fs";
 import { basename } from "node:path";
 import { corpusPaths, readManifest, mungePath } from "./corpus";
 import type { CorpusManifest, CorpusPaths } from "./corpus";
-import { scanEventLog } from "./events";
+import { readEvents, scanEventLog } from "./events";
+import type { StoredEvent } from "./events";
+import { UNCLIPPED_HARVEST_SCHEMA_VERSION } from "./event-schema";
 import { readIndexJournalMode, walSidecarsPresent } from "./index-header";
 import { inspectIndex } from "./index-inspect";
 import type { IndexInspection } from "./index-inspect";
@@ -11,13 +13,17 @@ import type { GitResult } from "./git";
 import { EMBEDDING_DIMENSION } from "./embeddings";
 import type { EmbeddingsClient } from "./embeddings";
 import { readActiveNotes } from "./index-db";
+import { MAX_BODY_CODE_POINTS } from "./note";
 import { findForbiddenMarkup } from "./sanitize-body";
+import { HARVEST_SOURCE } from "./workflow/harvest-artifacts";
 
 // A read-only diagnostic of mneme's wiring. runDoctor probes each component, catches its own failures,
 // and returns a STRUCTURED machine report (the source of truth); renderDoctorReport is a pure human
 // view on top. The doctor DIAGNOSES only: no rebuild, no git write, no staging, no corpus creation.
 
 export type DoctorStatus = "ok" | "degraded" | "fail";
+
+export const CLIPPED_BODIES_COMPONENT = "clipped_bodies";
 
 export interface DoctorComponentReport {
   name: string;
@@ -71,6 +77,7 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
     runGuarded("embeddings", () => checkEmbeddings(deps.embedder, indexProbe, expectedDimension, probeText)),
     runGuarded("git", () => checkGit(gitRunner, deps.corpusDir)),
     runGuarded("note_bodies", () => checkNoteBodies(paths)),
+    runGuarded(CLIPPED_BODIES_COMPONENT, () => checkClippedBodies(paths)),
   ]);
   return { components, overall: worstStatus(components) };
 }
@@ -291,6 +298,53 @@ function checkNoteBodies(paths: CorpusPaths): CheckOutcome {
     };
   }
   return { status: "ok", detail: `${scanned} active note bodies are free of foreign protocol markup` };
+}
+
+// Before schema v19 a harvest silently cut an over-long body at the limit, and bodies are immutable,
+// so such a note can only be named, never mended: the curator replaces it with a whole note through
+// supersede, or retires it. The event log is the only witness — by length alone a clipped body and a
+// legitimate one exactly at the limit look the same.
+function checkClippedBodies(paths: CorpusPaths): CheckOutcome {
+  if (!isDirectory(paths.eventsDir)) {
+    return {
+      status: "degraded",
+      detail: "events/ directory is absent (see event_log): clipped bodies cannot be traced",
+    };
+  }
+  if (!isDirectory(paths.notesDir)) {
+    return { status: "degraded", detail: "notes/ directory is missing (see note_store)" };
+  }
+  const clippedIds = clippedHarvestNoteIds(readEvents(paths.eventsDir));
+  const clipped = readActiveNotes(paths.notesDir)
+    .map((note) => note.frontmatter.id)
+    .filter((id) => clippedIds.has(id));
+  if (clipped.length > 0) {
+    return {
+      status: "degraded",
+      detail:
+        `${clipped.length} active note(s) were clipped at ${MAX_BODY_CODE_POINTS} code points by a harvest ` +
+        `before schema v${UNCLIPPED_HARVEST_SCHEMA_VERSION} (bodies are immutable: supersede each with a ` +
+        `whole note or retire it): ${clipped.join(", ")}`,
+    };
+  }
+  return { status: "ok", detail: "no active note was clipped by a harvest" };
+}
+
+// A dedup noop staged nothing, so it cannot have produced a clipped note.
+function clippedHarvestNoteIds(events: StoredEvent[]): Set<string> {
+  const ids = new Set<string>();
+  for (const event of events) {
+    const clippable =
+      event.type === "remember" &&
+      event.source === HARVEST_SOURCE &&
+      event.body_len === MAX_BODY_CODE_POINTS &&
+      event.schema_version < UNCLIPPED_HARVEST_SCHEMA_VERSION &&
+      (event.dedup as { outcome?: unknown } | undefined)?.outcome !== "noop";
+    if (clippable && typeof event.note_id === "string") {
+      ids.add(event.note_id);
+    }
+  }
+  return ids;
 }
 
 async function checkGit(gitRunner: GitRunner, corpusDir: string): Promise<CheckOutcome> {

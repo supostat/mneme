@@ -1,5 +1,14 @@
 import { test, expect, describe } from "bun:test";
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runGit, initRepo } from "./git";
@@ -11,7 +20,12 @@ import { rebuild } from "./index-db";
 import { EventWriter } from "./events";
 import { EMBEDDING_DIMENSION, EMBEDDING_MODEL } from "./embeddings";
 import type { EmbeddingsClient } from "./embeddings";
-import { runDoctor, renderDoctorReport } from "./doctor";
+import { defaultConfig } from "./config";
+import { CLIPPED_BODIES_COMPONENT, runDoctor, renderDoctorReport } from "./doctor";
+import { MAX_BODY_CODE_POINTS } from "./note";
+import { remember, stagingResolve } from "./staging";
+import type { StagingDeps } from "./staging";
+import { HARVEST_SOURCE } from "./workflow/harvest-artifacts";
 import type { DoctorReport, DoctorComponentReport } from "./doctor";
 import { isAppleSqlite } from "../tests/sqlite-build";
 
@@ -26,6 +40,7 @@ const EXPECTED_COMPONENTS = [
   "embeddings",
   "git",
   "note_bodies",
+  "clipped_bodies",
 ];
 
 function ulid(n: number): string {
@@ -325,6 +340,136 @@ describe("runDoctor note-body markup check", () => {
     const bodies = byName(report).get("note_bodies")!;
     expect(bodies.status).toBe("ok");
     expect(bodies.detail).toContain("1 active note bodies");
+  });
+});
+
+describe("runDoctor clipped harvest bodies", () => {
+  const LEGACY_EVENTS_FILE = "2026-07.jsonl";
+  const AT_LIMIT = "x".repeat(MAX_BODY_CODE_POINTS);
+
+  function writeNote(corpus: Corpus, id: string, frontmatter: Partial<Note["frontmatter"]> = {}): Note {
+    const note: Note = {
+      frontmatter: {
+        id,
+        type: "decision",
+        anchors: ["src/a.ts"],
+        commit: "abc1234",
+        created: "2026-07-06T10:00:00.000Z",
+        ...frontmatter,
+      },
+      body: AT_LIMIT,
+    };
+    writeFileSync(join(corpus.notesDir, `${id}.md`), serializeNote(note));
+    return note;
+  }
+
+  // An event as an older engine wrote it: the current producer can no longer emit a clipped harvest,
+  // so the legacy state is written as raw log bytes, exactly as it sits in real corpora.
+  function appendLegacyRemember(corpus: Corpus, noteId: string, overrides: Record<string, unknown> = {}): void {
+    const event = {
+      type: "remember",
+      session_id: "s-legacy",
+      ts: "2026-07-06T10:00:00.000Z",
+      mneme_version: "0.1.11",
+      schema_version: 18,
+      note_id: noteId,
+      note_type: "decision",
+      body_len: MAX_BODY_CODE_POINTS,
+      anchors_n: 1,
+      tags_n: 0,
+      source: HARVEST_SOURCE,
+      dedup: { outcome: "add", nearest_id: null, similarity: null },
+      ...overrides,
+    };
+    appendFileSync(join(corpus.eventsDir, LEGACY_EVENTS_FILE), `${JSON.stringify(event)}\n`);
+  }
+
+  function eventLogBytes(corpus: Corpus): string {
+    return readdirSync(corpus.eventsDir)
+      .sort()
+      .map((file) => readFileSync(join(corpus.eventsDir, file), "utf8"))
+      .join("");
+  }
+
+  async function clippedOf(corpus: Corpus): Promise<DoctorComponentReport> {
+    const report = await runDoctor({ corpusDir: corpus.corpusDir, embedder: bagOfWordsClient() });
+    return byName(report).get(CLIPPED_BODIES_COMPONENT)!;
+  }
+
+  test("a live note a pre-v19 harvest left at the limit is named with the cure; nothing changes", async () => {
+    const corpus = await buildHealthyCorpus();
+    const note = writeNote(corpus, ulid(2));
+    appendLegacyRemember(corpus, ulid(2));
+    const logBefore = eventLogBytes(corpus);
+
+    const clipped = await clippedOf(corpus);
+
+    expect(clipped.status).toBe("degraded");
+    expect(clipped.detail).toBe(
+      "1 active note(s) were clipped at 1500 code points by a harvest before schema v19 (bodies are " +
+        `immutable: supersede each with a whole note or retire it): ${ulid(2)}`,
+    );
+    expect(readFileSync(join(corpus.notesDir, `${ulid(2)}.md`), "utf8")).toBe(serializeNote(note));
+    expect(eventLogBytes(corpus)).toBe(logBefore);
+  });
+
+  test("a body exactly at the limit staged and accepted by the current engine is not named", async () => {
+    const { projectRoot } = await buildProjectRepo();
+    const corpusHome = mkdtempSync(join(tmpdir(), "mneme-doctor-home-"));
+    const corpus = await resolveCorpus(projectRoot, { corpusHome, clock: CLOCK });
+    let counter = 10;
+    const deps: StagingDeps = {
+      corpus,
+      projectRoot,
+      config: defaultConfig(),
+      clock: CLOCK,
+      idFactory: () => ulid(counter++),
+      embeddings: bagOfWordsClient(),
+      eventWriter: new EventWriter(corpus.eventsDir, {
+        sessionId: "s-now",
+        mnemeVersion: "0.1.12",
+        clock: CLOCK,
+      }),
+    };
+    const staged = await remember(deps, {
+      type: "decision",
+      body: `Decision: ${"y".repeat(MAX_BODY_CODE_POINTS - 10)}`,
+      anchors: ["src/a.ts"],
+      source: HARVEST_SOURCE,
+    });
+    if (staged.outcome !== "staged") throw new Error("expected the at-limit body to be staged");
+    await stagingResolve(deps, staged.noteId, "accept");
+
+    const clipped = await clippedOf(corpus);
+
+    expect(clipped.status).toBe("ok");
+    expect(clipped.detail).toBe("no active note was clipped by a harvest");
+  });
+
+  test("only a pre-v19 harvest remember exactly at the limit that staged a live note counts", async () => {
+    const corpus = await buildHealthyCorpus();
+    writeNote(corpus, ulid(3));
+    const noop = { outcome: "noop", nearest_id: ulid(0), similarity: 0.99 };
+    appendLegacyRemember(corpus, ulid(3), { dedup: noop });
+    writeNote(corpus, ulid(4));
+    appendLegacyRemember(corpus, ulid(4), { source: "mcp" });
+    writeNote(corpus, ulid(5));
+    appendLegacyRemember(corpus, ulid(5), { body_len: MAX_BODY_CODE_POINTS - 1 });
+    writeNote(corpus, ulid(6));
+    appendLegacyRemember(corpus, ulid(6), { schema_version: 19 });
+
+    expect((await clippedOf(corpus)).status).toBe("ok");
+  });
+
+  test("a clipped note already retired or superseded is not named", async () => {
+    const corpus = await buildHealthyCorpus();
+    writeNote(corpus, ulid(7), { retired: true });
+    appendLegacyRemember(corpus, ulid(7));
+    writeNote(corpus, ulid(8));
+    appendLegacyRemember(corpus, ulid(8));
+    writeNote(corpus, ulid(9), { supersedes: ulid(8) });
+
+    expect((await clippedOf(corpus)).status).toBe("ok");
   });
 });
 
