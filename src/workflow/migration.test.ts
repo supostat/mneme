@@ -44,7 +44,7 @@ function phase(id: string, tasks: string[] = ["do the work"]): PhaseDocument {
     agentRole: "coder",
     description: `phase ${id}`,
     tasks,
-    doneWhen: [{ kind: "executable", description: "verified", command: "bun test" }],
+    doneWhen: [{ kind: "executable", description: "verified", command: "bun test", timeoutSeconds: null }],
     knowledge: [],
   };
 }

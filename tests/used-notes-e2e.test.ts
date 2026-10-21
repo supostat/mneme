@@ -125,7 +125,7 @@ function probePhase(id: string, deps: string[] = []): string {
     agentRole: "coder",
     description: PHASE_DESCRIPTION,
     tasks: ["do the work"],
-    doneWhen: [{ kind: "executable", description: "green", command: "true" }],
+    doneWhen: [{ kind: "executable", description: "green", command: "true", timeoutSeconds: null }],
     knowledge: [],
   });
 }

@@ -35,7 +35,7 @@ function phaseDocument(id: string, deps: string[] = []): PhaseDocument {
     agentRole: "coder",
     description: `Work on ${id}`,
     tasks: ["do the work"],
-    doneWhen: [{ kind: "executable", description: "tests pass", command: "true" }],
+    doneWhen: [{ kind: "executable", description: "tests pass", command: "true", timeoutSeconds: null }],
     knowledge: [],
   };
 }
@@ -456,6 +456,82 @@ describe("restore tolerance", () => {
 
     const run = onlyRun(log);
     expect(run.runId).toBe(RUN_ID);
+  });
+});
+
+describe("restoreRuns carries each criterion's gate limit", () => {
+  function limitedPhase(timeoutSeconds: number | null): PhaseDocument {
+    return {
+      ...phaseDocument("phase-one"),
+      doneWhen: [{ kind: "executable", description: "heavy suite", command: "true", timeoutSeconds }],
+    };
+  }
+
+  function phaseOneDoneWhen(run: ReadableRun): PhaseDocument["doneWhen"] {
+    return run.definition.graph.phases["phase-one"]!.doneWhen;
+  }
+
+  test("a criterion's limit rides the started event and restores unchanged", () => {
+    const log = makeLog();
+    appendStarted(log, RUN_ID, "main", makeDefinition([limitedPhase(900)]));
+
+    const [event] = readEvents(log.eventsDir);
+    const phases = definitionOf(event!)["phases"] as Array<Record<string, unknown>>;
+    expect(phases[0]!["done_when"]).toEqual([
+      { kind: "executable", description: "heavy suite", command: "true", timeout_seconds: 900 },
+    ]);
+    expect(phaseOneDoneWhen(onlyRun(log))).toEqual([
+      { kind: "executable", description: "heavy suite", command: "true", timeoutSeconds: 900 },
+    ]);
+  });
+
+  test("a criterion left on the default is written as an explicit null", () => {
+    const log = makeLog();
+    appendStarted(log, RUN_ID, "main", makeDefinition([limitedPhase(null)]));
+
+    const [event] = readEvents(log.eventsDir);
+    const phases = definitionOf(event!)["phases"] as Array<Record<string, unknown>>;
+    expect(phases[0]!["done_when"]).toEqual([
+      { kind: "executable", description: "heavy suite", command: "true", timeout_seconds: null },
+    ]);
+  });
+
+  test("a v17 definition without timeout_seconds restores onto a null limit", () => {
+    const log = makeLog();
+    const payload = JSON.parse(
+      JSON.stringify(runStartedPayload(RUN_ID, "main", makeDefinition([limitedPhase(null)]), RETRIEVAL)),
+    ) as Record<string, unknown>;
+    for (const phase of definitionOf(payload)["phases"] as Array<Record<string, unknown>>) {
+      for (const criterion of phase["done_when"] as Array<Record<string, unknown>>) {
+        delete criterion["timeout_seconds"];
+      }
+    }
+    const raw = {
+      ...payload,
+      type: "workflow_run_started",
+      session_id: "s-v17",
+      ts: "2026-07-06T10:00:00.000Z",
+      mneme_version: "0.1.11",
+      schema_version: 17,
+    };
+    appendFileSync(join(log.eventsDir, EVENTS_FILE), JSON.stringify(raw) + "\n");
+
+    expect(phaseOneDoneWhen(onlyRun(log))).toEqual([
+      { kind: "executable", description: "heavy suite", command: "true", timeoutSeconds: null },
+    ]);
+  });
+
+  test("an out-of-range limit in the log yields an unreadable run, never a crash", () => {
+    const log = makeLog();
+    log.writer.append(
+      corruptedStartedEvent(makeDefinition([limitedPhase(null)]), (payload) => {
+        const phases = definitionOf(payload)["phases"] as Array<Record<string, unknown>>;
+        const doneWhen = phases[0]!["done_when"] as Array<Record<string, unknown>>;
+        doneWhen[0]!["timeout_seconds"] = 0;
+      }) as { type: string } & Record<string, unknown>,
+    );
+
+    expect(onlyUnreadable(log).problem).toContain("done-when timeout must be a whole number of seconds");
   });
 });
 

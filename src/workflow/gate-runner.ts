@@ -17,8 +17,10 @@ export class GateInputError extends Error {}
 // malformed-command result so a bad command reads as a red gate rather than crashing the run.
 export class GateCommandFormatError extends Error {}
 
-// Gate commands are full test/build runs; the ceiling is generous and overridable for fast tests.
-export const GATE_COMMAND_TIMEOUT_MS = 300_000;
+// Gate commands are full test/build runs; a criterion whose fence names no limit gets this ceiling.
+export const DEFAULT_GATE_TIMEOUT_SECONDS = 300;
+
+const MILLISECONDS_PER_SECOND = 1000;
 
 const QUOTE_CHARACTERS: readonly string[] = ['"', "'"];
 const SPACE_RUN = / +/;
@@ -58,7 +60,6 @@ export interface GateReport {
 export interface GateRunOptions {
   projectRoot: string;
   agentVotes: AgentVote[][];
-  commandTimeoutMs?: number;
 }
 
 export async function runPhaseGates(
@@ -76,7 +77,6 @@ export async function runPhaseGates(
       `expected ${agentJudgedCriterionCount} agent vote arrays, received ${options.agentVotes.length}`,
     );
   }
-  const timeoutMs = options.commandTimeoutMs ?? GATE_COMMAND_TIMEOUT_MS;
   const criterionResults: CriterionResult[] = [];
   let agentJudgedIndex = 0;
   for (const criterion of doneWhen) {
@@ -85,10 +85,14 @@ export async function runPhaseGates(
       agentJudgedIndex += 1;
       criterionResults.push(evaluateAgentJudged(criterion.description, votes));
     } else {
-      criterionResults.push(await runExecutableCriterion(criterion, options.projectRoot, timeoutMs));
+      criterionResults.push(await runExecutableCriterion(criterion, options.projectRoot));
     }
   }
   return buildGateReport(criterionResults);
+}
+
+export function effectiveTimeoutSeconds(criterion: ExecutableCriterion): number {
+  return criterion.timeoutSeconds ?? DEFAULT_GATE_TIMEOUT_SECONDS;
 }
 
 // Maps a report to a step outcome. Per the COMPOSITION RULE above, the caller invokes this only after
@@ -162,7 +166,6 @@ function voteArrayAt(agentVotes: AgentVote[][], index: number): AgentVote[] {
 async function runExecutableCriterion(
   criterion: ExecutableCriterion,
   projectRoot: string,
-  timeoutMs: number,
 ): Promise<ExecutableCriterionResult> {
   let command: string[];
   try {
@@ -171,6 +174,7 @@ async function runExecutableCriterion(
     // fail closed: an un-runnable command reads as a red malformed-command gate, never a thrown run.
     return executableResult(criterion, "malformed-command", null);
   }
+  const timeoutMs = effectiveTimeoutSeconds(criterion) * MILLISECONDS_PER_SECOND;
   const execution = await executeCommand(command, projectRoot, timeoutMs);
   if (execution === "spawn-error") {
     return executableResult(criterion, "spawn-error", null);

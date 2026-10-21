@@ -274,7 +274,14 @@ function criterionFromPayload(
   if (payload.command === null) {
     throw new Error(`executable done-when criterion "${payload.description}" is missing its command`);
   }
-  return { kind: "executable", description: payload.description, command: payload.command };
+  // A pre-v18 definition carries no timeout_seconds key: the run predates per-criterion limits and
+  // restores onto the gate runner's default, exactly as it ran.
+  return {
+    kind: "executable",
+    description: payload.description,
+    command: payload.command,
+    timeoutSeconds: payload.timeout_seconds ?? null,
+  };
 }
 
 function stepFromPayload(payload: RunStartedPayload["definition"]["steps"][number]): StepDefinition {

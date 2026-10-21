@@ -1,3 +1,4 @@
+import { effectiveTimeoutSeconds } from "./gate-runner";
 import type { DoneWhenCriterion, PhaseDocument } from "./phase-document";
 import { readyPhaseIds } from "./phase-graph";
 import type { Directive, ExecuteStepDirective } from "./reducer";
@@ -307,9 +308,14 @@ function finalStepSection(phase: PhaseDocument): string[] {
   return lines;
 }
 
+// The limit is the EFFECTIVE one, default included: the agent learns the ceiling before the gate
+// runs, not by digging it out of the binary after a timeout.
 function describeCriterion(criterion: DoneWhenCriterion): string {
   if (criterion.kind === "executable") {
-    return `- [executable] ${criterion.description} (command: ${criterion.command})`;
+    return (
+      `- [executable] ${criterion.description} ` +
+      `(command: ${criterion.command}; limit ${effectiveTimeoutSeconds(criterion)} s)`
+    );
   }
   return `- [agent-judged] ${criterion.description}`;
 }

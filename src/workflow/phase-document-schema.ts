@@ -1,10 +1,16 @@
 export class PhaseDocumentValidationError extends Error {}
 
+// timeoutSeconds is the author's explicit gate limit from the fence info string; null means the
+// gate runner's default applies.
 export interface ExecutableCriterion {
   kind: "executable";
   description: string;
   command: string;
+  timeoutSeconds: number | null;
 }
+
+export const MIN_GATE_TIMEOUT_SECONDS = 1;
+export const MAX_GATE_TIMEOUT_SECONDS = 3600;
 
 export interface AgentJudgedCriterion {
   kind: "agent-judged";
@@ -229,11 +235,29 @@ function validateCriterion(criterion: DoneWhenCriterion): DoneWhenCriterion {
         `done-when command must not start with a fence: ${command}`,
       );
     }
-    return { kind: "executable", description, command };
+    const timeoutSeconds = validateTimeout(criterion.timeoutSeconds);
+    return { kind: "executable", description, command, timeoutSeconds };
   }
   throw new PhaseDocumentValidationError(
     `done-when criterion has an unknown kind: ${String((criterion as { kind?: unknown }).kind)}`,
   );
+}
+
+function validateTimeout(timeoutSeconds: number | null): number | null {
+  if (timeoutSeconds === null) {
+    return null;
+  }
+  if (
+    !Number.isInteger(timeoutSeconds) ||
+    timeoutSeconds < MIN_GATE_TIMEOUT_SECONDS ||
+    timeoutSeconds > MAX_GATE_TIMEOUT_SECONDS
+  ) {
+    throw new PhaseDocumentValidationError(
+      `done-when timeout must be a whole number of seconds from ${MIN_GATE_TIMEOUT_SECONDS} to ` +
+        `${MAX_GATE_TIMEOUT_SECONDS}: ${timeoutSeconds}`,
+    );
+  }
+  return timeoutSeconds;
 }
 
 // The serializer prefixes every criterion with its own "- " bullet, so a description that ARRIVES

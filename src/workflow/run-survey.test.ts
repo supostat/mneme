@@ -25,7 +25,7 @@ function makeDefinition(): RunDefinition {
     agentRole: "coder",
     description: "Work on phase-one",
     tasks: ["do the work"],
-    doneWhen: [{ kind: "executable", description: "tests pass", command: "true" }],
+    doneWhen: [{ kind: "executable", description: "tests pass", command: "true", timeoutSeconds: null }],
     knowledge: [],
   };
   return {

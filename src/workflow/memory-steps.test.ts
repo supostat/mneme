@@ -227,7 +227,7 @@ describe("reducer lifecycle integration through the memory-steps seam", () => {
       agentRole: "coder",
       description: "",
       tasks: ["do the work"],
-      doneWhen: [{ kind: "executable", description: "work is verified", command: "bun test" }],
+      doneWhen: [{ kind: "executable", description: "work is verified", command: "bun test", timeoutSeconds: null }],
       knowledge: [],
     };
     return {

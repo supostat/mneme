@@ -79,7 +79,11 @@ import { z } from "zod";
 //       answer and keeps what it got, so chunks_ok_n < chunks_n is a PARTIAL index that the next
 //       rebuild completes; ollama.available now means "every chunk answered". The ollama key keeps
 //       its name for the openai format too (extend never repurpose).
-export const SCHEMA_VERSION = 17;
+//  18 — gate limits: workflow_run_started definition.phases[].done_when[] gains timeout_seconds —
+//       the author's per-criterion gate limit from the fence info string (null for agent-judged
+//       criteria and for executable ones left on the gate runner's default). Optional in the shape
+//       (the v4 extend rule): a pre-18 definition carries no key and restores onto the default.
+export const SCHEMA_VERSION = 18;
 
 export const DEDUP_OUTCOMES = ["add", "supersede_suggest", "noop"] as const;
 // The closed v1 registry of digit-menu decision classes: curation rides staging_resolve, plan-fan
@@ -377,10 +381,12 @@ const restoreEnvelope = {
 };
 
 // command is null for agent-judged criteria; both criterion kinds share one payload shape.
+// timeout_seconds is null unless the author set a limit, and absent from pre-v18 definitions.
 const doneWhenCriterion = z.object({
   kind: z.enum(DONE_WHEN_KINDS),
   description: z.string(),
   command: z.string().nullable(),
+  timeout_seconds: z.number().int().nullable().optional(),
 });
 
 const runPhase = z.object({

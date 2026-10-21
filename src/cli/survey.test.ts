@@ -100,7 +100,7 @@ function phaseText(id: string): string {
     agentRole: "coder",
     description: `Work on ${id}`,
     tasks: ["do the work"],
-    doneWhen: [{ kind: "executable", description: "always green", command: "true" }],
+    doneWhen: [{ kind: "executable", description: "always green", command: "true", timeoutSeconds: null }],
     knowledge: [],
   });
 }

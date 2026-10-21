@@ -53,7 +53,7 @@ function collegiumPhase(): PhaseDocument {
     description: "work under the review collegium",
     tasks: ["do the work"],
     doneWhen: [
-      { kind: "executable", description: "green stub", command: "true" },
+      { kind: "executable", description: "green stub", command: "true", timeoutSeconds: null },
       { kind: "agent-judged", description: SPEC_AXIS },
       { kind: "agent-judged", description: STANDARDS_AXIS },
     ],

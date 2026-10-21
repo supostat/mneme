@@ -79,7 +79,7 @@ async function makeDeps(projectRoot: string): Promise<StagingDeps> {
   return { corpus, projectRoot, config: defaultConfig(), clock: fixedClock, idFactory: () => ulid(counter++), embeddings: bagClient(), eventWriter };
 }
 
-const GREEN = [{ kind: "executable" as const, description: "green", command: "true" }];
+const GREEN = [{ kind: "executable" as const, description: "green", command: "true", timeoutSeconds: null }];
 
 function phase(id: string, deps: string[] = []): PhaseDocument {
   return {

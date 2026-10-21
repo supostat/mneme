@@ -119,6 +119,7 @@ function phaseToPayload(document: PhaseDocument): Record<string, unknown> {
       kind: criterion.kind,
       description: criterion.description,
       command: criterion.kind === "executable" ? criterion.command : null,
+      timeout_seconds: criterion.kind === "executable" ? criterion.timeoutSeconds : null,
     })),
   };
 }

@@ -1,10 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import {
+  FENCE_INFO_STRING_PROBLEM,
   PhaseDocumentValidationError,
+  fenceTimeoutSeconds,
   parsePhaseDocument,
   serializePhaseDocument,
 } from "./phase-document";
 import type { DoneWhenCriterion, PhaseDocument } from "./phase-document";
+
+function executable(description: string, command: string): DoneWhenCriterion {
+  return { kind: "executable", description, command, timeoutSeconds: null };
+}
 
 const baseDocument: PhaseDocument = {
   id: "phase-seven",
@@ -12,7 +18,7 @@ const baseDocument: PhaseDocument = {
   agentRole: "coder",
   description: "Build the reducer core.",
   tasks: ["Implement the parser"],
-  doneWhen: [{ kind: "executable", description: "tests pass", command: "bun test" }],
+  doneWhen: [executable("tests pass", "bun test")],
   knowledge: [],
 };
 
@@ -104,8 +110,8 @@ describe("phase document round-trip", () => {
     const original = document({
       tasks: ["Write the parser", "Write the serializer", "Wire validation"],
       doneWhen: [
-        { kind: "executable", description: "tests pass", command: "bun test" },
-        { kind: "executable", description: "types check", command: "bunx tsc --noEmit" },
+        executable("tests pass", "bun test"),
+        executable("types check", "bunx tsc --noEmit"),
       ],
     });
     expect(parsePhaseDocument(serializePhaseDocument(original))).toEqual(original);
@@ -283,7 +289,7 @@ describe("phase document agent-judged grammar", () => {
   test("serialize then parse preserves a document mixing both criterion kinds", () => {
     const original = document({
       doneWhen: [
-        { kind: "executable", description: "tests pass", command: "bun test" },
+        executable("tests pass", "bun test"),
         { kind: "agent-judged", description: "reviewer approves" },
       ],
     });
@@ -393,21 +399,6 @@ describe("phase document agent-judged grammar", () => {
 });
 
 describe("phase document parse tolerance", () => {
-  test("language-tagged fence is accepted and the tag is discarded", () => {
-    const parsed = parsePhaseDocument(
-      phaseText(frontmatterLines, [
-        "## Tasks",
-        "- Implement the parser",
-        "",
-        "## Done-when",
-        "- tests pass",
-        "```bash",
-        "bun test",
-        "```",
-      ]),
-    );
-    expect(parsed.doneWhen).toEqual([{ kind: "executable", description: "tests pass", command: "bun test" }]);
-  });
 
   test("extra blank lines between sections, bullets and criteria are tolerated", () => {
     const parsed = parsePhaseDocument(
@@ -436,9 +427,87 @@ describe("phase document parse tolerance", () => {
     );
     expect(parsed.tasks).toEqual(["First task", "Second task"]);
     expect(parsed.doneWhen).toEqual([
-      { kind: "executable", description: "tests pass", command: "bun test" },
-      { kind: "executable", description: "types check", command: "bunx tsc --noEmit" },
+      executable("tests pass", "bun test"),
+      executable("types check", "bunx tsc --noEmit"),
     ]);
+  });
+});
+
+function limitedExecutable(description: string, command: string, timeoutSeconds: number): DoneWhenCriterion {
+  return { kind: "executable", description, command, timeoutSeconds };
+}
+
+function textWithFence(fenceOpening: string): string {
+  return phaseText(frontmatterLines, [
+    "## Tasks",
+    "- Implement the parser",
+    "",
+    "## Done-when",
+    "- tests pass",
+    fenceOpening,
+    "bun test",
+    "```",
+  ]);
+}
+
+function doneWhenUnder(fenceOpening: string): DoneWhenCriterion[] {
+  return parsePhaseDocument(textWithFence(fenceOpening)).doneWhen;
+}
+
+const REJECTED_INFO_STRINGS = [
+  "timeout=0s",
+  "timeout=3601s",
+  "timeout=90",
+  "timeout=07s",
+  "bash",
+  "timeout=90s bash",
+];
+
+describe("phase document gate limit", () => {
+  test("a criterion's limit serializes into the fence info string", () => {
+    const limited = document({ doneWhen: [limitedExecutable("tests pass", "bun test", 900)] });
+
+    expect(serializePhaseDocument(limited).split("\n")).toContain("```timeout=900s");
+  });
+
+  test("serialize then parse preserves a criterion's limit", () => {
+    const original = document({ doneWhen: [limitedExecutable("tests pass", "bun test", 900)] });
+
+    expect(parsePhaseDocument(serializePhaseDocument(original))).toEqual(original);
+  });
+
+  test("a criterion without a limit serializes a bare fence", () => {
+    expect(serializePhaseDocument(baseDocument)).toBe(canonicalText);
+  });
+
+  test("a bare fence parses to a null limit", () => {
+    expect(doneWhenUnder("```")).toEqual([executable("tests pass", "bun test")]);
+  });
+
+  test("the bounds themselves are accepted", () => {
+    expect(doneWhenUnder("```timeout=1s")).toEqual([limitedExecutable("tests pass", "bun test", 1)]);
+    expect(doneWhenUnder("```timeout=3600s")).toEqual([limitedExecutable("tests pass", "bun test", 3600)]);
+  });
+
+  for (const infoString of REJECTED_INFO_STRINGS) {
+    test(`the info string "${infoString}" is rejected with the grammar named`, () => {
+      const text = textWithFence(`\`\`\`${infoString}`);
+
+      expect(parseOf(text)).toThrow(`${FENCE_INFO_STRING_PROBLEM}: ${infoString}`);
+    });
+  }
+
+  for (const timeoutSeconds of [0, 1.5, 3601]) {
+    test(`a programmatic limit of ${timeoutSeconds} fails validation`, () => {
+      const doneWhen = [limitedExecutable("tests pass", "bun test", timeoutSeconds)];
+
+      expect(serializeWith({ doneWhen })).toThrow(PhaseDocumentValidationError);
+    });
+  }
+
+  test("fenceTimeoutSeconds reads the limit off an opening fence line", () => {
+    expect(fenceTimeoutSeconds("```")).toBeNull();
+    expect(fenceTimeoutSeconds("```timeout=60s")).toBe(60);
   });
 });
 
@@ -926,7 +995,7 @@ describe("criterion description bullet-marker normalization", () => {
     const serialized = serializePhaseDocument(
       document({
         doneWhen: [
-          { kind: "executable", description: "- the suite is green (exit 0)", command: "bun test" },
+          executable("- the suite is green (exit 0)", "bun test"),
         ],
       }),
     );
@@ -937,7 +1006,7 @@ describe("criterion description bullet-marker normalization", () => {
   test("a file carrying the historical doubled marker parses to a clean description", () => {
     const doubled = canonicalText.replace("- tests pass", "- - tests pass");
     expect(parsePhaseDocument(doubled).doneWhen).toEqual([
-      { kind: "executable", description: "tests pass", command: "bun test" },
+      executable("tests pass", "bun test"),
     ]);
   });
 
@@ -945,7 +1014,7 @@ describe("criterion description bullet-marker normalization", () => {
     const serialized = serializePhaseDocument(
       document({
         doneWhen: [
-          { kind: "executable", description: "tests pass", command: "bun test" },
+          executable("tests pass", "bun test"),
           { kind: "agent-judged", description: "- reviewer checklist holds" },
         ],
       }),
@@ -957,7 +1026,7 @@ describe("criterion description bullet-marker normalization", () => {
   test("normalization keeps the round-trip byte-stable", () => {
     const withBullet = document({
       doneWhen: [
-        { kind: "executable", description: "- - the suite is green", command: "bun test" },
+        executable("- - the suite is green", "bun test"),
       ],
     });
     const serialized = serializePhaseDocument(withBullet);
@@ -966,7 +1035,7 @@ describe("criterion description bullet-marker normalization", () => {
 
   test("a description that is nothing but bullet markers fails closed as empty", () => {
     expect(
-      serializeWith({ doneWhen: [{ kind: "executable", description: "- - ", command: "bun test" }] }),
+      serializeWith({ doneWhen: [executable("- - ", "bun test")] }),
     ).toThrow(PhaseDocumentValidationError);
   });
 });
@@ -990,7 +1059,7 @@ describe("phase document serialize rejection", () => {
 
   test("blank criterion description is rejected", () => {
     expect(
-      serializeWith({ doneWhen: [{ kind: "executable", description: "", command: "bun test" }] }),
+      serializeWith({ doneWhen: [executable("", "bun test")] }),
     ).toThrow(
       PhaseDocumentValidationError,
     );
@@ -998,14 +1067,14 @@ describe("phase document serialize rejection", () => {
 
   test("blank command is rejected", () => {
     expect(
-      serializeWith({ doneWhen: [{ kind: "executable", description: "tests pass", command: " " }] }),
+      serializeWith({ doneWhen: [executable("tests pass", " ")] }),
     ).toThrow(PhaseDocumentValidationError);
   });
 
   test("multi-line command is rejected", () => {
     expect(
       serializeWith({
-        doneWhen: [{ kind: "executable", description: "tests pass", command: "bun\ntest" }],
+        doneWhen: [executable("tests pass", "bun\ntest")],
       }),
     ).toThrow(PhaseDocumentValidationError);
   });
@@ -1013,7 +1082,7 @@ describe("phase document serialize rejection", () => {
   test("command starting with a fence is rejected", () => {
     expect(
       serializeWith({
-        doneWhen: [{ kind: "executable", description: "tests pass", command: "```bun test" }],
+        doneWhen: [executable("tests pass", "```bun test")],
       }),
     ).toThrow(PhaseDocumentValidationError);
   });
@@ -1078,7 +1147,7 @@ describe("forbidden control character rejection", () => {
       expect(
         serializeWith({
           doneWhen: [
-            { kind: "executable", description: `tests${character}pass`, command: "bun test" },
+            executable(`tests${character}pass`, "bun test"),
           ],
         }),
       ).toThrow(PhaseDocumentValidationError);
@@ -1088,7 +1157,7 @@ describe("forbidden control character rejection", () => {
       expect(
         serializeWith({
           doneWhen: [
-            { kind: "executable", description: "tests pass", command: `bun${character}test` },
+            executable("tests pass", `bun${character}test`),
           ],
         }),
       ).toThrow(PhaseDocumentValidationError);

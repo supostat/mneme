@@ -8,7 +8,12 @@ export class PhaseGenerationError extends Error {}
 export const DEFAULT_AGENT_ROLE = "coder";
 
 export const DEFAULT_DONE_WHEN: readonly ExecutableCriterion[] = [
-  { kind: "executable", description: "the phase verification suite passes", command: "bun test" },
+  {
+    kind: "executable",
+    description: "the phase verification suite passes",
+    command: "bun test",
+    timeoutSeconds: null,
+  },
 ];
 
 const TITLE_SEPARATOR = ` ${String.fromCharCode(0x2014)} `;

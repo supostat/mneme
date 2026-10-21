@@ -4,6 +4,8 @@ import {
   COMMAND_FENCE,
   DONE_WHEN_HEADER,
   KNOWLEDGE_HEADER,
+  MAX_GATE_TIMEOUT_SECONDS,
+  MIN_GATE_TIMEOUT_SECONDS,
   PhaseDocumentValidationError,
   SECTION_HEADER_PREFIX,
   TASKS_HEADER,
@@ -14,7 +16,9 @@ import type { DoneWhenCriterion, PhaseDocument } from "./phase-document-schema";
 export {
   BULLET_PREFIX,
   COMMAND_FENCE,
+  MAX_GATE_TIMEOUT_SECONDS,
   MAX_PHASE_ID_LENGTH,
+  MIN_GATE_TIMEOUT_SECONDS,
   PHASE_ID_REGEX,
   PhaseDocumentValidationError,
   containsForbiddenCharacter,
@@ -32,6 +36,13 @@ const FRONTMATTER_CLOSING = "\n---\n";
 const KEY_VALUE_SEPARATOR = ": ";
 const REQUIRED_FRONTMATTER_KEYS = ["id", "deps", "agent-role"] as const;
 const ALLOWED_FRONTMATTER_KEYS: ReadonlySet<string> = new Set(REQUIRED_FRONTMATTER_KEYS);
+const FENCE_TIMEOUT_PATTERN = /^timeout=([1-9][0-9]*)s$/;
+
+// The single grammar of a gate limit: the opening fence of an executable criterion carries either no
+// info string (the gate runner's default applies) or exactly one timeout in whole seconds.
+export const FENCE_INFO_STRING_PROBLEM =
+  `fence info string must be empty or timeout=<N>s with N whole seconds from ` +
+  `${MIN_GATE_TIMEOUT_SECONDS} to ${MAX_GATE_TIMEOUT_SECONDS}`;
 
 export function serializePhaseDocument(document: PhaseDocument): string {
   const validated = validatePhaseDocument(document);
@@ -56,7 +67,7 @@ export function serializePhaseDocument(document: PhaseDocument): string {
     } else {
       lines.push(
         `${BULLET_PREFIX}${criterion.description}`,
-        COMMAND_FENCE,
+        fenceOpeningFor(criterion.timeoutSeconds),
         criterion.command,
         COMMAND_FENCE,
       );
@@ -222,12 +233,18 @@ function parseCriterion(
     return bulletIndex + 2;
   }
   const fencedCommand = readFencedCommand(lines, bulletIndex + 1);
-  doneWhen.push({ kind: "executable", description, command: fencedCommand.command });
+  doneWhen.push({
+    kind: "executable",
+    description,
+    command: fencedCommand.command,
+    timeoutSeconds: fencedCommand.timeoutSeconds,
+  });
   return fencedCommand.nextIndex;
 }
 
 interface FencedCommand {
   command: string;
+  timeoutSeconds: number | null;
   nextIndex: number;
 }
 
@@ -247,14 +264,37 @@ function readFencedCommand(lines: string[], openingIndex: number): FencedCommand
   if (closingIndex !== openingIndex + 2) {
     throw new PhaseDocumentValidationError("fenced command block must contain exactly one line");
   }
-  return { command: lineAt(lines, openingIndex + 1), nextIndex: closingIndex + 1 };
+  return {
+    command: lineAt(lines, openingIndex + 1),
+    timeoutSeconds: fenceTimeoutSeconds(lineAt(lines, openingIndex)),
+    nextIndex: closingIndex + 1,
+  };
 }
 
+// Structural only: any info string still opens a fence, so a malformed one reaches
+// fenceTimeoutSeconds and fails there with the grammar named, instead of reading as stray prose.
 export function isFenceOpening(line: string): boolean {
   if (!line.startsWith(COMMAND_FENCE)) {
     return false;
   }
   return !line.slice(COMMAND_FENCE.length).includes("`");
+}
+
+export function fenceTimeoutSeconds(openingLine: string): number | null {
+  const infoString = openingLine.slice(COMMAND_FENCE.length);
+  if (infoString === "") {
+    return null;
+  }
+  const digits = FENCE_TIMEOUT_PATTERN.exec(infoString)?.[1];
+  const seconds = Number(digits);
+  if (digits === undefined || seconds < MIN_GATE_TIMEOUT_SECONDS || seconds > MAX_GATE_TIMEOUT_SECONDS) {
+    throw new PhaseDocumentValidationError(`${FENCE_INFO_STRING_PROBLEM}: ${infoString}`);
+  }
+  return seconds;
+}
+
+function fenceOpeningFor(timeoutSeconds: number | null): string {
+  return timeoutSeconds === null ? COMMAND_FENCE : `${COMMAND_FENCE}timeout=${timeoutSeconds}s`;
 }
 
 function requireBothSections(section: BodySection): void {

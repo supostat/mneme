@@ -131,8 +131,8 @@ function eventsOfType(events: StoredEvent[], type: string): StoredEvent[] {
   return events.filter((event) => event.type === type);
 }
 
-const GREEN_GATE: DoneWhenCriterion[] = [{ kind: "executable", description: "always green", command: "true" }];
-const RED_GATE: DoneWhenCriterion[] = [{ kind: "executable", description: "always red", command: "false" }];
+const GREEN_GATE: DoneWhenCriterion[] = [{ kind: "executable", description: "always green", command: "true", timeoutSeconds: null }];
+const RED_GATE: DoneWhenCriterion[] = [{ kind: "executable", description: "always red", command: "false", timeoutSeconds: null }];
 const JUDGED_GATE: DoneWhenCriterion[] = [{ kind: "agent-judged", description: "review approves" }];
 
 function phaseText(id: string, options: { deps?: string[]; doneWhen?: DoneWhenCriterion[] } = {}): string {
@@ -181,7 +181,7 @@ describe("workflow full run", () => {
     // would go unnoticed with one of each.
     const gates: DoneWhenCriterion[] = [
       ...GREEN_GATE,
-      { kind: "executable", description: "also green", command: "true" },
+      { kind: "executable", description: "also green", command: "true", timeoutSeconds: null },
       ...JUDGED_GATE,
     ];
     const runId = await startRun(bench.client, startArgs([phaseText("phase-one", { doneWhen: gates })], TWO_STEPS));
@@ -199,7 +199,7 @@ describe("workflow full run", () => {
     expect(afterFirst).toContain("gates were not run");
     expect(afterFirst).toContain("step: verify");
     expect(afterFirst).toContain("FINAL step");
-    expect(afterFirst).toContain("[executable] always green (command: true)");
+    expect(afterFirst).toContain("- [executable] always green (command: true; limit 300 s)\n");
     expect(afterFirst).toContain("[agent-judged] review approves");
     expect(afterFirst).toContain("exactly 1 non-empty array(s)");
 

@@ -3,19 +3,21 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  GATE_COMMAND_TIMEOUT_MS,
+  DEFAULT_GATE_TIMEOUT_SECONDS,
   GateCommandFormatError,
   GateInputError,
+  effectiveTimeoutSeconds,
   formatGateReport,
   runPhaseGates,
   stepResultFromGateReport,
   tokenizeCommand,
 } from "./gate-runner";
 import type { GateReport, GateRunOptions } from "./gate-runner";
+import { MAX_GATE_TIMEOUT_SECONDS, MIN_GATE_TIMEOUT_SECONDS } from "./phase-document";
 import { buildPhaseGraph } from "./phase-graph";
 import { applyStepResult, initialRun, reduce } from "./reducer";
 import type { RunDefinition, WorkflowRun } from "./reducer";
-import type { DoneWhenCriterion, PhaseDocument } from "./phase-document";
+import type { DoneWhenCriterion, ExecutableCriterion, PhaseDocument } from "./phase-document";
 
 const FIXTURE_SCRIPTS: ReadonlyArray<readonly [string, string]> = [
   ["exit-zero.ts", "process.exit(0);\n"],
@@ -47,8 +49,12 @@ afterAll(() => {
   }
 });
 
-function executable(description: string, command: string): DoneWhenCriterion {
-  return { kind: "executable", description, command };
+function executable(description: string, command: string): ExecutableCriterion {
+  return { kind: "executable", description, command, timeoutSeconds: null };
+}
+
+function limitedExecutable(description: string, command: string, timeoutSeconds: number): ExecutableCriterion {
+  return { kind: "executable", description, command, timeoutSeconds };
 }
 
 function agentJudged(description: string): DoneWhenCriterion {
@@ -56,7 +62,7 @@ function agentJudged(description: string): DoneWhenCriterion {
 }
 
 function optionsFor(projectRoot: string, agentVotes: GateRunOptions["agentVotes"] = []): GateRunOptions {
-  return { projectRoot, agentVotes, commandTimeoutMs: 5_000 };
+  return { projectRoot, agentVotes };
 }
 
 describe("runPhaseGates executable criteria", () => {
@@ -159,12 +165,13 @@ describe("runPhaseGates fail-closed executable paths", () => {
     });
   }, 15_000);
 
-  test("a command exceeding the timeout fails closed as timeout", async () => {
-    const report = await runPhaseGates([executable("hangs", "bun sleep.ts")], {
-      projectRoot: sharedProjectRoot,
-      agentVotes: [],
-      commandTimeoutMs: 250,
-    });
+  test("a command exceeding its criterion's own limit fails closed as timeout at that limit", async () => {
+    const startedAt = performance.now();
+    const report = await runPhaseGates(
+      [limitedExecutable("hangs", "bun sleep.ts", 1)],
+      optionsFor(sharedProjectRoot),
+    );
+    const elapsedMs = performance.now() - startedAt;
     expect(report.passed).toBe(false);
     expect(report.criterionResults[0]).toMatchObject({
       kind: "executable",
@@ -172,10 +179,24 @@ describe("runPhaseGates fail-closed executable paths", () => {
       reason: "timeout",
       exitCode: null,
     });
+    expect(elapsedMs).toBeGreaterThanOrEqual(1000);
+    expect(elapsedMs).toBeLessThan(10_000);
   }, 15_000);
+});
 
-  test("the default per-command timeout is five minutes", () => {
-    expect(GATE_COMMAND_TIMEOUT_MS).toBe(300_000);
+describe("gate limits", () => {
+  test("a criterion without a limit gets the five-minute default", () => {
+    expect(DEFAULT_GATE_TIMEOUT_SECONDS).toBe(300);
+    expect(effectiveTimeoutSeconds(executable("suite", "bun test"))).toBe(300);
+  });
+
+  test("the default lies inside the limits a fence may name", () => {
+    expect(DEFAULT_GATE_TIMEOUT_SECONDS).toBeGreaterThanOrEqual(MIN_GATE_TIMEOUT_SECONDS);
+    expect(DEFAULT_GATE_TIMEOUT_SECONDS).toBeLessThanOrEqual(MAX_GATE_TIMEOUT_SECONDS);
+  });
+
+  test("a criterion's own limit replaces the default", () => {
+    expect(effectiveTimeoutSeconds(limitedExecutable("heavy suite", "bun test", 900))).toBe(900);
   });
 });
 

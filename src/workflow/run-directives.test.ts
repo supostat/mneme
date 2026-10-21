@@ -6,7 +6,9 @@ import type { RunDefinition } from "./reducer";
 import { renderCurrentDirective } from "./run-directives";
 import type { ReadableRun } from "./run-events";
 
-const GREEN: DoneWhenCriterion[] = [{ kind: "executable", description: "green", command: "true" }];
+const GREEN: DoneWhenCriterion[] = [
+  { kind: "executable", description: "green", command: "true", timeoutSeconds: null },
+];
 
 function phase(id: string, deps: string[] = []): PhaseDocument {
   return {
@@ -68,6 +70,25 @@ function failOnce(active: ReadableRun): void {
     outcome: "failure",
   });
 }
+
+describe("renderCurrentDirective final-step gate limits", () => {
+  test("every executable criterion names its effective limit, the default included", () => {
+    const limitedPhase: PhaseDocument = {
+      ...phase("phase-one"),
+      doneWhen: [
+        ...GREEN,
+        { kind: "executable", description: "heavy suite", command: "bun test", timeoutSeconds: 900 },
+      ],
+    };
+    const active = activeRunFrom(definitionOf(limitedPhase));
+    active.run = applyStepResult(active.run, active.definition, { kind: "recall", phaseId: "phase-one" });
+
+    const lines = renderCurrentDirective(active, 0).split("\n");
+
+    expect(lines).toContain("- [executable] green (command: true; limit 300 s)");
+    expect(lines).toContain("- [executable] heavy suite (command: bun test; limit 900 s)");
+  });
+});
 
 // The retry directive replays the WHOLE failed-gates history, ascending by attempt, each block
 // under its own provenance header — a remark from attempt 1 must survive attempt 2's failure, or

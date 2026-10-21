@@ -7,7 +7,7 @@ import {
   validateGeneratedGraph,
 } from "./phase-generation";
 import type { PhaseHeading } from "./phase-generation";
-import { BULLET_PREFIX, COMMAND_FENCE, isFenceOpening } from "./phase-document";
+import { BULLET_PREFIX, COMMAND_FENCE, fenceTimeoutSeconds, isFenceOpening } from "./phase-document";
 import type { DoneWhenCriterion, ExecutableCriterion, PhaseDocument } from "./phase-document";
 
 const GAMEPLAN_HEADING = "# Gameplan";
@@ -179,7 +179,7 @@ function consumePhaseDetail(specPhase: SpecPhase, lines: string[], index: number
     return collectTaskContinuations(specPhase, lines, index + 1);
   }
   if (line === EXECUTABLE_DONE_WHEN_MARKER) {
-    return parseCriteriaBlock(lines, index + 1, specPhase.criteria);
+    return parseCriteriaBlock(specPhase.heading.id, lines, index + 1, specPhase.criteria);
   }
   if (line.startsWith(AGENT_JUDGED_DONE_WHEN_MARKER)) {
     specPhase.criteria.push(parseAgentJudgedCriterion(line));
@@ -239,6 +239,7 @@ function parseAgentJudgedCriterion(line: string): DoneWhenCriterion {
 }
 
 function parseCriteriaBlock(
+  phaseId: string,
   lines: string[],
   startIndex: number,
   criteria: DoneWhenCriterion[],
@@ -246,7 +247,7 @@ function parseCriteriaBlock(
   const countBeforeBlock = criteria.length;
   let index = startIndex;
   while (index < lines.length && isFenceOpening(lineAt(lines, index))) {
-    index = parseFenceFirstCriterion(lines, index, criteria);
+    index = parseFenceFirstCriterion(phaseId, lines, index, criteria);
   }
   if (criteria.length === countBeforeBlock) {
     throw new PhaseGenerationError(
@@ -257,26 +258,29 @@ function parseCriteriaBlock(
 }
 
 function parseFenceFirstCriterion(
+  phaseId: string,
   lines: string[],
   fenceIndex: number,
   criteria: DoneWhenCriterion[],
 ): number {
-  const fencedCommand = readFencedSpecCommand(lines, fenceIndex);
+  const fencedCommand = readFencedSpecCommand(phaseId, lines, fenceIndex);
   const trailingProse = readTrailingProse(lines, fencedCommand.nextIndex);
   criteria.push({
     kind: "executable",
     description: trailingProse.description,
     command: fencedCommand.command,
+    timeoutSeconds: fencedCommand.timeoutSeconds,
   });
   return trailingProse.nextIndex;
 }
 
 interface FencedSpecCommand {
   command: string;
+  timeoutSeconds: number | null;
   nextIndex: number;
 }
 
-function readFencedSpecCommand(lines: string[], openingIndex: number): FencedSpecCommand {
+function readFencedSpecCommand(phaseId: string, lines: string[], openingIndex: number): FencedSpecCommand {
   let closingIndex = openingIndex + 1;
   while (closingIndex < lines.length && lineAt(lines, closingIndex) !== COMMAND_FENCE) {
     closingIndex += 1;
@@ -289,7 +293,20 @@ function readFencedSpecCommand(lines: string[], openingIndex: number): FencedSpe
       "a fenced executable done-when command must contain exactly one line",
     );
   }
-  return { command: lineAt(lines, openingIndex + 1), nextIndex: closingIndex + 1 };
+  return {
+    command: lineAt(lines, openingIndex + 1),
+    timeoutSeconds: specFenceTimeout(phaseId, lineAt(lines, openingIndex)),
+    nextIndex: closingIndex + 1,
+  };
+}
+
+function specFenceTimeout(phaseId: string, openingLine: string): number | null {
+  try {
+    return fenceTimeoutSeconds(openingLine);
+  } catch (error) {
+    const problem = error instanceof Error ? error.message : String(error);
+    throw new PhaseGenerationError(`phase "${phaseId}" done-when ${problem}`);
+  }
 }
 
 interface TrailingProse {

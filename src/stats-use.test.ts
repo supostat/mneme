@@ -98,7 +98,7 @@ function probePhase(id: string): string {
     agentRole: "coder",
     description: PROBE_DESCRIPTION,
     tasks: ["do the work"],
-    doneWhen: [{ kind: "executable", description: "green", command: "true" }],
+    doneWhen: [{ kind: "executable", description: "green", command: "true", timeoutSeconds: null }],
     knowledge: [],
   });
 }

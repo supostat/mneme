@@ -2,10 +2,15 @@ import { describe, expect, test } from "bun:test";
 import { phaseDocumentsFromSpec } from "./from-spec";
 import { PhaseGenerationError } from "./phase-generation";
 import { PhaseGraphValidationError, buildPhaseGraph } from "./phase-graph";
-import { parsePhaseDocument, serializePhaseDocument } from "./phase-document";
+import { FENCE_INFO_STRING_PROBLEM, parsePhaseDocument, serializePhaseDocument } from "./phase-document";
+import type { DoneWhenCriterion } from "./phase-document";
 
 const EM_DASH = String.fromCharCode(0x2014);
 const EXECUTABLE_MARKER = "**Done when (EXECUTABLE):**";
+
+function executable(description: string, command: string): DoneWhenCriterion {
+  return { kind: "executable", description, command, timeoutSeconds: null };
+}
 
 function executableBlock(command: string, description: string): string {
   return [EXECUTABLE_MARKER, "```", command, "```", description].join("\n");
@@ -61,10 +66,10 @@ describe("phaseDocumentsFromSpec happy path", () => {
   test("extracts the executable done-when of each phase", () => {
     const documents = phaseDocumentsFromSpec(specText);
     expect(documents[0]?.doneWhen).toEqual([
-      { kind: "executable", description: "alpha suite is green.", command: "bun test src/alpha.test.ts" },
+      executable("alpha suite is green.", "bun test src/alpha.test.ts"),
     ]);
     expect(documents[1]?.doneWhen).toEqual([
-      { kind: "executable", description: "beta suite is green.", command: "bun test src/beta.test.ts" },
+      executable("beta suite is green.", "bun test src/beta.test.ts"),
     ]);
   });
 
@@ -215,6 +220,7 @@ describe("phaseDocumentsFromSpec executable extraction", () => {
         kind: "executable",
         description: "example suite is green.",
         command: "bun test src/example.test.ts",
+        timeoutSeconds: null,
       },
     ]);
     const [criterion] = document?.doneWhen ?? [];
@@ -244,8 +250,8 @@ describe("phaseDocumentsFromSpec multiple criteria", () => {
   test("collects every adjacent fence-first record in order", () => {
     const [document] = phaseDocumentsFromSpec(specText);
     expect(document?.doneWhen).toEqual([
-      { kind: "executable", description: "first check passes.", command: "bun test src/one.test.ts" },
-      { kind: "executable", description: "second check passes.", command: "bun test src/two.test.ts" },
+      executable("first check passes.", "bun test src/one.test.ts"),
+      executable("second check passes.", "bun test src/two.test.ts"),
     ]);
   });
 
@@ -272,7 +278,7 @@ describe("phaseDocumentsFromSpec multiple criteria", () => {
     const documents = phaseDocumentsFromSpec(specWithAdjacentPhases);
     expect(documents.map((document) => document.id)).toEqual(["alpha", "beta"]);
     expect(documents[0]?.doneWhen).toEqual([
-      { kind: "executable", description: "alpha done.", command: "bun test src/a.test.ts" },
+      executable("alpha done.", "bun test src/a.test.ts"),
     ]);
   });
 
@@ -286,7 +292,7 @@ describe("phaseDocumentsFromSpec multiple criteria", () => {
     );
     const [document] = phaseDocumentsFromSpec(specText);
     expect(document?.doneWhen).toEqual([
-      { kind: "executable", description: "first line second line", command: "bun test src/a.test.ts" },
+      executable("first line second line", "bun test src/a.test.ts"),
     ]);
   });
 });
@@ -486,7 +492,7 @@ describe("phaseDocumentsFromSpec agent-judged criteria", () => {
     );
     const [document] = phaseDocumentsFromSpec(specText);
     expect(document?.doneWhen).toEqual([
-      { kind: "executable", description: "alpha suite is green.", command: "bun test src/a.test.ts" },
+      executable("alpha suite is green.", "bun test src/a.test.ts"),
       { kind: "agent-judged", description: "the reviewer checklist passes." },
     ]);
   });
@@ -509,7 +515,7 @@ describe("phaseDocumentsFromSpec agent-judged criteria", () => {
     );
     const [document] = phaseDocumentsFromSpec(specText);
     expect(document?.doneWhen).toEqual([
-      { kind: "executable", description: "alpha suite is green.", command: "bun test src/a.test.ts" },
+      executable("alpha suite is green.", "bun test src/a.test.ts"),
       { kind: "agent-judged", description: "security checklist holds." },
     ]);
   });
@@ -540,7 +546,7 @@ describe("phaseDocumentsFromSpec agent-judged criteria", () => {
     );
     const [document] = phaseDocumentsFromSpec(specText);
     expect(document?.doneWhen).toEqual([
-      { kind: "executable", description: "alpha suite is green.", command: "bun test src/a.test.ts" },
+      executable("alpha suite is green.", "bun test src/a.test.ts"),
     ]);
   });
 
@@ -642,7 +648,7 @@ describe("phaseDocumentsFromSpec shell-construction guard", () => {
     const command = "bun test src/workflow/migration.test.ts src/workflow/mcp-tools.test.ts";
     const [document] = phaseDocumentsFromSpec(specWithCommand(command));
     expect(document?.doneWhen).toEqual([
-      { kind: "executable", description: "alpha suite is green.", command },
+      { kind: "executable", description: "alpha suite is green.", command, timeoutSeconds: null },
     ]);
   });
 });
@@ -889,5 +895,51 @@ describe("continuation collection and the silent-loss guard", () => {
 
     expect(reparsed.tasks).toEqual(["a task that wraps across two source lines."]);
     expect(serializePhaseDocument(reparsed)).toBe(serializePhaseDocument(document!));
+  });
+});
+
+describe("phaseDocumentsFromSpec gate limits", () => {
+  function limitedSpec(fenceOpening: string): string {
+    return gameplanSpec(
+      phaseBlock(
+        `### Phase 1: alpha ${EM_DASH} one`,
+        ["a"],
+        [
+          EXECUTABLE_MARKER,
+          fenceOpening,
+          "bun test src/heavy.test.ts",
+          "```",
+          "heavy suite is green.",
+        ].join("\n"),
+      ),
+    );
+  }
+
+  test("a fence naming a limit carries it into the phase criterion", () => {
+    const [document] = phaseDocumentsFromSpec(limitedSpec("```timeout=900s"));
+
+    expect(document?.doneWhen).toEqual([
+      {
+        kind: "executable",
+        description: "heavy suite is green.",
+        command: "bun test src/heavy.test.ts",
+        timeoutSeconds: 900,
+      },
+    ]);
+  });
+
+  test("the limit survives into the serialized phase file and back", () => {
+    const [document] = phaseDocumentsFromSpec(limitedSpec("```timeout=900s"));
+    const serialized = serializePhaseDocument(document!);
+
+    expect(serialized.split("\n")).toContain("```timeout=900s");
+    expect(parsePhaseDocument(serialized)).toEqual(document!);
+  });
+
+  test("a malformed info string fails generation naming the phase and the grammar", () => {
+    expect(() => phaseDocumentsFromSpec(limitedSpec("```timeout=90"))).toThrow(PhaseGenerationError);
+    expect(() => phaseDocumentsFromSpec(limitedSpec("```timeout=90"))).toThrow(
+      `phase "alpha" done-when ${FENCE_INFO_STRING_PROBLEM}: timeout=90`,
+    );
   });
 });

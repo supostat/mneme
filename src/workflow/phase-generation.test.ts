@@ -19,7 +19,7 @@ function validDocument(overrides: Partial<PhaseDocument>): PhaseDocument {
     agentRole: "coder",
     description: "desc",
     tasks: ["do it"],
-    doneWhen: [{ kind: "executable", description: "pass", command: "bun test" }],
+    doneWhen: [{ kind: "executable", description: "pass", command: "bun test", timeoutSeconds: null }],
     knowledge: [],
     ...overrides,
   };
