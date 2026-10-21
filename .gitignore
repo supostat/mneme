@@ -38,6 +38,8 @@ docs/*
 !docs/HANDOFF-SURVEY.md
 # Same reason: tests/handoff-gate-timeout.test.ts pins the gate-limit and inconclusive contract.
 !docs/HANDOFF-GATE-TIMEOUT.md
+# Same reason: tests/handoff-note-body.test.ts pins the harvest-limit, staging-body and doctor contract.
+!docs/HANDOFF-NOTE-BODY.md
 
 # analytics package (generated, local-only)
 mneme-analytics/
