@@ -2,6 +2,7 @@ import type { z } from "zod";
 import { workflowRunStartedRestore, workflowStepAppliedRestore } from "../event-schema";
 import type { StoredEvent } from "../events";
 import { isNoteId } from "../note";
+import { stepEffectOf } from "./failure-policy";
 import type { StepDefinition, OnFailDirective } from "./failure-policy";
 import type { DoneWhenCriterion, PhaseDocument } from "./phase-document";
 import { validatePhaseDocument } from "./phase-document";
@@ -43,6 +44,22 @@ export interface FailedGatesRecord {
   failRemarks: FailedGateRemarks[];
 }
 
+export interface TimedOutCriterion {
+  description: string;
+  durationMs: number;
+  timeoutSeconds: number;
+}
+
+// The last gate run the policy re-ran instead of failing: the re-issued directive of the SAME attempt
+// names what timed out, for how long and against which limit, so a fresh session can explain the
+// re-run without the response that first reported it.
+export interface InconclusiveGateRecord {
+  phaseId: string;
+  stepId: string;
+  attempt: number;
+  timedOut: TimedOutCriterion[];
+}
+
 export interface ReadableRun {
   kind: "restored";
   runId: string;
@@ -56,6 +73,7 @@ export interface ReadableRun {
   // run last move" without a second pass over the log; an opaque string, never Date-parsed.
   lastActivityTs: string;
   failedGatesHistory: FailedGatesRecord[];
+  lastInconclusiveGate: InconclusiveGateRecord | null;
   // What each phase's recall bundle actually held, keyed by phase id. A phase absent from the map
   // has an UNKNOWN composition (its recall predates schema v16, or it has not run yet) — which is
   // not the same as an empty bundle, and the usage-declaration check must refuse rather than
@@ -168,6 +186,7 @@ function restoredRunFrom(runId: string, payload: RunStartedPayload): ReadableRun
     startedTs: payload.ts,
     lastActivityTs: payload.ts,
     failedGatesHistory: [],
+    lastInconclusiveGate: null,
     bundleNotesByPhase: {},
   };
 }
@@ -196,8 +215,9 @@ function absorbStepApplied(runsById: Map<string, RestoredRun>, event: StoredEven
     return;
   }
   try {
+    const inconclusiveGateRunsBefore = known.run.inconclusiveGateRuns;
     known.run = applyStepResult(known.run, known.definition, stepResultFromPayload(parsed.data));
-    absorbGates(known, parsed.data);
+    absorbGates(known, parsed.data, inconclusiveGateRunsBefore);
     absorbBundleNotes(known, parsed.data);
     known.lastActivityTs = parsed.data.ts;
   } catch (error) {
@@ -222,11 +242,24 @@ function absorbBundleNotes(known: ReadableRun, payload: StepAppliedPayload): voi
 // so the retry sees the full trajectory, not only the newest complaint. Ungated applications
 // (recall, harvest, non-final steps) leave it alone — harmless, because the render matches on
 // phase + step + attempt N+1 of the LAST record, which only the immediate retry of the newest
-// failure satisfies. A gated apply always names its step and attempt; an event missing either is
-// malformed, and the tolerant fold records nothing rather than half a record.
-function absorbGates(known: ReadableRun, payload: StepAppliedPayload): void {
-  if (payload.gates === null) return;
-  if (payload.gates.passed) {
+// failure satisfies. An environment re-run leaves the history alone too: it keeps the attempt, so
+// a record of its own would break that N+1 match and hide the remarks the retry still needs; an
+// inconclusive run the policy counted as a failure is absorbed exactly like a failure. A gated
+// apply always names its step and attempt; an event missing either is malformed, and the tolerant
+// fold records nothing rather than half a record.
+function absorbGates(
+  known: ReadableRun,
+  payload: StepAppliedPayload,
+  inconclusiveGateRunsBefore: number,
+): void {
+  if (payload.gates === null || payload.outcome === null) return;
+  const effect = stepEffectOf(payload.outcome, inconclusiveGateRunsBefore);
+  if (effect === "environment-re-run") {
+    known.lastInconclusiveGate = inconclusiveRecordOf(payload);
+    return;
+  }
+  known.lastInconclusiveGate = null;
+  if (effect === "success") {
     known.failedGatesHistory = [];
     return;
   }
@@ -245,6 +278,24 @@ function absorbGates(known: ReadableRun, payload: StepAppliedPayload): void {
       }))
       .filter((entry) => entry.remarks.length > 0),
   });
+}
+
+// The re-issued directive renders these numbers, so an inconclusive event that lacks them cannot be
+// explained and fails the restore (the run reads as unreadable) instead of rendering half a record.
+function inconclusiveRecordOf(payload: StepAppliedPayload): InconclusiveGateRecord {
+  if (payload.gates === null || payload.step_id === null || payload.attempt === null) {
+    throw new Error("an inconclusive gate application requires gates, step_id and attempt");
+  }
+  const timedOut = payload.gates.criteria
+    .filter((criterion) => criterion.kind === "executable" && criterion.reason === "timeout")
+    .map((criterion) => {
+      const { description, duration_ms: durationMs, timeout_seconds: timeoutSeconds } = criterion;
+      if (typeof durationMs !== "number" || typeof timeoutSeconds !== "number") {
+        throw new Error(`inconclusive gate criterion "${description}" is missing its duration or limit`);
+      }
+      return { description, durationMs, timeoutSeconds };
+    });
+  return { phaseId: payload.phase_id, stepId: payload.step_id, attempt: payload.attempt, timedOut };
 }
 
 function payloadToDefinition(payload: RunStartedPayload["definition"]): RunDefinition {

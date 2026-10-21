@@ -694,3 +694,117 @@ describe("restoreRuns keeps the run's last activity timestamp", () => {
     expect(runById(log, SECOND_RUN_ID).lastActivityTs).toBe("2026-07-06T10:04:00.000Z");
   });
 });
+
+describe("restoreRuns absorbs inconclusive gate runs", () => {
+  const SOLO_STEP: StepDefinition[] = [{ id: "implement", maxAttempts: 2, onFail: { action: "escalate" } }];
+
+  function soloDefinition(): RunDefinition {
+    return { graph: buildPhaseGraph([phaseDocument("phase-one")]), steps: SOLO_STEP, maxIterations: 10 };
+  }
+
+  function timedOutReport(): GateReport {
+    return {
+      passed: false,
+      criterionResults: [
+        {
+          kind: "executable",
+          description: "heavy suite",
+          command: "bun test",
+          passed: false,
+          reason: "timeout",
+          exitCode: null,
+          durationMs: 300_000,
+          timeoutSeconds: 300,
+          outputTail: ["Compiling"],
+        },
+      ],
+      executableCount: 1,
+      agentJudgedCount: 0,
+    };
+  }
+
+  function rejectedReviewReport(remark: string): GateReport {
+    return {
+      passed: false,
+      criterionResults: [
+        {
+          kind: "agent-judged",
+          description: "review approves",
+          passed: false,
+          votes: [{ vote: "fail", remarks: remark }],
+        },
+      ],
+      executableCount: 0,
+      agentJudgedCount: 1,
+    };
+  }
+
+  function gated(outcome: "failure" | "inconclusive", attempt: number, gates: GateReport): StepApplication {
+    const result: StepResult = { kind: "execute_step", phaseId: "phase-one", stepId: "implement", outcome };
+    return { ...application(result, attempt), gates };
+  }
+
+  function startedSolo(log: LogFixture): void {
+    appendStarted(log, RUN_ID, "main", soloDefinition());
+    appendApplied(log, RUN_ID, "main", application({ kind: "recall", phaseId: "phase-one" }));
+  }
+
+  test("an environment re-run keeps the attempt and restores what timed out", () => {
+    const log = makeLog();
+    startedSolo(log);
+    appendApplied(log, RUN_ID, "main", gated("inconclusive", 1, timedOutReport()));
+
+    const run = onlyRun(log);
+    expect(run.run.inconclusiveGateRuns).toBe(1);
+    expect(pendingDirectiveOf(run)).toMatchObject({ kind: "execute_step", attempt: 1 });
+    expect(run.lastInconclusiveGate).toEqual({
+      phaseId: "phase-one",
+      stepId: "implement",
+      attempt: 1,
+      timedOut: [{ description: "heavy suite", durationMs: 300_000, timeoutSeconds: 300 }],
+    });
+  });
+
+  test("an environment re-run leaves the failed attempt's remarks in the history", () => {
+    const log = makeLog();
+    startedSolo(log);
+    const rejected = rejectedReviewReport("the parser drops the last line");
+    appendApplied(log, RUN_ID, "main", gated("failure", 1, rejected));
+    appendApplied(log, RUN_ID, "main", gated("inconclusive", 2, timedOutReport()));
+
+    const run = onlyRun(log);
+    expect(run.failedGatesHistory).toEqual([
+      {
+        phaseId: "phase-one",
+        stepId: "implement",
+        attempt: 1,
+        failRemarks: [{ criterionDescription: "review approves", remarks: ["the parser drops the last line"] }],
+      },
+    ]);
+    expect(run.lastInconclusiveGate?.attempt).toBe(2);
+  });
+
+  test("the inconclusive run the policy counts as a failure is absorbed as a failure", () => {
+    const log = makeLog();
+    startedSolo(log);
+    for (let index = 0; index < 3; index += 1) {
+      appendApplied(log, RUN_ID, "main", gated("inconclusive", 1, timedOutReport()));
+    }
+
+    const run = onlyRun(log);
+    expect(run.lastInconclusiveGate).toBeNull();
+    expect(run.failedGatesHistory.map((record) => record.attempt)).toEqual([1]);
+    expect(pendingDirectiveOf(run)).toMatchObject({ kind: "execute_step", attempt: 2 });
+  });
+
+  test("an inconclusive event without the duration of its timeout is unreadable", () => {
+    const log = makeLog();
+    startedSolo(log);
+    const payload = stepAppliedPayload(RUN_ID, "main", gated("inconclusive", 1, timedOutReport()));
+    const criteria = (payload["gates"] as { criteria: Array<Record<string, unknown>> }).criteria;
+    delete criteria[0]!["duration_ms"];
+    log.writer.append({ ...payload, type: "workflow_step_applied" });
+
+    expect(onlyUnreadable(log).problem).toContain("missing its duration or limit");
+  });
+});

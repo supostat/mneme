@@ -64,7 +64,10 @@ export const WORKFLOW_STEP_DESCRIPTION =
   "mismatched echo changes nothing and re-issues the directive. Done-when gates run only when the " +
   "phase's FINAL step succeeds - send agent_votes (one array per agent-judged criterion; a vote is " +
   '"pass"|"fail" or { vote, remarks }, and remarks of fail votes are replayed into the retry directive) ' +
-  "with that submission; a failure never runs gates. When a harvest directive is pending, submit " +
+  "with that submission; a failure never runs gates. A gate run whose every red criterion timed out is " +
+  "INCONCLUSIVE: the attempt is not consumed and the same directive returns with the same attempt, so " +
+  "resubmit success once the environment is quiet (at most 2 such re-runs per attempt). " +
+  "When a harvest directive is pending, submit " +
   "harvest_artifacts (an empty array is allowed) to close the phase. That same call MAY carry " +
   "used_notes: the notes from THIS phase's recall bundle you actually leaned on, each with " +
   "evidence naming where it influenced the work (following its contract, avoiding a gotcha it " +

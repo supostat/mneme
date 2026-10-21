@@ -3,7 +3,7 @@ import type { DoneWhenCriterion, PhaseDocument } from "./phase-document";
 import { buildPhaseGraph } from "./phase-graph";
 import { applyStepResult, initialRun } from "./reducer";
 import type { RunDefinition } from "./reducer";
-import { renderCurrentDirective } from "./run-directives";
+import { INCONCLUSIVE_DIRECTIVE_HEADER, renderCurrentDirective } from "./run-directives";
 import type { ReadableRun } from "./run-events";
 
 const GREEN: DoneWhenCriterion[] = [
@@ -41,6 +41,7 @@ function activeRunFrom(definition: RunDefinition): ReadableRun {
     startedTs: "2026-07-06T10:00:00.000Z",
     lastActivityTs: "2026-07-06T10:00:00.000Z",
     failedGatesHistory: [],
+    lastInconclusiveGate: null,
     bundleNotesByPhase: {},
   };
 }
@@ -87,6 +88,49 @@ describe("renderCurrentDirective final-step gate limits", () => {
 
     expect(lines).toContain("- [executable] green (command: true; limit 300 s)");
     expect(lines).toContain("- [executable] heavy suite (command: bun test; limit 900 s)");
+  });
+});
+
+describe("renderCurrentDirective after an inconclusive gate run", () => {
+  function reRunOnce(): ReadableRun {
+    const active = activeRunFrom(retryingDefinition(phase("phase-one")));
+    active.run = applyStepResult(active.run, active.definition, { kind: "recall", phaseId: "phase-one" });
+    active.run = applyStepResult(active.run, active.definition, {
+      kind: "execute_step",
+      phaseId: "phase-one",
+      stepId: "implement",
+      outcome: "inconclusive",
+    });
+    return active;
+  }
+
+  const TIMED_OUT = [{ description: "heavy suite", durationMs: 312_400, timeoutSeconds: 300 }];
+
+  function recordOfAttempt(attempt: number) {
+    return { phaseId: "phase-one", stepId: "implement", attempt, timedOut: TIMED_OUT };
+  }
+
+  test("the re-issued attempt names what timed out, its duration, its limit and the way forward", () => {
+    const active = reRunOnce();
+    active.lastInconclusiveGate = recordOfAttempt(1);
+
+    const lines = renderCurrentDirective(active, 0).split("\n");
+
+    expect(lines).toContain("attempt: 1");
+    expect(lines).toContain(`${INCONCLUSIVE_DIRECTIVE_HEADER}; environment re-runs left: 1.`);
+    expect(lines).toContain("- [heavy suite] timed out after 312.4 s (limit 300 s)");
+    expect(lines).toContain(
+      "Check the machine's load (another build, a cold compile) and resubmit success with THIS attempt to " +
+        "re-run the gates. If the command honestly needs longer, raise its timeout=<N>s fence in the spec: " +
+        "the run's definition is frozen at workflow_start, so a new limit takes a new run.",
+    );
+  });
+
+  test("a record of another attempt renders nothing", () => {
+    const active = reRunOnce();
+    active.lastInconclusiveGate = recordOfAttempt(2);
+
+    expect(renderCurrentDirective(active, 0)).not.toContain(INCONCLUSIVE_DIRECTIVE_HEADER);
   });
 });
 

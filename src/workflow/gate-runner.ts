@@ -109,13 +109,29 @@ export function effectiveTimeoutSeconds(criterion: ExecutableCriterion): number 
 }
 
 // Maps a report to a step outcome. Per the COMPOSITION RULE above, the caller invokes this only after
-// the step's own work succeeded, so a red gate becomes a step failure the reducer retries or escalates.
+// the step's own work succeeded, so a red gate becomes a step failure the reducer retries or escalates
+// — unless every red criterion timed out, which says nothing about the code and is inconclusive.
 export function stepResultFromGateReport(
   phaseId: string,
   stepId: string,
   report: GateReport,
 ): ExecuteStepResult {
-  return { kind: "execute_step", phaseId, stepId, outcome: report.passed ? "success" : "failure" };
+  return { kind: "execute_step", phaseId, stepId, outcome: gateOutcomeOf(report) };
+}
+
+// One red criterion of any other kind — an exit code, a fail vote, a spawn error — is real evidence
+// against the code, and a timeout beside it does not excuse it: the mixed report is a failure.
+function gateOutcomeOf(report: GateReport): ExecuteStepResult["outcome"] {
+  if (report.passed) {
+    return "success";
+  }
+  const redCriteria = report.criterionResults.filter((result) => !result.passed);
+  // fail closed: a red report with no red criterion is incoherent, and an empty every() would read
+  // it as all-timed-out.
+  const everyRedTimedOut =
+    redCriteria.length > 0 &&
+    redCriteria.every((result) => result.kind === "executable" && result.reason === "timeout");
+  return everyRedTimedOut ? "inconclusive" : "failure";
 }
 
 export function formatGateReport(report: GateReport): string {

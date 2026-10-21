@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import {
   FailurePolicyValidationError,
+  MAX_INCONCLUSIVE_GATE_RUNS,
   resolveFailure,
+  resolveInconclusiveGate,
+  stepEffectOf,
   validateRunPolicy,
 } from "./failure-policy";
 import type { StepDefinition } from "./failure-policy";
@@ -120,4 +123,32 @@ describe("step id grammar", () => {
       expect(validateWith([step({ id: stepId })])).toThrow(FailurePolicyValidationError);
     });
   }
+});
+
+describe("resolveInconclusiveGate", () => {
+  test("the bound is two environment re-runs per attempt", () => {
+    expect(MAX_INCONCLUSIVE_GATE_RUNS).toBe(2);
+  });
+
+  test("an attempt with re-runs left re-runs the gate", () => {
+    expect(resolveInconclusiveGate(0)).toBe("re-run");
+    expect(resolveInconclusiveGate(1)).toBe("re-run");
+  });
+
+  test("an attempt that spent its re-runs counts the next timeout as a failure", () => {
+    expect(resolveInconclusiveGate(2)).toBe("count-as-failure");
+  });
+});
+
+describe("stepEffectOf", () => {
+  test("success and failure keep their meaning whatever the re-run count", () => {
+    expect(stepEffectOf("success", 2)).toBe("success");
+    expect(stepEffectOf("failure", 0)).toBe("failure");
+  });
+
+  test("an inconclusive outcome is an environment re-run until the bound, then a failure", () => {
+    expect(stepEffectOf("inconclusive", 0)).toBe("environment-re-run");
+    expect(stepEffectOf("inconclusive", 1)).toBe("environment-re-run");
+    expect(stepEffectOf("inconclusive", 2)).toBe("failure");
+  });
 });

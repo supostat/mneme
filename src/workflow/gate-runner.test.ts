@@ -398,6 +398,31 @@ describe("stepResultFromGateReport", () => {
       outcome: "failure",
     });
   });
+
+  const timedOut = executableOutcome({ description: "slow", passed: false, reason: "timeout", exitCode: null });
+  const redExit = executableOutcome({ description: "red", passed: false, reason: "exit-nonzero", exitCode: 1 });
+  const green = executableOutcome({ description: "green", passed: true, reason: "exit-zero", exitCode: 0 });
+
+  function outcomeOf(criterionResults: GateReport["criterionResults"]): string {
+    const report: GateReport = { passed: false, criterionResults, executableCount: 0, agentJudgedCount: 0 };
+    return stepResultFromGateReport("solo", "verify", report).outcome;
+  }
+
+  test("a report whose every red criterion timed out is inconclusive, green neighbours aside", () => {
+    expect(outcomeOf([timedOut])).toBe("inconclusive");
+    expect(outcomeOf([green, timedOut, timedOut])).toBe("inconclusive");
+  });
+
+  test("a timeout beside any other red criterion is a failure", () => {
+    expect(outcomeOf([timedOut, redExit])).toBe("failure");
+    const rejectedReview: GateReport["criterionResults"][number] = {
+      kind: "agent-judged",
+      description: "review",
+      passed: false,
+      votes: [{ vote: "fail" }],
+    };
+    expect(outcomeOf([timedOut, rejectedReview])).toBe("failure");
+  });
 });
 
 function soloDefinition(doneWhen: DoneWhenCriterion[]): RunDefinition {

@@ -10,11 +10,14 @@ import {
   AGENT_VOTE_VALUES,
   BOOTSTRAP_TO_EXTENDED,
   EXECUTABLE_GATE_REASONS,
+  WORKFLOW_APPLIED_OUTCOMES,
+  WORKFLOW_STEP_OUTCOMES,
   workflowRunMarkedStaleRestore,
   workflowRunStartedRestore,
   workflowStepAppliedRestore,
 } from "./event-schema";
 import type { Vote } from "./workflow/converge";
+import type { StepOutcome } from "./workflow/failure-policy";
 import type { ExecutableGateReason } from "./workflow/gate-runner";
 
 // Stamps a producer event through the real writer so the test validates exactly what lands on disk.
@@ -167,6 +170,14 @@ const GATE_REASON_MIRROR = {
   "malformed-command": true,
 } as const satisfies Record<ExecutableGateReason, true>;
 
+// Compile-time reverse pin for applied outcomes, mirroring GATE_REASON_MIRROR: widening or shrinking
+// failure-policy's StepOutcome union fails this file's type check.
+const APPLIED_OUTCOME_MIRROR = {
+  success: true,
+  failure: true,
+  inconclusive: true,
+} as const satisfies Record<StepOutcome, true>;
+
 // Compile-time reverse pin for votes, mirroring GATE_REASON_MIRROR: widening or shrinking
 // converge's Vote union fails this file's type check.
 const AGENT_VOTE_MIRROR = {
@@ -184,6 +195,19 @@ describe("event-schema constants", () => {
     const forward: readonly ExecutableGateReason[] = EXECUTABLE_GATE_REASONS;
     const listedReasons: string[] = [...forward].sort();
     expect(listedReasons).toEqual(Object.keys(GATE_REASON_MIRROR).sort());
+  });
+
+  test("WORKFLOW_APPLIED_OUTCOMES mirrors failure-policy's StepOutcome union in both directions", () => {
+    // Compile-time forward pin: every listed outcome must be a member of the StepOutcome union.
+    const forward: readonly StepOutcome[] = WORKFLOW_APPLIED_OUTCOMES;
+    const listedOutcomes: string[] = [...forward].sort();
+    expect(listedOutcomes).toEqual(Object.keys(APPLIED_OUTCOME_MIRROR).sort());
+  });
+
+  test("every outcome an agent may submit is an applied outcome, and inconclusive is not submittable", () => {
+    const applied: readonly string[] = WORKFLOW_APPLIED_OUTCOMES;
+    expect(WORKFLOW_STEP_OUTCOMES.every((outcome) => applied.includes(outcome))).toBe(true);
+    expect(WORKFLOW_STEP_OUTCOMES).not.toContain("inconclusive");
   });
 
   test("AGENT_VOTE_VALUES mirrors converge's Vote union in both directions", () => {

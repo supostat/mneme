@@ -2,7 +2,7 @@ import { selectNextReadyPhase } from "./phase-graph";
 import type { PhaseStatus } from "./phase-graph";
 import type { PhaseDocument } from "./phase-document";
 import type { StepDefinition } from "./failure-policy";
-import { resolveFailure, validateRunPolicy } from "./failure-policy";
+import { resolveFailure, stepEffectOf, validateRunPolicy } from "./failure-policy";
 import type {
   Directive,
   ExecuteStepResult,
@@ -55,6 +55,7 @@ export function initialRun(definition: RunDefinition): WorkflowRun {
     iterationsUsed: 0,
     failureReason: null,
     escalation: null,
+    inconclusiveGateRuns: 0,
   };
 }
 
@@ -110,6 +111,7 @@ export function applyStepResult(
   result: StepResult,
 ): WorkflowRun {
   requireMatchingDirective(run, reduce(run, definition), result);
+  requireFinalStepForInconclusive(run, definition.steps, result);
   const next: WorkflowRun = {
     ...run,
     phaseStatuses: { ...run.phaseStatuses },
@@ -128,19 +130,36 @@ export function applyStepResult(
   return next;
 }
 
+// Every outcome consumes an iteration, an environment re-run included: max_iterations stays the
+// run's global bound on agent submissions.
 function applyExecuteStepResult(
   next: WorkflowRun,
   definition: RunDefinition,
   result: ExecuteStepResult,
 ): void {
+  const effect = stepEffectOf(result.outcome, next.inconclusiveGateRuns);
   next.iterationsUsed += 1;
-  if (result.outcome === "success") {
+  if (effect === "success") {
     next.stepIndex += 1;
+    next.inconclusiveGateRuns = 0;
+  } else if (effect === "environment-re-run") {
+    next.inconclusiveGateRuns += 1;
   } else {
+    next.inconclusiveGateRuns = 0;
     applyFailure(next, definition, result);
   }
   if (!harvestPending(next, definition)) {
     failWhenExhausted(next, definition);
+  }
+}
+
+// Only a gate run can be inconclusive, and gates run on the phase's final step alone.
+function requireFinalStepForInconclusive(run: WorkflowRun, steps: StepDefinition[], result: StepResult): void {
+  const inconclusive = result.kind === "execute_step" && result.outcome === "inconclusive";
+  if (inconclusive && run.stepIndex !== steps.length - 1) {
+    throw new WorkflowStateError(
+      `an inconclusive result is only valid for the phase's final step: ${result.phaseId}`,
+    );
   }
 }
 

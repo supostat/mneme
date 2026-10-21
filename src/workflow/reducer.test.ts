@@ -89,6 +89,10 @@ function failure(phaseId: string, stepId: string): StepResult {
   return { kind: "execute_step", phaseId, stepId, outcome: "failure" };
 }
 
+function inconclusive(phaseId: string, stepId: string): StepResult {
+  return { kind: "execute_step", phaseId, stepId, outcome: "inconclusive" };
+}
+
 function recallDone(phaseId: string): StepResult {
   return { kind: "recall", phaseId };
 }
@@ -153,6 +157,7 @@ describe("initialRun", () => {
       iterationsUsed: 0,
       failureReason: null,
       escalation: null,
+      inconclusiveGateRuns: 0,
     });
   });
 
@@ -412,6 +417,88 @@ describe("failure handling", () => {
     const run = drive(definition, [failure("solo", "code")]);
     expect(run.status).toBe("running");
     expect(reduce(run, definition)).toEqual(executeStep("solo", "review", "coder", 1));
+  });
+});
+
+describe("inconclusive gate runs", () => {
+  interface OpenedRun {
+    definition: RunDefinition;
+    run: WorkflowRun;
+  }
+
+  function openedSolo(maxAttempts: number, maxIterations = 100): OpenedRun {
+    const codeStep: StepDefinition = { id: "code", maxAttempts, onFail: { action: "escalate" } };
+    const definition = soloDefinition([codeStep], maxIterations);
+    return { definition, run: applyStepResult(initialRun(definition), definition, recallDone("solo")) };
+  }
+
+  test("two inconclusive runs keep the attempt and spend iterations", () => {
+    const { definition, run: opened } = openedSolo(2);
+    let run = applyStepResult(opened, definition, inconclusive("solo", "code"));
+    run = applyStepResult(run, definition, inconclusive("solo", "code"));
+
+    expect(run.status).toBe("running");
+    expect(run.stepAttempts).toEqual([0]);
+    expect(run.iterationsUsed).toBe(2);
+    expect(run.inconclusiveGateRuns).toBe(2);
+    expect(reduce(run, definition)).toEqual(executeStep("solo", "code", "coder", 1));
+  });
+
+  test("the third inconclusive run of an attempt spends it and resets the count", () => {
+    const { definition, run: opened } = openedSolo(2);
+    let run = opened;
+    for (let index = 0; index < 3; index += 1) {
+      run = applyStepResult(run, definition, inconclusive("solo", "code"));
+    }
+
+    expect(run.stepAttempts).toEqual([1]);
+    expect(run.inconclusiveGateRuns).toBe(0);
+    expect(reduce(run, definition)).toEqual(executeStep("solo", "code", "coder", 2));
+  });
+
+  test("the counted failure follows the step's on_fail policy like any other", () => {
+    const { definition, run: opened } = openedSolo(1);
+    let run = opened;
+    for (let index = 0; index < 3; index += 1) {
+      run = applyStepResult(run, definition, inconclusive("solo", "code"));
+    }
+
+    expect(run.status).toBe("escalated");
+    expect(run.escalation).toEqual({ phaseId: "solo", stepId: "code", reason: "retry_budget_exhausted" });
+  });
+
+  test("a success after an inconclusive run resets the count and advances", () => {
+    const { definition, run: opened } = openedSolo(2);
+    let run = applyStepResult(opened, definition, inconclusive("solo", "code"));
+    run = applyStepResult(run, definition, success("solo", "code"));
+
+    expect(run.inconclusiveGateRuns).toBe(0);
+    expect(reduce(run, definition)).toEqual({ kind: "harvest", phaseId: "solo" });
+  });
+
+  test("a failure resets the count, so the next attempt gets its own re-runs", () => {
+    const { definition, run: opened } = openedSolo(3);
+    let run = applyStepResult(opened, definition, inconclusive("solo", "code"));
+    run = applyStepResult(run, definition, failure("solo", "code"));
+
+    expect(run.inconclusiveGateRuns).toBe(0);
+    expect(run.stepAttempts).toEqual([1]);
+  });
+
+  test("an inconclusive result on a step that is not the phase's final one is rejected", () => {
+    const definition = soloDefinition(steps("code", "verify"));
+    const run = applyStepResult(initialRun(definition), definition, recallDone("solo"));
+
+    expect(() => applyStepResult(run, definition, inconclusive("solo", "code"))).toThrow(WorkflowStateError);
+  });
+
+  test("max_iterations still ends a chain of inconclusive runs", () => {
+    const { definition, run: opened } = openedSolo(2, 2);
+    let run = applyStepResult(opened, definition, inconclusive("solo", "code"));
+    run = applyStepResult(run, definition, inconclusive("solo", "code"));
+
+    expect(run.status).toBe("failed");
+    expect(run.failureReason).toBe("max_iterations_exhausted");
   });
 });
 

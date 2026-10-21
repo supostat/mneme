@@ -1,5 +1,5 @@
 import type { PhaseGraph, PhaseStatus } from "./phase-graph";
-import type { StepDefinition } from "./failure-policy";
+import type { StepDefinition, StepOutcome } from "./failure-policy";
 
 // The plain JSON-serializable state and message types of the workflow reducer, restorable by folding
 // StepResults through applyStepResult. Declarations live apart from reducer.ts solely for the
@@ -28,6 +28,8 @@ export interface WorkflowRun {
   iterationsUsed: number;
   failureReason: string | null;
   escalation: RunEscalation | null;
+  // Consecutive inconclusive gate runs of the current attempt; any success or failure resets it.
+  inconclusiveGateRuns: number;
 }
 
 export interface ExecuteStepDirective {
@@ -62,7 +64,7 @@ export interface ExecuteStepResult {
   kind: "execute_step";
   phaseId: string;
   stepId: string;
-  outcome: "success" | "failure";
+  outcome: StepOutcome;
 }
 
 export interface RecallStepResult {

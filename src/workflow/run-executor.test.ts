@@ -14,7 +14,7 @@ import { serializeNote } from "../note";
 import type { NoteFrontmatter } from "../note";
 import type { StagingDeps } from "../staging";
 import { buildPhaseGraph } from "./phase-graph";
-import type { PhaseDocument } from "./phase-document";
+import type { DoneWhenCriterion, PhaseDocument } from "./phase-document";
 import { initialRun } from "./reducer";
 import type { ExecuteStepDirective, HarvestDirective, RunDefinition } from "./reducer";
 import { pendingDirectiveOf, restoreRuns } from "./run-events";
@@ -112,6 +112,7 @@ function activeRunFrom(definition: RunDefinition): ReadableRun {
     startedTs: "2026-07-06T10:00:00.000Z",
     lastActivityTs: "2026-07-06T10:00:00.000Z",
     failedGatesHistory: [],
+    lastInconclusiveGate: null,
     bundleNotesByPhase: {},
   };
 }
@@ -474,4 +475,113 @@ describe("applyHarvest refuses a declaration before anything is written", () => 
     // The directive is untouched, so the correct call still closes the phase.
     expect(pendingDirectiveOf(active).kind).toBe("harvest");
   });
+});
+
+// These run the REAL gate runner: a script that sleeps past its one-second limit is the only way to
+// prove the executor reads a genuine timeout report, not a hand-built one.
+describe("applyGatedFinalStep on a gate whose every red criterion timed out", () => {
+  const SLOW: DoneWhenCriterion = {
+    kind: "executable",
+    description: "slow suite",
+    command: "bun sleep.ts",
+    timeoutSeconds: 1,
+  };
+  const RED: DoneWhenCriterion = {
+    kind: "executable",
+    description: "red suite",
+    command: "false",
+    timeoutSeconds: null,
+  };
+
+  function gatedDefinition(doneWhen: DoneWhenCriterion[]): RunDefinition {
+    return {
+      graph: buildPhaseGraph([{ ...phase("only-phase"), doneWhen }]),
+      steps: [{ id: "implement", maxAttempts: 2, onFail: { action: "escalate" } }],
+      maxIterations: 20,
+    };
+  }
+
+  interface SlowProject {
+    deps: StagingDeps;
+    active: ReadableRun;
+  }
+
+  async function slowProject(doneWhen: DoneWhenCriterion[]): Promise<SlowProject> {
+    const { projectRoot } = await buildProjectRepo();
+    writeFileSync(join(projectRoot, "sleep.ts"), "await Bun.sleep(60_000);\n");
+    const deps = await makeDeps(projectRoot);
+    const definition = gatedDefinition(doneWhen);
+    const active = activeRunFrom(definition);
+    deps.eventWriter.append({
+      ...runStartedPayload(active.runId, active.branch, definition, active.retrieval),
+      type: "workflow_run_started",
+    });
+    await runEngineSteps(deps, active);
+    return { deps, active };
+  }
+
+  async function submitFinalStep(deps: StagingDeps, active: ReadableRun): Promise<string[]> {
+    const pending = pendingDirectiveOf(active) as ExecuteStepDirective;
+    const [verdict] = await applyGatedFinalStep(deps, active, pending, []);
+    return verdict!.split("\n");
+  }
+
+  test("the verdict is INCONCLUSIVE, the attempt is kept and the log records the gates' verdict", async () => {
+    const { deps, active } = await slowProject([SLOW]);
+
+    const lines = await submitFinalStep(deps, active);
+
+    expect(lines[0]).toBe("Gate verdict for only-phase/implement (attempt 1): INCONCLUSIVE");
+    expect(lines[1]).toBe(
+      "Every red criterion timed out, so the attempt was not consumed; environment re-runs left: 1.",
+    );
+    expect(lines[2]).toMatch(/^FAIL slow suite \[timeout · \d+\.\d s, limit 1 s\]$/);
+    expect(pendingDirectiveOf(active)).toMatchObject({ kind: "execute_step", attempt: 1 });
+    const applied = readEvents(deps.corpus.eventsDir).filter((event) => event.type === "workflow_step_applied");
+    expect(applied.at(-1)).toMatchObject({ outcome: "inconclusive", attempt: 1 });
+  }, 20_000);
+
+  test("the restore fold rebuilds the run and the record the live path produced", async () => {
+    const { deps, active } = await slowProject([SLOW]);
+
+    await submitFinalStep(deps, active);
+
+    const restored = restoreRuns(readEvents(deps.corpus.eventsDir)).find((run) => run.kind === "restored");
+    if (restored === undefined || restored.kind !== "restored") throw new Error("expected a restored run");
+    expect(restored.run).toEqual(active.run);
+    expect(restored.lastInconclusiveGate).toEqual(active.lastInconclusiveGate);
+    expect(restored.lastInconclusiveGate?.timedOut[0]?.timeoutSeconds).toBe(1);
+  }, 20_000);
+
+  test("an environment re-run leaves the failed-gates history as it was", async () => {
+    const { deps, active } = await slowProject([SLOW]);
+    const earlier = [{ phaseId: "only-phase", stepId: "implement", attempt: 1, failRemarks: [] }];
+    active.failedGatesHistory = [...earlier];
+
+    await submitFinalStep(deps, active);
+
+    expect(active.failedGatesHistory).toEqual(earlier);
+  }, 20_000);
+
+  test("a timeout beside a red exit is a plain failure that spends the attempt", async () => {
+    const { deps, active } = await slowProject([SLOW, RED]);
+
+    const lines = await submitFinalStep(deps, active);
+
+    expect(lines[0]).toBe("Gate verdict for only-phase/implement (attempt 1): FAIL");
+    expect(active.lastInconclusiveGate).toBeNull();
+    expect(pendingDirectiveOf(active)).toMatchObject({ kind: "execute_step", attempt: 2 });
+  }, 20_000);
+
+  test("the third timeout of an attempt is counted as a failure and says so", async () => {
+    const { deps, active } = await slowProject([SLOW]);
+    await submitFinalStep(deps, active);
+    await submitFinalStep(deps, active);
+
+    const lines = await submitFinalStep(deps, active);
+
+    expect(lines[0]).toBe("Gate verdict for only-phase/implement (attempt 1): FAIL");
+    expect(lines[1]).toBe("Timeout counted as a failure: 2 environment re-runs already spent on attempt 1.");
+    expect(pendingDirectiveOf(active)).toMatchObject({ kind: "execute_step", attempt: 2 });
+  }, 30_000);
 });

@@ -86,7 +86,10 @@ import { z } from "zod";
 //       workflow_step_applied gates.criteria[] gains duration_ms (how long the command ran; null
 //       for agent-judged criteria and for commands that never ran — malformed-command, spawn-error)
 //       and timeout_seconds (the limit the gate applied; null for agent-judged). The command's
-//       output tail is shown in the verdict only and never logged.
+//       output tail is shown in the verdict only and never logged. The APPLIED outcome gains
+//       "inconclusive" (WORKFLOW_APPLIED_OUTCOMES): a gate run whose every red criterion timed out,
+//       recorded as the gates' verdict even when the policy then counted it as a failure. The
+//       agent's SUBMITTED outcome stays success | failure (WORKFLOW_STEP_OUTCOMES).
 export const SCHEMA_VERSION = 18;
 
 export const DEDUP_OUTCOMES = ["add", "supersede_suggest", "noop"] as const;
@@ -119,7 +122,11 @@ export const RECALL_ORIGIN_UNKNOWN = "unknown";
 // registry never imports from src/workflow.
 export const AGENT_VOTE_VALUES = ["pass", "fail"] as const;
 export const WORKFLOW_RESULT_KINDS = ["recall", "execute_step", "harvest"] as const;
+// What the agent may SUBMIT. The applied outcome on the log is wider: it also carries the gates'
+// own "inconclusive", which no submission can claim.
 export const WORKFLOW_STEP_OUTCOMES = ["success", "failure"] as const;
+// Mirrors failure-policy's StepOutcome union; the bidirectional pin lives in event-schema.test.ts.
+export const WORKFLOW_APPLIED_OUTCOMES = ["success", "failure", "inconclusive"] as const;
 export const WORKFLOW_ON_FAIL_ACTIONS = ["rewind", "skip", "escalate"] as const;
 export const WORKFLOW_STALE_REASONS = ["branch_not_found"] as const;
 export const DONE_WHEN_KINDS = ["executable", "agent-judged"] as const;
@@ -448,7 +455,7 @@ const workflowStepAppliedPayload = {
   phase_id: z.string(),
   result_kind: z.enum(WORKFLOW_RESULT_KINDS),
   step_id: z.string().nullable(),
-  outcome: z.enum(WORKFLOW_STEP_OUTCOMES).nullable(),
+  outcome: z.enum(WORKFLOW_APPLIED_OUTCOMES).nullable(),
   attempt: z.number().int().nullable(),
   gates: z
     .object({

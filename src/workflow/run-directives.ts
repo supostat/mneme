@@ -1,3 +1,4 @@
+import { MAX_INCONCLUSIVE_GATE_RUNS } from "./failure-policy";
 import { effectiveTimeoutSeconds } from "./gate-runner";
 import type { DoneWhenCriterion, PhaseDocument } from "./phase-document";
 import { readyPhaseIds } from "./phase-graph";
@@ -12,6 +13,8 @@ import type { RunSurvey, StaleMark } from "./run-survey";
 // validation — so they are stripped of control and separator characters before rendering.
 
 type CodePointRange = readonly [number, number];
+
+const MILLISECONDS_PER_SECOND = 1000;
 
 const C0_CONTROLS: CodePointRange = [0x0000, 0x001f];
 const DELETE_AND_C1_CONTROLS: CodePointRange = [0x007f, 0x009f];
@@ -109,6 +112,7 @@ function renderExecuteStepDirective(active: ReadableRun, directive: ExecuteStepD
   }
   lines.push("tasks:", ...directive.tasks.map((task) => `- ${task}`));
   lines.push(...failedReviewSection(active, directive));
+  lines.push(...inconclusiveGateSection(active, directive));
   if (isFinalStep(active.definition, active.run)) {
     lines.push(...finalStepSection(phaseOf(active.definition, directive.phaseId)));
   }
@@ -289,6 +293,40 @@ function failedReviewSection(active: ReadableRun, directive: ExecuteStepDirectiv
     }
   }
   return lines;
+}
+
+export const INCONCLUSIVE_DIRECTIVE_HEADER =
+  "previous gate run was INCONCLUSIVE (environment): the attempt was not consumed";
+
+// Rendered only into the re-issue of the very attempt the policy re-ran (same phase, step and
+// attempt): it names what timed out, for how long and against which limit, and what to do about it.
+// The descriptions come back from the event log, so they are stripped like every other log field.
+function inconclusiveGateSection(active: ReadableRun, directive: ExecuteStepDirective): string[] {
+  const record = active.lastInconclusiveGate;
+  if (
+    record === null ||
+    record.phaseId !== directive.phaseId ||
+    record.stepId !== directive.stepId ||
+    record.attempt !== directive.attempt
+  ) {
+    return [];
+  }
+  const reRunsLeft = MAX_INCONCLUSIVE_GATE_RUNS - active.run.inconclusiveGateRuns;
+  return [
+    `${INCONCLUSIVE_DIRECTIVE_HEADER}; environment re-runs left: ${reRunsLeft}.`,
+    ...record.timedOut.map(
+      (criterion) =>
+        `- [${stripUnrenderableCharacters(criterion.description)}] timed out after ` +
+        `${secondsOf(criterion.durationMs)} s (limit ${criterion.timeoutSeconds} s)`,
+    ),
+    "Check the machine's load (another build, a cold compile) and resubmit success with THIS attempt to " +
+      "re-run the gates. If the command honestly needs longer, raise its timeout=<N>s fence in the spec: " +
+      "the run's definition is frozen at workflow_start, so a new limit takes a new run.",
+  ];
+}
+
+function secondsOf(durationMs: number): string {
+  return (durationMs / MILLISECONDS_PER_SECOND).toFixed(1);
 }
 
 function finalStepSection(phase: PhaseDocument): string[] {

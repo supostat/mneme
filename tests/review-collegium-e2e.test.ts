@@ -97,6 +97,7 @@ async function buildFixture(maxAttempts: number): Promise<{ deps: StagingDeps; a
     startedTs: "2026-07-06T10:00:00.000Z",
     lastActivityTs: "2026-07-06T10:00:00.000Z",
     failedGatesHistory: [],
+    lastInconclusiveGate: null,
     bundleNotesByPhase: {},
   };
   const deps: StagingDeps = {
