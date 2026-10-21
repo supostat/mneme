@@ -36,6 +36,8 @@ docs/*
 !docs/HANDOFF-USED-NOTES.md
 # Same reason: tests/handoff-survey.test.ts pins the survey tool's names against it.
 !docs/HANDOFF-SURVEY.md
+# Same reason: tests/handoff-gate-timeout.test.ts pins the gate-limit and inconclusive contract.
+!docs/HANDOFF-GATE-TIMEOUT.md
 
 # analytics package (generated, local-only)
 mneme-analytics/
