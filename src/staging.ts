@@ -57,10 +57,12 @@ export type RememberResult =
   | StagedRemember
   | { outcome: "noop"; noteId: string; existingId: string; similarity: number };
 
+// body is the staged note's WHOLE text: the curator decides on everything the note says, and its
+// first line stays the one-line essence because that is where every note front-loads its point.
 export interface StagingEntry {
   id: string;
   type: NoteType;
-  digest: string;
+  body: string;
   anchors: StagedAnchor[];
   tags: string[];
   dedup: DedupSummary;
@@ -182,7 +184,7 @@ async function stagingEntry(corpus: Corpus, context: LivenessContext, file: stri
   return {
     id,
     type: note.frontmatter.type,
-    digest: firstLine(note.body),
+    body: note.body,
     anchors: await probeMissingAnchors(context, await resolveAnchorLiveness(context, note.frontmatter.anchors)),
     tags: note.frontmatter.tags ?? [],
     dedup: dedupSummary(readSidecar(corpus, id)),
@@ -199,11 +201,6 @@ async function probeMissingAnchors(context: LivenessContext, anchors: StagedAnch
         : anchor,
     ),
   );
-}
-
-function firstLine(body: string): string {
-  const newlineIndex = body.indexOf("\n");
-  return newlineIndex === -1 ? body : body.slice(0, newlineIndex);
 }
 
 // menu is the digit-menu context of the deciding call; v1 stamps it on NOTE resolutions only —

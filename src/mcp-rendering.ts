@@ -113,6 +113,10 @@ function formatRetagRequest(request: RetagRequest, fence: NoteFence): string {
   ].join("\n");
 }
 
+// The line between a staged note's metadata and its body: everything after it, up to the fence, is
+// the note's text exactly as it would be accepted.
+export const STAGING_BODY_LABEL = "body:";
+
 function formatStagingEntry(entry: StagingEntry, fence: NoteFence): string {
   return [
     fence.begin,
@@ -123,7 +127,8 @@ function formatStagingEntry(entry: StagingEntry, fence: NoteFence): string {
     ...(entry.tags.length > 0 ? [`tags: ${entry.tags.join(", ")}`] : []),
     ...anchorWarnings(entry.anchors),
     ...pathlessNotice(entry.anchors),
-    entry.digest,
+    STAGING_BODY_LABEL,
+    entry.body,
     fence.end,
   ].join("\n");
 }

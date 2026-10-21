@@ -535,7 +535,7 @@ describe("stagingResolve validation", () => {
 });
 
 describe("stagingList", () => {
-  test("lists staged notes with a body digest and dedup hints and emits staging_listed", async () => {
+  test("lists staged notes with their whole body and dedup hints and emits staging_listed", async () => {
     const projectRoot = await buildProjectRepo();
     const deps = await makeDeps(projectRoot, offlineClient(), sequentialIds());
     await remember(deps, { type: "pattern", body: "first digest line\nrest of the body", anchors: ["src/a.ts"], source: "mcp" });
@@ -545,7 +545,7 @@ describe("stagingList", () => {
 
     expect(entries.length).toBe(2);
     const first = entries.find((entry) => entry.id === ulid(0))!;
-    expect(first.digest).toBe("first digest line");
+    expect(first.body).toBe("first digest line\nrest of the body");
     expect(first.type).toBe("pattern");
     expect(first.dedup).toEqual({ kind: "unavailable" });
     const listed = eventsOfType(deps.corpus, "staging_listed");

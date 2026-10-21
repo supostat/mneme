@@ -12,6 +12,8 @@ import { EMBEDDING_DIMENSION, EMBEDDING_MODEL } from "./embeddings";
 import { createServer, createSessionEndHandler } from "./mcp-server";
 import type { CreateServerOptions } from "./mcp-server";
 import { eventSchema } from "./event-schema";
+import { STAGING_BODY_LABEL } from "./mcp-rendering";
+import { MAX_BODY_CODE_POINTS } from "./note";
 
 const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
@@ -332,6 +334,62 @@ describe("mcp-server staging digest", () => {
     expect(listed).toContain("anchors: src/a.ts [tracked], src/fresh.ts [untracked-exists], src/gone.ts [missing]");
     expect(listed).toContain("dedup: unavailable");
     expect(listed).not.toContain("no close");
+  });
+});
+
+describe("mcp-server staging full body", () => {
+  const FENCE_BEGIN = /^----- BEGIN MNEME NOTE ([0-9a-f]{16}) -----$/;
+
+  // The lines between one BEGIN fence and the END fence of the same nonce: the whole staged entry.
+  function firstFencedBlock(listed: string): string[] {
+    const lines = listed.split("\n");
+    const start = lines.findIndex((line) => FENCE_BEGIN.test(line));
+    const nonce = FENCE_BEGIN.exec(lines[start]!)![1];
+    const end = lines.indexOf(`----- END MNEME NOTE ${nonce} -----`);
+    expect(end).toBeGreaterThan(start);
+    return lines.slice(start + 1, end);
+  }
+
+  async function listedAfterRemembering(body: string): Promise<string> {
+    const client = await connect({
+      projectRoot: await buildProjectRepo(),
+      corpusHome: corpusHomeDir(),
+      embeddings: offlineClient(),
+      idFactory: sequentialIds(),
+      clock: fixedClock,
+    });
+    await callText(client, "remember", { type: "decision", body, anchors: ["src/a.ts"] });
+    return callText(client, "staging_list", {});
+  }
+
+  test("a multi-line body follows the body label in full, its last line right before the fence", async () => {
+    const body = [
+      "Decision: keep flat files as the corpus truth",
+      "Rationale: the index is a cache",
+      "and it rebuilds",
+    ].join("\n");
+
+    const block = firstFencedBlock(await listedAfterRemembering(body));
+
+    expect(block.slice(1)).toEqual([
+      "type: decision",
+      "dedup: unavailable",
+      "anchors: src/a.ts [tracked]",
+      STAGING_BODY_LABEL,
+      "Decision: keep flat files as the corpus truth",
+      "Rationale: the index is a cache",
+      "and it rebuilds",
+    ]);
+    expect(block[0]).toMatch(/^id: /);
+  });
+
+  test("a body exactly at the limit is listed whole", async () => {
+    const body = `Decision: ${"x".repeat(MAX_BODY_CODE_POINTS - 10)}`;
+
+    const block = firstFencedBlock(await listedAfterRemembering(body));
+
+    expect(block.at(-1)).toBe(body);
+    expect([...block.at(-1)!].length).toBe(MAX_BODY_CODE_POINTS);
   });
 });
 
