@@ -167,7 +167,17 @@ describe("restoreRuns folds a genuine log", () => {
     const gates: GateReport = {
       passed: true,
       criterionResults: [
-        { kind: "executable", description: "tests pass", command: "true", passed: true, reason: "exit-zero", exitCode: 0 },
+        {
+          kind: "executable",
+          description: "tests pass",
+          command: "true",
+          passed: true,
+          reason: "exit-zero",
+          exitCode: 0,
+          durationMs: 12,
+          timeoutSeconds: 300,
+          outputTail: [],
+        },
       ],
       executableCount: 1,
       agentJudgedCount: 0,

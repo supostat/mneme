@@ -146,6 +146,8 @@ function gateReportPayload(report: GateReport): Record<string, unknown> {
         result.kind === "agent-judged"
           ? result.votes.map((agentVote) => ({ vote: agentVote.vote, remarks: agentVote.remarks ?? null }))
           : null,
+      duration_ms: result.kind === "executable" ? result.durationMs : null,
+      timeout_seconds: result.kind === "executable" ? result.timeoutSeconds : null,
     })),
   };
 }

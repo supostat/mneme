@@ -233,14 +233,32 @@ describe("workflow full run", () => {
       executable_n: 2,
       agent_judged_n: 1,
       criteria: [
-        { kind: "executable", description: "always green", passed: true, reason: "exit-zero", votes: null },
-        { kind: "executable", description: "also green", passed: true, reason: "exit-zero", votes: null },
+        {
+          kind: "executable",
+          description: "always green",
+          passed: true,
+          reason: "exit-zero",
+          votes: null,
+          duration_ms: expect.any(Number),
+          timeout_seconds: 300,
+        },
+        {
+          kind: "executable",
+          description: "also green",
+          passed: true,
+          reason: "exit-zero",
+          votes: null,
+          duration_ms: expect.any(Number),
+          timeout_seconds: 300,
+        },
         {
           kind: "agent-judged",
           description: "review approves",
           passed: true,
           reason: null,
           votes: [{ vote: "pass", remarks: null }],
+          duration_ms: null,
+          timeout_seconds: null,
         },
       ],
     });
@@ -518,7 +536,7 @@ describe("workflow gates", () => {
     });
 
     expect(escalated).toContain("Gate verdict for phase-one/implement (attempt 1): FAIL");
-    expect(escalated).toContain("FAIL always red [exit-nonzero]");
+    expect(escalated).toMatch(/^FAIL always red \[exit-nonzero 1 · \d+\.\d s\]\n  output tail: no output$/m);
     expect(escalated).toContain("RUN ESCALATED at phase-one/implement: retry_budget_exhausted");
     const events = await loggedEvents(bench);
     const applied = eventsOfType(events, "workflow_step_applied").filter((event) => event.result_kind === "execute_step");

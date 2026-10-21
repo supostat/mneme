@@ -83,6 +83,10 @@ import { z } from "zod";
 //       the author's per-criterion gate limit from the fence info string (null for agent-judged
 //       criteria and for executable ones left on the gate runner's default). Optional in the shape
 //       (the v4 extend rule): a pre-18 definition carries no key and restores onto the default.
+//       workflow_step_applied gates.criteria[] gains duration_ms (how long the command ran; null
+//       for agent-judged criteria and for commands that never ran — malformed-command, spawn-error)
+//       and timeout_seconds (the limit the gate applied; null for agent-judged). The command's
+//       output tail is shown in the verdict only and never logged.
 export const SCHEMA_VERSION = 18;
 
 export const DEDUP_OUTCOMES = ["add", "supersede_suggest", "noop"] as const;
@@ -425,6 +429,9 @@ const gateCriterionPayload = z.object({
   passed: z.boolean(),
   reason: z.enum(EXECUTABLE_GATE_REASONS).nullable(),
   votes: z.array(gateVotePayload).nullable().optional(),
+  // Optional in the shape: pre-v18 gates events carry neither key.
+  duration_ms: z.number().int().nullable().optional(),
+  timeout_seconds: z.number().int().nullable().optional(),
 });
 
 const workflowRunStartedPayload = {

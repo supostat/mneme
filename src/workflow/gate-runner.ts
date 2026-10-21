@@ -1,5 +1,8 @@
+import { closeSync } from "node:fs";
 import { evaluateConverge } from "./converge";
 import type { AgentVote } from "./converge";
+import { createOutputCapture, readOutputTail, removeOutputCapture } from "./gate-output";
+import type { OutputCapture } from "./gate-output";
 import type { DoneWhenCriterion, ExecutableCriterion } from "./phase-document";
 import type { ExecuteStepResult } from "./reducer";
 
@@ -21,6 +24,10 @@ export class GateCommandFormatError extends Error {}
 export const DEFAULT_GATE_TIMEOUT_SECONDS = 300;
 
 const MILLISECONDS_PER_SECOND = 1000;
+const OUTPUT_TAIL_INDENT = "  ";
+// Every captured line is prefixed, so no line of a command's output can pass for a line of the
+// engine's own response (a forged "DIRECTIVE:" or verdict line).
+const OUTPUT_LINE_PREFIX = "| ";
 
 const QUOTE_CHARACTERS: readonly string[] = ['"', "'"];
 const SPACE_RUN = / +/;
@@ -32,6 +39,9 @@ export type ExecutableGateReason =
   | "spawn-error"
   | "malformed-command";
 
+// durationMs is null when the command never ran (malformed-command, spawn-error); timeoutSeconds is
+// the limit the gate actually applied; outputTail is the end of the combined stdout+stderr and lives
+// only in the verdict text — it is never written to the event log.
 export interface ExecutableCriterionResult {
   kind: "executable";
   description: string;
@@ -39,6 +49,9 @@ export interface ExecutableCriterionResult {
   passed: boolean;
   reason: ExecutableGateReason;
   exitCode: number | null;
+  durationMs: number | null;
+  timeoutSeconds: number;
+  outputTail: string[];
 }
 
 export interface AgentJudgedCriterionResult {
@@ -106,7 +119,7 @@ export function stepResultFromGateReport(
 }
 
 export function formatGateReport(report: GateReport): string {
-  const lines = report.criterionResults.map(formatCriterionResult);
+  const lines = report.criterionResults.flatMap(formatCriterionResult);
   lines.push(
     `agent-judged verdicts: ${report.agentJudgedCount} of ${report.criterionResults.length} criteria`,
   );
@@ -172,33 +185,58 @@ async function runExecutableCriterion(
     command = tokenizeCommand(criterion.command);
   } catch {
     // fail closed: an un-runnable command reads as a red malformed-command gate, never a thrown run.
-    return executableResult(criterion, "malformed-command", null);
+    return executableResult(criterion, "malformed-command", null, null);
   }
   const timeoutMs = effectiveTimeoutSeconds(criterion) * MILLISECONDS_PER_SECOND;
   const execution = await executeCommand(command, projectRoot, timeoutMs);
   if (execution === "spawn-error") {
-    return executableResult(criterion, "spawn-error", null);
+    return executableResult(criterion, "spawn-error", null, null);
   }
   if (execution.timedOut) {
-    return executableResult(criterion, "timeout", null);
+    return executableResult(criterion, "timeout", null, execution);
   }
   if (execution.exitCode === 0) {
-    return executableResult(criterion, "exit-zero", 0);
+    return executableResult(criterion, "exit-zero", 0, execution);
   }
-  return executableResult(criterion, "exit-nonzero", execution.exitCode);
+  return executableResult(criterion, "exit-nonzero", execution.exitCode, execution);
 }
 
 interface CommandExecution {
   timedOut: boolean;
   exitCode: number;
+  durationMs: number;
+  outputTail: string[];
 }
+
+type MeasuredRun = Pick<CommandExecution, "durationMs" | "outputTail">;
 
 async function executeCommand(
   command: string[],
   projectRoot: string,
   timeoutMs: number,
 ): Promise<CommandExecution | "spawn-error"> {
-  const subprocess = trySpawn(command, projectRoot);
+  const capture = tryCreateOutputCapture();
+  if (capture === null) {
+    return "spawn-error";
+  }
+  try {
+    return await runCaptured(command, projectRoot, timeoutMs, capture);
+  } finally {
+    removeOutputCapture(capture);
+  }
+}
+
+async function runCaptured(
+  command: string[],
+  projectRoot: string,
+  timeoutMs: number,
+  capture: OutputCapture,
+): Promise<CommandExecution | "spawn-error"> {
+  const startedAt = performance.now();
+  const subprocess = trySpawn(command, projectRoot, capture.descriptor);
+  // The child holds its own copy of the descriptor now; the engine's copy is closed at once, on the
+  // spawn-error path too, so the engine itself never keeps the capture file open.
+  closeSync(capture.descriptor);
   if (subprocess === null) {
     return "spawn-error";
   }
@@ -211,21 +249,36 @@ async function executeCommand(
   }, timeoutMs);
   // Timer race (fail-closed): a command exiting 0 exactly as the timer fires is read as a timeout, a
   // green->red misclassification. Accepted; the reducer re-runs the step on the red gate.
-  // stderr is discarded at the spawn (stderr: "ignore"), never drained here: awaiting a stderr read to
-  // EOF after SIGKILL can hang forever if a killed command left a grandchild holding the write end, which
-  // would defeat the timeout invariant. A red gate is diagnosed by reason + exitCode, not captured stderr.
+  // The sole await is exited — SIGKILL is uncatchable, so it always settles. The output is read from
+  // the capture file only afterwards, and a file read never waits on a writer, so a grandchild still
+  // holding the descriptor cannot defeat the timeout (see gate-output.ts).
   const exitCode = await subprocess.exited;
   clearTimeout(timer);
-  return { timedOut, exitCode };
+  return {
+    timedOut,
+    exitCode,
+    durationMs: Math.round(performance.now() - startedAt),
+    outputTail: readOutputTail(capture.path),
+  };
 }
 
-function trySpawn(command: string[], projectRoot: string) {
+// fail closed: a capture that cannot be created (the temp directory full or unwritable) means the
+// command never ran, so it reads as a red spawn-error gate rather than a crashed run.
+function tryCreateOutputCapture(): OutputCapture | null {
+  try {
+    return createOutputCapture();
+  } catch {
+    return null;
+  }
+}
+
+function trySpawn(command: string[], projectRoot: string, outputDescriptor: number) {
   try {
     return Bun.spawn({
       cmd: command,
       cwd: projectRoot,
-      stdout: "ignore",
-      stderr: "ignore",
+      stdout: outputDescriptor,
+      stderr: outputDescriptor,
       stdin: "ignore",
     });
   } catch {
@@ -238,6 +291,7 @@ function executableResult(
   criterion: ExecutableCriterion,
   reason: ExecutableGateReason,
   exitCode: number | null,
+  measured: MeasuredRun | null,
 ): ExecutableCriterionResult {
   return {
     kind: "executable",
@@ -246,13 +300,47 @@ function executableResult(
     passed: reason === "exit-zero",
     reason,
     exitCode,
+    durationMs: measured === null ? null : measured.durationMs,
+    timeoutSeconds: effectiveTimeoutSeconds(criterion),
+    outputTail: measured === null ? [] : measured.outputTail,
   };
 }
 
-function formatCriterionResult(result: CriterionResult): string {
+function formatCriterionResult(result: CriterionResult): string[] {
   const marker = result.passed ? "PASS" : "FAIL";
-  if (result.kind === "executable") {
-    return `${marker} ${result.description} [${result.reason}]`;
+  if (result.kind === "agent-judged") {
+    return [`${marker} ${result.description} [agent-judged]`];
   }
-  return `${marker} ${result.description} [agent-judged]`;
+  const verdictLine = `${marker} ${result.description} [${executableOutcomeLabel(result)}]`;
+  return showsOutputTail(result) ? [verdictLine, ...outputTailLines(result.outputTail)] : [verdictLine];
+}
+
+function executableOutcomeLabel(result: ExecutableCriterionResult): string {
+  if (result.durationMs === null) {
+    return result.reason;
+  }
+  const elapsed = `${(result.durationMs / MILLISECONDS_PER_SECOND).toFixed(1)} s`;
+  if (result.reason === "timeout") {
+    return `timeout · ${elapsed}, limit ${result.timeoutSeconds} s`;
+  }
+  if (result.reason === "exit-nonzero") {
+    return `exit-nonzero ${result.exitCode} · ${elapsed}`;
+  }
+  return `${result.reason} · ${elapsed}`;
+}
+
+// The tail is shown under a red criterion whose command actually ran: it is the evidence the agent
+// would otherwise have to reconstruct by re-running the gate or reading the event log.
+function showsOutputTail(result: ExecutableCriterionResult): boolean {
+  return result.reason === "timeout" || result.reason === "exit-nonzero";
+}
+
+function outputTailLines(outputTail: string[]): string[] {
+  if (outputTail.length === 0) {
+    return [`${OUTPUT_TAIL_INDENT}output tail: no output`];
+  }
+  return [
+    `${OUTPUT_TAIL_INDENT}output tail (last ${outputTail.length} lines):`,
+    ...outputTail.map((line) => `${OUTPUT_TAIL_INDENT}${OUTPUT_LINE_PREFIX}${line}`),
+  ];
 }

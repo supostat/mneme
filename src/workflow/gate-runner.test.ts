@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -12,18 +12,48 @@ import {
   stepResultFromGateReport,
   tokenizeCommand,
 } from "./gate-runner";
-import type { GateReport, GateRunOptions } from "./gate-runner";
-import { MAX_GATE_TIMEOUT_SECONDS, MIN_GATE_TIMEOUT_SECONDS } from "./phase-document";
+import type { ExecutableCriterionResult, GateReport, GateRunOptions } from "./gate-runner";
+import { MAX_GATE_TIMEOUT_SECONDS, MIN_GATE_TIMEOUT_SECONDS, parsePhaseDocument } from "./phase-document";
 import { buildPhaseGraph } from "./phase-graph";
 import { applyStepResult, initialRun, reduce } from "./reducer";
 import type { RunDefinition, WorkflowRun } from "./reducer";
 import type { DoneWhenCriterion, ExecutableCriterion, PhaseDocument } from "./phase-document";
+import { stepAppliedPayload } from "./run-payloads";
 
+// Output is written with writeSync on the raw descriptors: a buffered console.log could still be
+// sitting in the process when SIGKILL arrives, and the test would then pin a flush race, not the gate.
 const FIXTURE_SCRIPTS: ReadonlyArray<readonly [string, string]> = [
   ["exit-zero.ts", "process.exit(0);\n"],
   ["exit-one.ts", "process.exit(1);\n"],
   ["sleep.ts", "await Bun.sleep(60_000);\n"],
   ["write-marker.ts", 'import { writeFileSync } from "node:fs";\nwriteFileSync("marker.txt", "written");\n'],
+  [
+    "announce-then-sleep.ts",
+    'import { writeSync } from "node:fs";\nwriteSync(1, "compiling the world\\n");\nawait Bun.sleep(60_000);\n',
+  ],
+  [
+    "both-streams.ts",
+    [
+      'import { writeSync } from "node:fs";',
+      'writeSync(1, "to stdout\\n");',
+      'writeSync(2, "to stderr\\n");',
+      "process.exit(1);",
+      "",
+    ].join("\n"),
+  ],
+  [
+    "spawn-grandchild.ts",
+    [
+      'import { writeFileSync, writeSync } from "node:fs";',
+      'const inherited = { stdin: "ignore", stdout: "inherit", stderr: "inherit" } as const;',
+      'const grandchild = Bun.spawn(["sleep", "60"], inherited);',
+      'writeFileSync("grandchild.pid", String(grandchild.pid));',
+      "grandchild.unref();",
+      'writeSync(1, "before sleep\\n");',
+      "await Bun.sleep(60_000);",
+      "",
+    ].join("\n"),
+  ],
 ];
 
 const temporaryDirectories: string[] = [];
@@ -82,6 +112,9 @@ describe("runPhaseGates executable criteria", () => {
         passed: true,
         reason: "exit-zero",
         exitCode: 0,
+        durationMs: expect.any(Number),
+        timeoutSeconds: DEFAULT_GATE_TIMEOUT_SECONDS,
+        outputTail: [],
       },
     ]);
   }, 15_000);
@@ -320,7 +353,7 @@ describe("formatGateReport", () => {
       optionsFor(sharedProjectRoot, [[{ vote: "fail" }]]),
     );
     const formatted = formatGateReport(report);
-    expect(formatted).toContain("PASS command succeeds [exit-zero]");
+    expect(formatted).toMatch(/^PASS command succeeds \[exit-zero · \d+\.\d s\]$/m);
     expect(formatted).toContain("FAIL reviewer approves [agent-judged]");
     expect(formatted).toContain("agent-judged verdicts: 1 of 2 criteria");
   }, 15_000);
@@ -329,14 +362,7 @@ describe("formatGateReport", () => {
     const report: GateReport = {
       passed: false,
       criterionResults: [
-        {
-          kind: "executable",
-          description: "a",
-          command: "bun exit-zero.ts",
-          passed: true,
-          reason: "exit-zero",
-          exitCode: 0,
-        },
+        executableOutcome({ description: "a", passed: true, reason: "exit-zero", exitCode: 0 }),
         { kind: "agent-judged", description: "b", passed: false, votes: [{ vote: "fail" }] },
         { kind: "agent-judged", description: "c", passed: true, votes: [{ vote: "pass" }] },
       ],
@@ -470,3 +496,229 @@ describe("reducer integration through the gate seam", () => {
     expect(existsSync(join(projectRoot, "marker.txt"))).toBe(false);
   });
 });
+
+type OutcomeFields = Pick<ExecutableCriterionResult, "description" | "passed" | "reason" | "exitCode">;
+
+function executableOutcome(
+  fields: OutcomeFields & Partial<ExecutableCriterionResult>,
+): ExecutableCriterionResult {
+  return {
+    kind: "executable",
+    command: "bun test",
+    durationMs: 1000,
+    timeoutSeconds: DEFAULT_GATE_TIMEOUT_SECONDS,
+    outputTail: [],
+    ...fields,
+  };
+}
+
+function reportOf(result: ExecutableCriterionResult): GateReport {
+  return { passed: result.passed, criterionResults: [result], executableCount: 1, agentJudgedCount: 0 };
+}
+
+function verdictLines(result: ExecutableCriterionResult): string[] {
+  return formatGateReport(reportOf(result)).split("\n").slice(0, -1);
+}
+
+describe("formatGateReport verdict lines", () => {
+  test("a pass names its duration", () => {
+    const result = executableOutcome({ description: "suite", passed: true, reason: "exit-zero", exitCode: 0 });
+
+    expect(verdictLines({ ...result, durationMs: 38_200 })).toEqual(["PASS suite [exit-zero · 38.2 s]"]);
+  });
+
+  test("a red exit names its code and duration, with the output tail under it", () => {
+    const result = executableOutcome({
+      description: "suite",
+      passed: false,
+      reason: "exit-nonzero",
+      exitCode: 1,
+      durationMs: 41_000,
+      outputTail: ["1 fail", "error: expected 2"],
+    });
+
+    expect(verdictLines(result)).toEqual([
+      "FAIL suite [exit-nonzero 1 · 41.0 s]",
+      "  output tail (last 2 lines):",
+      "  | 1 fail",
+      "  | error: expected 2",
+    ]);
+  });
+
+  test("a timeout names how long it ran and the limit it hit, with the output tail under it", () => {
+    const result = executableOutcome({
+      description: "balance-check all",
+      passed: false,
+      reason: "timeout",
+      exitCode: null,
+      durationMs: 300_000,
+      outputTail: ["Compiling spekulyant v0.3.0"],
+    });
+
+    expect(verdictLines(result)).toEqual([
+      "FAIL balance-check all [timeout · 300.0 s, limit 300 s]",
+      "  output tail (last 1 lines):",
+      "  | Compiling spekulyant v0.3.0",
+    ]);
+  });
+
+  test("a red run that printed nothing says so instead of showing an empty tail", () => {
+    const result = executableOutcome({
+      description: "suite",
+      passed: false,
+      reason: "exit-nonzero",
+      exitCode: 2,
+    });
+
+    expect(verdictLines(result)).toEqual(["FAIL suite [exit-nonzero 2 · 1.0 s]", "  output tail: no output"]);
+  });
+
+  test("a command that never ran shows neither duration nor tail", () => {
+    for (const reason of ["spawn-error", "malformed-command"] as const) {
+      const result = executableOutcome({
+        description: "suite",
+        passed: false,
+        reason,
+        exitCode: null,
+        durationMs: null,
+      });
+
+      expect(verdictLines(result)).toEqual([`FAIL suite [${reason}]`]);
+    }
+  });
+});
+
+describe("runPhaseGates measures and captures every run", () => {
+  test("a run that exits names its duration and keeps an empty tail for a silent pass", async () => {
+    const report = await runPhaseGates(
+      [executable("passes", "bun exit-zero.ts"), executable("fails", "bun exit-one.ts")],
+      optionsFor(sharedProjectRoot),
+    );
+
+    for (const result of report.criterionResults) {
+      expect(result.kind === "executable" && typeof result.durationMs === "number").toBe(true);
+    }
+  }, 20_000);
+
+  test("a command that never ran has no duration and no tail", async () => {
+    const report = await runPhaseGates(
+      [
+        executable("missing binary", "definitely-not-a-real-binary-xyz run"),
+        executable("quoted", 'bun "x.ts"'),
+      ],
+      optionsFor(sharedProjectRoot),
+    );
+
+    expect(report.criterionResults).toEqual([
+      expect.objectContaining({ reason: "spawn-error", durationMs: null, outputTail: [] }),
+      expect.objectContaining({ reason: "malformed-command", durationMs: null, outputTail: [] }),
+    ]);
+  }, 15_000);
+
+  test("stdout and stderr both land in the tail, in the order they were written", async () => {
+    const report = await runPhaseGates(
+      [executable("noisy", "bun both-streams.ts")],
+      optionsFor(sharedProjectRoot),
+    );
+
+    expect(report.criterionResults[0]).toMatchObject({
+      reason: "exit-nonzero",
+      outputTail: ["to stdout", "to stderr"],
+    });
+  }, 15_000);
+
+  test("a timeout keeps what the command printed before it was killed", async () => {
+    const report = await runPhaseGates(
+      [limitedExecutable("slow build", "bun announce-then-sleep.ts", 1)],
+      optionsFor(sharedProjectRoot),
+    );
+
+    expect(report.criterionResults[0]).toMatchObject({
+      reason: "timeout",
+      timeoutSeconds: 1,
+      outputTail: ["compiling the world"],
+    });
+  }, 15_000);
+
+  test("a grandchild still holding the output descriptor cannot hang the gate", async () => {
+    const projectRoot = makeProjectRoot();
+    const startedAt = performance.now();
+    try {
+      const report = await runPhaseGates(
+        [limitedExecutable("forks and hangs", "bun spawn-grandchild.ts", 1)],
+        optionsFor(projectRoot),
+      );
+
+      expect(performance.now() - startedAt).toBeLessThan(5000);
+      expect(report.criterionResults[0]).toMatchObject({ reason: "timeout", outputTail: ["before sleep"] });
+    } finally {
+      process.kill(Number(readFileSync(join(projectRoot, "grandchild.pid"), "utf8")), "SIGKILL");
+    }
+  }, 15_000);
+
+  test("the capture directory is gone once the gate has settled", async () => {
+    const before = gateCaptureDirectories();
+
+    await runPhaseGates([executable("noisy", "bun both-streams.ts")], optionsFor(sharedProjectRoot));
+
+    expect(gateCaptureDirectories().filter((name) => !before.includes(name))).toEqual([]);
+  }, 15_000);
+});
+
+describe("a limit parsed from a real phase document governs the gate", () => {
+  test("timeout=1s on the fence kills the command at one second", async () => {
+    const phaseText = [
+      "---",
+      'id: "smoke"',
+      "deps: []",
+      'agent-role: "coder"',
+      "---",
+      "## Tasks",
+      "- run the slow suite",
+      "",
+      "## Done-when",
+      "- hangs past its own limit",
+      "```timeout=1s",
+      "bun sleep.ts",
+      "```",
+      "",
+    ].join("\n");
+    const report = await runPhaseGates(parsePhaseDocument(phaseText).doneWhen, optionsFor(sharedProjectRoot));
+    const [result] = report.criterionResults;
+
+    expect(result).toMatchObject({ reason: "timeout", timeoutSeconds: 1 });
+    expect(result?.kind === "executable" ? result.durationMs : null).toBeGreaterThanOrEqual(1000);
+  }, 15_000);
+});
+
+describe("the gate payload carries numbers, never the output", () => {
+  test("duration and limit are logged while the tail text is not", async () => {
+    const report = await runPhaseGates(
+      [executable("noisy", "bun both-streams.ts")],
+      optionsFor(sharedProjectRoot),
+    );
+    const payload = stepAppliedPayload("01ARZ3NDEKTSV4RRFFQ69G5FA0", "main", {
+      result: { kind: "execute_step", phaseId: "phase-one", stepId: "implement", outcome: "failure" },
+      attempt: 1,
+      gates: report,
+      harvestedCount: null,
+      dedupRejected: null,
+      bundleNotes: null,
+      usedNotes: null,
+    });
+    const [criterion] = (payload["gates"] as { criteria: Array<Record<string, unknown>> }).criteria;
+
+    expect(criterion).toMatchObject({
+      duration_ms: expect.any(Number),
+      timeout_seconds: DEFAULT_GATE_TIMEOUT_SECONDS,
+    });
+    expect(JSON.stringify(payload)).not.toContain("to stdout");
+    expect(JSON.stringify(payload)).not.toContain("to stderr");
+  }, 15_000);
+});
+
+function gateCaptureDirectories(): string[] {
+  return readdirSync(tmpdir()).filter(
+    (name) => name.startsWith("mneme-gate-") && !name.startsWith("mneme-gate-fixture-"),
+  );
+}
