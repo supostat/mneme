@@ -11,7 +11,8 @@ import type { StagingDeps } from "../staging";
 import type { AgentVote, Vote } from "./converge";
 import type { StepDefinition } from "./failure-policy";
 import { phaseDocumentsFromSpec } from "./from-spec";
-import type { PhaseArtifact } from "./memory-steps";
+import { HARVEST_BODY_LIMIT_RULE } from "./harvest-artifacts";
+import type { PhaseArtifact } from "./harvest-artifacts";
 import { applyMigration, planMigration, specSlug } from "./migration";
 import type { MigrationPlan, MigrationReport } from "./migration";
 import {
@@ -68,7 +69,8 @@ export const WORKFLOW_STEP_DESCRIPTION =
   "INCONCLUSIVE: the attempt is not consumed and the same directive returns with the same attempt, so " +
   "resubmit success once the environment is quiet (at most 2 such re-runs per attempt). " +
   "When a harvest directive is pending, submit " +
-  "harvest_artifacts (an empty array is allowed) to close the phase. That same call MAY carry " +
+  `harvest_artifacts (an empty array is allowed) to close the phase; ${HARVEST_BODY_LIMIT_RULE}. ` +
+  "That same call MAY carry " +
   "used_notes: the notes from THIS phase's recall bundle you actually leaned on, each with " +
   "evidence naming where it influenced the work (following its contract, avoiding a gotcha it " +
   "named, quoting its decision). Sharing a topic is NOT use. An empty array is a legitimate, " +

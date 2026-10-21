@@ -13,6 +13,8 @@ import type { StoredEvent } from "../events";
 import { initRepo, runGit } from "../git";
 import { createServer } from "../mcp-server";
 import type { CreateServerOptions } from "../mcp-server";
+import { HARVEST_BODY_LIMIT_RULE } from "./harvest-artifacts";
+import { WORKFLOW_STEP_DESCRIPTION } from "./mcp-tools";
 import type { SubmittedStepResult } from "./mcp-tools";
 import { WORKFLOW_PHASE_DIR } from "./migration";
 import { parsePhaseDocument, serializePhaseDocument } from "./phase-document";
@@ -1554,5 +1556,11 @@ describe("workflow_survey", () => {
 
     await callText(bench.client, "workflow_step", {});
     expect(eventsOfType(await loggedEvents(bench), "workflow_run_marked_stale").length).toBe(1);
+  });
+});
+
+describe("workflow_step description", () => {
+  test("names the harvest body limit, so the agent knows it before the first submission", () => {
+    expect(WORKFLOW_STEP_DESCRIPTION).toContain(HARVEST_BODY_LIMIT_RULE);
   });
 });

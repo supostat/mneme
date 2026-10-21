@@ -5,7 +5,7 @@ import type { AgentVote } from "./converge";
 import { MAX_INCONCLUSIVE_GATE_RUNS, stepEffectOf } from "./failure-policy";
 import type { StepEffect } from "./failure-policy";
 import { compileRecallBundle, formatRecallBundle, harvestPhase } from "./memory-steps";
-import type { PhaseArtifact } from "./memory-steps";
+import type { PhaseArtifact } from "./harvest-artifacts";
 import { applyStepResult } from "./reducer";
 import type { ExecuteStepDirective, HarvestDirective, StepResult } from "./reducer";
 import { pendingDirectiveOf, phaseOf } from "./run-events";

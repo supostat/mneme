@@ -19,14 +19,10 @@ import { buildPhaseGraph } from "./phase-graph";
 import type { PhaseDocument } from "./phase-document";
 import { applyStepResult, initialRun, reduce } from "./reducer";
 import type { RunDefinition } from "./reducer";
-import {
-  HARVEST_SOURCE,
-  MemoryStepError,
-  compileRecallBundle,
-  formatRecallBundle,
-  harvestPhase,
-} from "./memory-steps";
-import type { PhaseArtifact, RecallBundle } from "./memory-steps";
+import { HARVEST_SOURCE, HarvestArtifactError } from "./harvest-artifacts";
+import type { PhaseArtifact } from "./harvest-artifacts";
+import { MemoryStepError, compileRecallBundle, formatRecallBundle, harvestPhase } from "./memory-steps";
+import type { RecallBundle } from "./memory-steps";
 import { RECALL_BUNDLE_COSINE_THRESHOLD } from "../recall";
 
 const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
@@ -632,15 +628,15 @@ describe("harvestPhase green path", () => {
     );
   });
 
-  test("an overlong body is clamped to MAX_BODY_CODE_POINTS counted in code points, not UTF-16 units", async () => {
+  test("a body exactly at MAX_BODY_CODE_POINTS, counted in code points, is staged whole", async () => {
     const { projectRoot } = await buildProjectRepo();
     const deps = await makeDeps(projectRoot, offlineClient());
     const astral = String.fromCodePoint(0x1d306);
-    const prefix = "Decision: ";
+    const prefix = "Decision: \nRationale: ";
     const artifact: PhaseArtifact = {
       kind: "decision",
-      decision: astral.repeat(MAX_BODY_CODE_POINTS),
-      rationale: "spills past the clamp",
+      decision: astral.repeat(MAX_BODY_CODE_POINTS - [...prefix].length),
+      rationale: "",
       anchors: ["src/a.ts"],
     };
 
@@ -648,10 +644,54 @@ describe("harvestPhase green path", () => {
 
     const staged = readStagedNote(deps, results[0]!.noteId);
     expect([...staged.body].length).toBe(MAX_BODY_CODE_POINTS);
-    const keptAstrals = MAX_BODY_CODE_POINTS - prefix.length;
-    expect(staged.body).toBe(prefix + astral.repeat(keptAstrals));
-    // Each astral character is two UTF-16 units: a UTF-16-based clamp would have kept half as many.
-    expect(staged.body.length).toBe(prefix.length + keptAstrals * 2);
+    // Each astral character is two UTF-16 units: a UTF-16-based limit would have refused this body.
+    expect(staged.body.length).toBeGreaterThan(MAX_BODY_CODE_POINTS);
+  });
+});
+
+describe("harvestPhase refuses the whole harvest before staging anything", () => {
+  const GOOD: PhaseArtifact[] = [
+    { kind: "resolved_error", error: "rebuild crashed", resolution: "guard the empty dir", anchors: ["src/a.ts"] },
+    { kind: "decision", decision: "use sqlite", rationale: "a disposable cache", anchors: ["src/a.ts"] },
+  ];
+
+  function rememberEventCount(deps: StagingDeps): number {
+    return readEvents(deps.corpus.eventsDir).filter((event) => event.type === "remember").length;
+  }
+
+  test("an over-limit third artifact leaves staging empty and logs no remember", async () => {
+    const { projectRoot } = await buildProjectRepo();
+    const deps = await makeDeps(projectRoot, offlineClient());
+    const overLimit: PhaseArtifact = {
+      kind: "fixed_test",
+      test: "x".repeat(MAX_BODY_CODE_POINTS),
+      failure: "f",
+      fix: "g",
+      anchors: ["src/a.ts"],
+    };
+
+    await expect(harvestPhase(deps, [...GOOD, overLimit])).rejects.toThrow(
+      "harvest artifact 3 (fixed_test) renders to 1538 code points — 38 over the 1500 limit " +
+        "(the template prefix takes 36); nothing was staged",
+    );
+    expect(readdirSync(deps.corpus.stagingDir)).toEqual([]);
+    expect(rememberEventCount(deps)).toBe(0);
+  });
+
+  test("foreign markup in the third artifact leaves staging empty and logs no remember", async () => {
+    const { projectRoot } = await buildProjectRepo();
+    const deps = await makeDeps(projectRoot, offlineClient());
+    const marked: PhaseArtifact = {
+      kind: "decision",
+      decision: `split${String.fromCharCode(0x2028)}line`,
+      rationale: "r",
+      anchors: ["src/a.ts"],
+    };
+
+    await expect(harvestPhase(deps, [...GOOD, marked])).rejects.toThrow(HarvestArtifactError);
+    await expect(harvestPhase(deps, [...GOOD, marked])).rejects.toThrow("harvest artifact 3 (decision)");
+    expect(readdirSync(deps.corpus.stagingDir)).toEqual([]);
+    expect(rememberEventCount(deps)).toBe(0);
   });
 });
 
@@ -724,7 +764,7 @@ describe("harvestPhase validation", () => {
       { kind: "decision", decision: "use sqlite", rationale: "simple", anchors: [] },
     ];
 
-    await expect(harvestPhase(deps, artifacts)).rejects.toThrow(MemoryStepError);
+    await expect(harvestPhase(deps, artifacts)).rejects.toThrow(HarvestArtifactError);
     expect(readdirSync(deps.corpus.stagingDir)).toEqual([]);
   });
 
@@ -739,7 +779,7 @@ describe("harvestPhase validation", () => {
       anchors: ["src/a.ts"],
     };
 
-    await expect(harvestPhase(deps, [artifact])).rejects.toThrow(MemoryStepError);
+    await expect(harvestPhase(deps, [artifact])).rejects.toThrow(HarvestArtifactError);
     expect(readdirSync(deps.corpus.stagingDir)).toEqual([]);
   });
 
@@ -754,7 +794,7 @@ describe("harvestPhase validation", () => {
       anchors: ["src/a.ts"],
     };
 
-    await expect(harvestPhase(deps, [artifact])).rejects.toThrow(MemoryStepError);
+    await expect(harvestPhase(deps, [artifact])).rejects.toThrow(HarvestArtifactError);
     expect(readdirSync(deps.corpus.stagingDir)).toEqual([]);
   });
 
@@ -767,7 +807,7 @@ describe("harvestPhase validation", () => {
       anchors: ["src/a.ts"],
     } as unknown as PhaseArtifact;
 
-    await expect(harvestPhase(deps, [artifact])).rejects.toThrow(MemoryStepError);
+    await expect(harvestPhase(deps, [artifact])).rejects.toThrow(HarvestArtifactError);
     expect(readdirSync(deps.corpus.stagingDir)).toEqual([]);
   });
 
@@ -781,7 +821,7 @@ describe("harvestPhase validation", () => {
       anchors: ["src/a.ts"],
     } as unknown as PhaseArtifact;
 
-    await expect(harvestPhase(deps, [artifact])).rejects.toThrow(MemoryStepError);
+    await expect(harvestPhase(deps, [artifact])).rejects.toThrow(HarvestArtifactError);
     expect(readdirSync(deps.corpus.stagingDir)).toEqual([]);
   });
 

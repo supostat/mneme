@@ -1,5 +1,6 @@
 import { MAX_INCONCLUSIVE_GATE_RUNS } from "./failure-policy";
 import { effectiveTimeoutSeconds } from "./gate-runner";
+import { HARVEST_BODY_LIMIT_RULE } from "./harvest-artifacts";
 import type { DoneWhenCriterion, PhaseDocument } from "./phase-document";
 import { readyPhaseIds } from "./phase-graph";
 import type { Directive, ExecuteStepDirective } from "./reducer";
@@ -129,6 +130,7 @@ function renderHarvestDirective(runId: string, phaseId: string): string {
     "DIRECTIVE: harvest",
     `phase: ${phaseId}`,
     "The phase's steps are done. Submit harvest_artifacts (an empty array is allowed) to close it:",
+    `Limit: ${HARVEST_BODY_LIMIT_RULE}.`,
     `workflow_step { run_id: "${runId}", harvest_artifacts: ` +
       '[ { kind: "fixed_test" | "resolved_error" | "decision", ...template fields..., anchors: ["path"] } ] }',
   ].join("\n");

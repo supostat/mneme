@@ -90,7 +90,16 @@ import { z } from "zod";
 //       "inconclusive" (WORKFLOW_APPLIED_OUTCOMES): a gate run whose every red criterion timed out,
 //       recorded as the gates' verdict even when the policy then counted it as a failure. The
 //       agent's SUBMITTED outcome stays success | failure (WORKFLOW_STEP_OUTCOMES).
-export const SCHEMA_VERSION = 18;
+//  19 — unclipped harvest bodies: the first entry that stamps a producer GUARANTEE rather than a
+//       payload change. From v19 on a harvest never clips a note body — an artifact over the body
+//       limit refuses the whole harvest — so a harvest remember with body_len = MAX_BODY_CODE_POINTS
+//       is a whole body. Under v18 and earlier the same event MAY mark a body cut at the limit
+//       (UNCLIPPED_HARVEST_SCHEMA_VERSION is that boundary). No event shape changed.
+export const SCHEMA_VERSION = 19;
+
+// The first schema version whose harvest bodies are guaranteed whole. A fixed boundary, not an alias
+// of SCHEMA_VERSION: later bumps must never move it, or old clipped bodies would read as whole.
+export const UNCLIPPED_HARVEST_SCHEMA_VERSION = 19;
 
 export const DEDUP_OUTCOMES = ["add", "supersede_suggest", "noop"] as const;
 // The closed v1 registry of digit-menu decision classes: curation rides staging_resolve, plan-fan

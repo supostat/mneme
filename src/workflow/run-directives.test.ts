@@ -3,6 +3,7 @@ import type { DoneWhenCriterion, PhaseDocument } from "./phase-document";
 import { buildPhaseGraph } from "./phase-graph";
 import { applyStepResult, initialRun } from "./reducer";
 import type { RunDefinition } from "./reducer";
+import { HARVEST_BODY_LIMIT_RULE } from "./harvest-artifacts";
 import { INCONCLUSIVE_DIRECTIVE_HEADER, renderCurrentDirective } from "./run-directives";
 import type { ReadableRun } from "./run-events";
 
@@ -88,6 +89,24 @@ describe("renderCurrentDirective final-step gate limits", () => {
 
     expect(lines).toContain("- [executable] green (command: true; limit 300 s)");
     expect(lines).toContain("- [executable] heavy suite (command: bun test; limit 900 s)");
+  });
+});
+
+describe("renderCurrentDirective harvest", () => {
+  test("the harvest directive names the body limit before the agent submits", () => {
+    const active = activeRunFrom(definitionOf(phase("phase-one")));
+    active.run = applyStepResult(active.run, active.definition, { kind: "recall", phaseId: "phase-one" });
+    active.run = applyStepResult(active.run, active.definition, {
+      kind: "execute_step",
+      phaseId: "phase-one",
+      stepId: "implement",
+      outcome: "success",
+    });
+
+    const lines = renderCurrentDirective(active, 0).split("\n");
+
+    expect(lines[0]).toBe("DIRECTIVE: harvest");
+    expect(lines).toContain(`Limit: ${HARVEST_BODY_LIMIT_RULE}.`);
   });
 });
 

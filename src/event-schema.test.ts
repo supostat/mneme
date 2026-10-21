@@ -7,6 +7,7 @@ import type { EventInput, StoredEvent } from "./events";
 import {
   eventSchema,
   SCHEMA_VERSION,
+  UNCLIPPED_HARVEST_SCHEMA_VERSION,
   AGENT_VOTE_VALUES,
   BOOTSTRAP_TO_EXTENDED,
   EXECUTABLE_GATE_REASONS,
@@ -186,8 +187,13 @@ const AGENT_VOTE_MIRROR = {
 } as const satisfies Record<Vote, true>;
 
 describe("event-schema constants", () => {
-  test("SCHEMA_VERSION is 18", () => {
-    expect(SCHEMA_VERSION).toBe(18);
+  test("SCHEMA_VERSION is 19", () => {
+    expect(SCHEMA_VERSION).toBe(19);
+  });
+
+  test("the unclipped-harvest boundary is fixed at 19 and never ahead of the producer", () => {
+    expect(UNCLIPPED_HARVEST_SCHEMA_VERSION).toBe(19);
+    expect(UNCLIPPED_HARVEST_SCHEMA_VERSION).toBeLessThanOrEqual(SCHEMA_VERSION);
   });
 
   test("EXECUTABLE_GATE_REASONS mirrors gate-runner's ExecutableGateReason in both directions", () => {

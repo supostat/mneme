@@ -2,13 +2,15 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { runGit } from "../git";
 import { openReadOnlyDatabase, rebuild } from "../index-db";
-import { MAX_BODY_CODE_POINTS, isAnchorNeutral, isNoteId, parseNote } from "../note";
+import { isAnchorNeutral, isNoteId, parseNote } from "../note";
 import type { Note, NoteType } from "../note";
 import { passesRecallThreshold, recall } from "../recall";
 import type { RecallResult, RecalledNote } from "../recall";
 import { findForbiddenMarkup } from "../sanitize-body";
 import { remember } from "../staging";
-import type { RememberInput, RememberResult, StagingDeps } from "../staging";
+import type { RememberResult, StagingDeps } from "../staging";
+import { assertArtifactBodiesFit, rememberInputFrom, validateArtifact } from "./harvest-artifacts";
+import type { PhaseArtifact } from "./harvest-artifacts";
 
 // Memory lifecycle execution runs BESIDE the reducer, never inside it (the gate-runner seam): the
 // caller executes compileRecallBundle on a recall directive and harvestPhase on a harvest directive,
@@ -19,7 +21,6 @@ import type { RememberInput, RememberResult, StagingDeps } from "../staging";
 
 export class MemoryStepError extends Error {}
 
-export const HARVEST_SOURCE = "harvest";
 const NOTE_EXTENSION = ".md";
 // Mirrors RETRIEVED_DATA_NOTICE in mcp-rendering.ts (not exported there); keep the phrasing in sync.
 const RETRIEVED_DATA_NOTICE =
@@ -86,11 +87,8 @@ export function formatRecallBundle(bundle: RecallBundle): string {
   return [notice, ...blocks].join("\n");
 }
 
-export type PhaseArtifact =
-  | { kind: "fixed_test"; test: string; failure: string; fix: string; anchors: string[] }
-  | { kind: "resolved_error"; error: string; resolution: string; anchors: string[] }
-  | { kind: "decision"; decision: string; rationale: string; anchors: string[] };
-
+// Every artifact is checked — structure, body length, foreign markup — before the first remember, so
+// a refused harvest stages nothing at all rather than the artifacts that happened to come first.
 export async function harvestPhase(
   deps: StagingDeps,
   artifacts: PhaseArtifact[],
@@ -98,6 +96,7 @@ export async function harvestPhase(
   for (const artifact of artifacts) {
     validateArtifact(artifact);
   }
+  assertArtifactBodiesFit(artifacts);
   const results: RememberResult[] = [];
   for (const artifact of artifacts) {
     results.push(await remember(deps, rememberInputFrom(artifact)));
@@ -241,57 +240,4 @@ function makeFence(): { begin: string; end: string } {
     begin: `----- BEGIN MNEME NOTE ${nonce} -----`,
     end: `----- END MNEME NOTE ${nonce} -----`,
   };
-}
-
-function validateArtifact(artifact: PhaseArtifact): void {
-  for (const field of templateFieldsOf(artifact)) {
-    if (typeof field !== "string") {
-      throw new MemoryStepError(`a ${artifact.kind} artifact requires string template fields`);
-    }
-  }
-  if (primaryTextOf(artifact).trim() === "") {
-    throw new MemoryStepError(`a ${artifact.kind} artifact requires non-empty primary text`);
-  }
-  if (artifact.anchors.length === 0) {
-    throw new MemoryStepError(`a ${artifact.kind} artifact requires at least one anchor`);
-  }
-}
-
-// Artifacts arrive from agent output, so the union is a compile-time claim only: the kind is checked
-// exhaustively at runtime before any template field is touched.
-function templateFieldsOf(artifact: PhaseArtifact): string[] {
-  if (artifact.kind === "fixed_test") return [artifact.test, artifact.failure, artifact.fix];
-  if (artifact.kind === "resolved_error") return [artifact.error, artifact.resolution];
-  if (artifact.kind === "decision") return [artifact.decision, artifact.rationale];
-  throw new MemoryStepError(`unknown artifact kind: ${String((artifact as { kind: unknown }).kind)}`);
-}
-
-function primaryTextOf(artifact: PhaseArtifact): string {
-  if (artifact.kind === "fixed_test") return artifact.test;
-  if (artifact.kind === "resolved_error") return artifact.error;
-  return artifact.decision;
-}
-
-function rememberInputFrom(artifact: PhaseArtifact): RememberInput {
-  return {
-    type: artifact.kind === "decision" ? "decision" : "bugfix",
-    body: clampBody(bodyOf(artifact)),
-    anchors: artifact.anchors,
-    source: HARVEST_SOURCE,
-  };
-}
-
-// Every body opens with a fixed template prefix, so the first line is non-empty by construction.
-function bodyOf(artifact: PhaseArtifact): string {
-  if (artifact.kind === "fixed_test") {
-    return `Fixed failing test: ${artifact.test}\nFailure: ${artifact.failure}\nFix: ${artifact.fix}`;
-  }
-  if (artifact.kind === "resolved_error") {
-    return `Resolved error: ${artifact.error}\nResolution: ${artifact.resolution}`;
-  }
-  return `Decision: ${artifact.decision}\nRationale: ${artifact.rationale}`;
-}
-
-function clampBody(body: string): string {
-  return [...body].slice(0, MAX_BODY_CODE_POINTS).join("");
 }

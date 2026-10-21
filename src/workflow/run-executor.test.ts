@@ -475,6 +475,29 @@ describe("applyHarvest refuses a declaration before anything is written", () => 
     // The directive is untouched, so the correct call still closes the phase.
     expect(pendingDirectiveOf(active).kind).toBe("harvest");
   });
+
+  test("an artifact over the body limit refuses the whole harvest and stages NOTHING", async () => {
+    const { projectRoot } = await buildProjectRepo();
+    const deps = await makeDeps(projectRoot);
+    const active = activeRunFrom(twoPhaseDefinition());
+    await runEngineSteps(deps, active);
+    await applyGatedFinalStep(deps, active, pendingDirectiveOf(active) as ExecuteStepDirective, []);
+    const harvest = pendingDirectiveOf(active) as HarvestDirective;
+    const artifacts = [
+      { kind: "decision" as const, decision: "fits", rationale: "short", anchors: ["src/a.ts"] },
+      { kind: "decision" as const, decision: "fits too", rationale: "short", anchors: ["src/a.ts"] },
+      { kind: "decision" as const, decision: "x".repeat(1500), rationale: "spills", anchors: ["src/a.ts"] },
+    ];
+
+    await expect(applyHarvest(deps, active, harvest, artifacts, [])).rejects.toThrow(
+      "harvest artifact 3 (decision) renders to 1528 code points — 28 over the 1500 limit " +
+        "(the template prefix takes 22); nothing was staged",
+    );
+
+    expect(readdirSync(deps.corpus.stagingDir).length).toBe(0);
+    expect(readEvents(deps.corpus.eventsDir).some((event) => event.result_kind === "harvest")).toBe(false);
+    expect(pendingDirectiveOf(active).kind).toBe("harvest");
+  });
 });
 
 // These run the REAL gate runner: a script that sleeps past its one-second limit is the only way to
