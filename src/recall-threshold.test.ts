@@ -299,4 +299,56 @@ describe("recall memory gap", () => {
     expect(result.gap).toBe(false);
     expect(lastRecallEvent(eventsDir).gap).toBe(false);
   });
+
+  test("a note above the threshold that does not fit the budget is memory, not a gap", async () => {
+    // 1500 ASCII bytes estimate to 375 tokens — the best note cannot fit a 100-token budget.
+    const wide: NoteSpec = {
+      id: ulid(0),
+      body: `payment refund ledger ${"a".repeat(1478)}`,
+      anchor: "src/wide.ts",
+      components: [3, 4],
+    };
+    const client = keyedClient(vectorMap(query, [wide]));
+    const { indexPath, eventsDir } = await setupIndex([wide], client);
+
+    const result = await recall(openRecall(indexPath, eventsDir, client), query, 100, "tool-call", []);
+
+    expect(result.notes).toEqual([]);
+    expect(result.gap).toBe(false);
+    const event = lastRecallEvent(eventsDir);
+    expect(event.gap).toBe(false);
+    expect(candidatesOf(event).map((entry) => [entry.id, entry.in_budget, entry.fts_rank])).toEqual([[wide.id, false, 1]]);
+  });
+
+  test("under a domain filter the cold-start floor draws only from the domain's notes and the gap stays open", async () => {
+    const inDomain: NoteSpec[] = [
+      { id: ulid(0), body: "zebra quokka wombat", anchor: "src/c0.ts", components: [1, 1, 3, 2, 1, 0.25] },
+      { id: ulid(1), body: "yak marmot lemur", anchor: "src/c1.ts", components: [1, 1, 3, 2, 1, 0.5] },
+    ];
+    // The closest notes of all sit outside the domain: an unscoped floor would pick them first.
+    const outside: NoteSpec[] = [
+      { id: ulid(2), body: "koala dingo emu", anchor: "src/c2.ts", components: [1, 1, 3, 2, 1, 0.1] },
+      { id: ulid(3), body: "otter badger stoat", anchor: "src/c3.ts", components: [1, 1, 3, 2, 1, 0.15] },
+    ];
+    const specs = [...inDomain, ...outside];
+    const sectionBody = "heron ibis egret";
+    const byText = vectorMap(query, specs);
+    byText.set(sectionBody, [0, 0, 0, 0, 0, 0, 1]);
+    const client = keyedClient(byText);
+    const domain: MapSection = {
+      frontmatter: { id: "payments", kind: "domain", anchors: ["src/c0.ts", "src/c1.ts"], depends_on: [], terms: [], commit: "0000000" },
+      body: sectionBody,
+    };
+    const { indexPath, eventsDir } = await setupIndex(specs, client, [domain]);
+
+    const result = await recall(openRecall(indexPath, eventsDir, client), query, 100000, "tool-call", ["payments"]);
+
+    expect(result.notes.map((note) => [note.id, note.lowConfidence])).toEqual([
+      [ulid(0), true],
+      [ulid(1), true],
+    ]);
+    expect(result.sections).toEqual([]);
+    expect(result.gap).toBe(true);
+    expect(lastRecallEvent(eventsDir).gap).toBe(true);
+  });
 });

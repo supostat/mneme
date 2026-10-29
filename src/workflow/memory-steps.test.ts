@@ -620,6 +620,24 @@ describe("compileRecallBundle empty corpus", () => {
     expect(formatRecallBundle(bundle).split("\n").at(-1)).toBe(RECALL_GAP_NOTICE);
     expect(eventsOfType(deps, "recall")[0]!.gap).toBe(true);
   });
+
+  test("a bundle the budget left empty while a note matched the phase is no memory gap", async () => {
+    const { projectRoot, commit } = await buildProjectRepo();
+    const deps = await makeDeps(projectRoot, bagClient());
+    writeNote(deps, ulid(100), "pattern", "payment refund ledger reconciliation", ["src/a.ts"], commit);
+
+    const bundle = await compileRecallBundle(deps, {
+      phaseDescription: "payment refund handling",
+      anchorPaths: [],
+      domains: [],
+      budget: 1,
+    });
+
+    expect(bundle.notes).toEqual([]);
+    expect(bundle.gap).toBe(false);
+    expect(formatRecallBundle(bundle)).not.toContain(RECALL_GAP_NOTICE);
+    expect(eventsOfType(deps, "recall")[0]!.gap).toBe(false);
+  });
 });
 
 describe("harvestPhase green path", () => {

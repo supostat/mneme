@@ -115,7 +115,10 @@ cat "$EVENTS"/*.jsonl | jq -s '
 
 ## (c) How often does recall report degradation?
 
-**Definition.** `recall.degraded === true` over the total number of `recall` events.
+**Definition.** `recall.degraded === true` over the total number of `recall` events. A recall is
+degraded when the cosine channel could not run: the embedder was unavailable, or the index held no
+stored vector of either population — notes or map sections. A corpus that so far holds only map
+sections is not degraded.
 
 ```sh
 cat "$EVENTS"/*.jsonl | jq -s '
@@ -523,9 +526,11 @@ measurement dies; the same neutrality rule already governs (h) agreement.
 
 ## (n) How often does recall come back with nothing above the threshold?
 
-**Definition.** A `recall` event's `gap` is `true` when neither a note nor a map section passed the
-relevance threshold — the agent was shown the memory-gap notice (`RECALL_GAP_NOTICE`, the last line
-of that answer). The cold-start floor's low-confidence notes do **not** close a gap: they are shown,
+**Definition.** A `recall` event's `gap` is `true` when neither a note candidate nor a map section
+passed the relevance threshold — the agent was shown the memory-gap notice (`RECALL_GAP_NOTICE`, the
+last line of that answer). The gap is decided before the budget cut: a note above the threshold that
+did not fit the budget closes the gap, because the corpus holds that memory and only the answer was
+short of room. The cold-start floor's low-confidence notes do **not** close a gap: they are shown,
 but they are not memory above the threshold. Numerator = recalls with `gap == true`; denominator =
 recalls that **carry the key** (schema v21 and later). A pre-v21 recall has no `gap` key and says
 nothing about the question, so it leaves the denominator — reading its absence as "no gap" would

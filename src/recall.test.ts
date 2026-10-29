@@ -303,6 +303,26 @@ describe("recall degraded mode", () => {
   });
 });
 
+describe("recall on a corpus that holds only map sections", () => {
+  test("section vectors keep the cosine channel live: not degraded, fused, while no note is indexed", async () => {
+    // A retired note keeps the project repository non-empty and stays out of the index, so the
+    // index holds sections and no note — the order the plugin's setup writes in.
+    const retired: NoteSpec = { id: ulid(0), body: "a retired note", anchor: "src/a.ts", retired: true };
+    const billing: MapSection = {
+      frontmatter: { id: "billing", kind: "domain", anchors: [], depends_on: [], terms: [], commit: "abc1234" },
+      body: "Billing issues invoices.",
+    };
+    const { indexPath, eventsDir } = await setupIndex([retired], bagOfWordsClient(), [billing]);
+
+    const result = await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "invoices", 10000, "tool-call", []);
+
+    expect(result.notes).toEqual([]);
+    expect(result.sections.map((section) => section.id)).toEqual(["billing"]);
+    expect(result.degraded).toBe(false);
+    expect(readEvents(eventsDir)[0]).toMatchObject({ degraded: false, mode: "fused", corpus_size: 0 });
+  });
+});
+
 describe("recall degraded on empty vector table", () => {
   test("an available embedder still degrades when the index holds zero vectors, yet FTS returns results", async () => {
     const specs: NoteSpec[] = [

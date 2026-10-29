@@ -53,9 +53,11 @@ export interface RecallResult {
   notes: RecalledNote[];
   sections: RecalledSection[];
   degraded: boolean;
-  // True when neither a note nor a section passed the relevance threshold: the memory gap the
-  // notice reports and the stats metric counts. The cold-start floor's low-confidence notes leave
-  // it true — they are shown, but they are not memory above the threshold.
+  // True when neither a note candidate nor a section passed the relevance threshold: the memory gap
+  // the notice reports and the stats metric counts. It is decided before the budget cut — a note
+  // above the threshold that did not fit the budget is memory the corpus holds, so it closes the
+  // gap. The cold-start floor's low-confidence notes leave it true — they are shown, but they are
+  // not memory above the threshold.
   gap: boolean;
 }
 
@@ -166,7 +168,7 @@ export async function recall(
   const fts = rankFtsChannel(deps, terms, scope.noteIds);
   const fusion = runFusion(deps, fts.ranks, embedded.embed, budget, scope.noteIds);
   const sections = rankSections(deps, terms, embedded.embed, scope.sectionIds);
-  const gap = isMemoryGap(fusion.notes, sections.returned);
+  const gap = isMemoryGap(fusion.decisions, fts.ranks, fusion.cosineRanks, sections.returned);
   const returnedIds = fusion.notes.map((note) => note.id);
   deps.eventWriter.append({
     type: "recall",
@@ -186,10 +188,23 @@ export async function recall(
   return { returnedIds, notes: fusion.notes, sections: sections.returned, degraded, gap };
 }
 
-// Decided on what recall RETURNS, after the cut: a floor note is below the threshold by
-// construction and never closes a gap, while one section above it closes the gap alone.
-function isMemoryGap(notes: RecalledNote[], sections: RecalledSection[]): boolean {
-  return !notes.some(passesRecallThreshold) && sections.length === 0;
+// Decided on every fused note candidate BEFORE the budget cut, never on what the answer could fit:
+// a budget too small for the best note leaves the answer short of room, not the corpus short of
+// knowledge. A floor note is below the threshold by construction and never closes a gap, while one
+// section above it closes the gap alone.
+function isMemoryGap(
+  decisions: FusionDecision[],
+  ftsRanks: Map<string, number>,
+  cosineRanks: Map<string, CosineRank>,
+  sections: RecalledSection[],
+): boolean {
+  const noteAboveThreshold = decisions.some((decision) =>
+    passesRecallThreshold({
+      ftsRank: ftsRanks.get(decision.id) ?? null,
+      cosine: cosineRanks.get(decision.id)?.cosine ?? null,
+    }),
+  );
+  return !noteAboveThreshold && sections.length === 0;
 }
 
 async function embedQuery(deps: RecallDeps, query: string): Promise<{ embed: EmbedResult; ms: number }> {
@@ -412,9 +427,14 @@ function buildMatch(terms: string[]): string {
   return terms.map((term) => `"${term}"*`).join(" OR ");
 }
 
+// Either population's vectors keep the cosine channel live: a corpus that so far holds only map
+// sections — the order the plugin's setup writes in, map first and notes later — ranks them by
+// cosine, and calling that degraded would mislabel every recall until the first note lands.
 function hasStoredVectors(db: Database): boolean {
-  const row = db.query("SELECT COUNT(*) AS count FROM vec").get() as { count: number };
-  return row.count > 0;
+  const row = db.query("SELECT EXISTS (SELECT 1 FROM vec) OR EXISTS (SELECT 1 FROM map_vec) AS present").get() as {
+    present: number;
+  };
+  return row.present === 1;
 }
 
 function countMetaRows(db: Database): number {
