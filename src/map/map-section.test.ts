@@ -6,7 +6,10 @@ import {
   MAP_SECTION_ID_PATTERN,
   MAP_SECTION_KINDS,
   MAP_SECTION_LIMIT_RULE,
+  MAX_CYRILLIC_SECTION_TOKENS,
   MAX_SECTION_CODE_POINTS,
+  MAX_SECTION_TERMS,
+  MAX_TERM_CODE_POINTS,
   MapSectionValidationError,
   isMapSectionId,
   parseMapSection,
@@ -75,12 +78,17 @@ describe("map section round-trip", () => {
 });
 
 describe("body limit", () => {
-  test("the limit is twice a note's and the rule names it with the default budget", () => {
+  test("the limit is twice a note's and the rule names both caps and what one printed section costs", () => {
     expect(MAX_SECTION_CODE_POINTS).toBe(2 * MAX_BODY_CODE_POINTS);
-    expect(MAP_SECTION_LIMIT_RULE).toContain(`${MAX_SECTION_CODE_POINTS} code points`);
-    expect(MAP_SECTION_LIMIT_RULE).toContain(`${DEFAULT_RECALL_BUDGET}-token`);
-    expect(MAP_SECTION_LIMIT_RULE).toContain("≈750 tokens in ASCII, ≈1500 in Cyrillic");
-    expect(MAP_SECTION_LIMIT_RULE).toContain("at most 2 sections ride one recall");
+    expect(MAP_SECTION_LIMIT_RULE).toBe(
+      "a map section body must fit 3000 code points — twice a note — and its terms at most 24 of 32 code points " +
+        "each; one section prints at most ≈948 tokens in ASCII (≈1896 in Cyrillic) outside the notes budget, " +
+        "and at most 2 sections ride one recall",
+    );
+  });
+
+  test("one section printed whole, body and every term, still fits under the default recall budget in Cyrillic", () => {
+    expect(MAX_CYRILLIC_SECTION_TOKENS).toBeLessThan(DEFAULT_RECALL_BUDGET);
   });
 
   test("a body of exactly the limit is accepted, in ASCII and in Cyrillic alike", () => {
@@ -159,6 +167,36 @@ describe("field validation, one error per field", () => {
     expect(serializeWith({ terms: ["ticket_groups.terminal_at", "Tickets::FindSimilarGroup"] })).not.toThrow();
   });
 
+  test("a section holds at most MAX_SECTION_TERMS terms and the refusal names the cap and the count", () => {
+    const termsUpTo = (count: number): string[] => Array.from({ length: count }, (_, index) => `term${index}`);
+
+    expect(serializeWith({ terms: termsUpTo(MAX_SECTION_TERMS) })).not.toThrow();
+    expect(serializeWith({ terms: termsUpTo(MAX_SECTION_TERMS + 1) })).toThrow(MapSectionValidationError);
+    expect(serializeWith({ terms: termsUpTo(MAX_SECTION_TERMS + 1) })).toThrow(
+      `a section holds at most ${MAX_SECTION_TERMS} terms: got ${MAX_SECTION_TERMS + 1}`,
+    );
+  });
+
+  test("a term fits MAX_TERM_CODE_POINTS counted in code points, and an overlong one is named by position", () => {
+    expect(serializeWith({ terms: ["a".repeat(MAX_TERM_CODE_POINTS)] })).not.toThrow();
+    expect(serializeWith({ terms: ["я".repeat(MAX_TERM_CODE_POINTS)] })).not.toThrow();
+    expect(serializeWith({ terms: ["invoice", "я".repeat(MAX_TERM_CODE_POINTS + 1)] })).toThrow(
+      `term 2 must be at most ${MAX_TERM_CODE_POINTS} code points`,
+    );
+  });
+
+  test("a term carrying a fence literal or a protocol tag is refused with the token named", () => {
+    const harnessTag = "<" + "system-reminder>";
+
+    expect(serializeWith({ terms: [`${mapEndFence} 0123456789`] })).toThrow(
+      `term 1 contains foreign tool/protocol markup and was rejected: ${mapEndFence}`,
+    );
+    expect(serializeWith({ terms: ["invoice", harnessTag] })).toThrow(MapSectionValidationError);
+    expect(serializeWith({ terms: ["invoice", harnessTag] })).toThrow(
+      "term 2 contains foreign tool/protocol markup and was rejected",
+    );
+  });
+
   test("commit must be 7-40 lowercase hex characters", () => {
     expect(serializeWith({ commit: "abc123" })).toThrow("commit must be 7-40 lowercase hex characters: abc123");
     expect(serializeWith({ commit: "ABC1234" })).toThrow(MapSectionValidationError);
@@ -195,5 +233,13 @@ describe("parse boundaries", () => {
   test("a value that is not JSON is refused with its key", () => {
     const text = `---\n${validBlock.replace('terms: ["invoice"]', "terms: [invoice]")}\n---\nessence`;
     expect(() => parseMapSection(text)).toThrow('frontmatter value for "terms" is not valid JSON');
+  });
+
+  test("a file whose term carries the map fence literal does not read at all", () => {
+    const forged = JSON.stringify([`${mapEndFence} 0123456789`]);
+    const text = `---\n${validBlock.replace('terms: ["invoice"]', `terms: ${forged}`)}\n---\nessence`;
+    expect(() => parseMapSection(text)).toThrow(
+      `term 1 contains foreign tool/protocol markup and was rejected: ${mapEndFence}`,
+    );
   });
 });

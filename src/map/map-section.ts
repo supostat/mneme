@@ -5,9 +5,9 @@ import {
   splitFrontmatter,
 } from "../frontmatter";
 import type { FrontmatterGrammar } from "../frontmatter";
-import { DEFAULT_RECALL_BUDGET, TOKEN_BYTES } from "../fusion";
+import { TOKEN_BYTES } from "../fusion";
 import { NoteValidationError, validateAnchor } from "../note";
-import { assertCleanNoteBody } from "../sanitize-body";
+import { assertCleanNoteBody, findForbiddenMarkup } from "../sanitize-body";
 
 // A map section is the plugin-built synthetic layer over the note corpus: a DOMAIN describes one
 // area of the project, a FLOW one path across domains. Sections share the notes' frontmatter
@@ -29,19 +29,28 @@ export function isMapSectionId(value: string): boolean {
   return MAP_SECTION_ID_PATTERN.test(value);
 }
 
-// Twice a note. A section is a synthesis over several notes' worth of material, and under the
-// default recall budget one section still leaves room for notes beside it: the token estimate is
-// bytes / TOKEN_BYTES, so an ASCII section costs about a third of the budget and a Cyrillic one
-// about three quarters. Sections are not charged to the notes budget at all — the recall cap of
-// two sections and this limit bound their volume by construction.
+// Twice a note. A section is a synthesis over several notes' worth of material.
 export const MAX_SECTION_CODE_POINTS = 3000;
-const ASCII_SECTION_TOKENS = Math.ceil(MAX_SECTION_CODE_POINTS / TOKEN_BYTES);
+
+// A glossary is a list of words, not prose: recall prints a section's terms whole, one per line
+// after its body, so their count and length are capped like the body itself.
+export const MAX_SECTION_TERMS = 24;
+export const MAX_TERM_CODE_POINTS = 32;
+
+// Sections are not charged to the notes budget at all, so everything recall prints of one — the
+// body plus every term on its own line — is bounded by these constants alone, and the cap of two
+// sections per recall bounds the rest. The token estimate is bytes / TOKEN_BYTES.
+const PRINTED_SECTION_CODE_POINTS = MAX_SECTION_CODE_POINTS + MAX_SECTION_TERMS * (MAX_TERM_CODE_POINTS + 1);
 const CYRILLIC_BYTES_PER_CODE_POINT = 2;
-const CYRILLIC_SECTION_TOKENS = Math.ceil((MAX_SECTION_CODE_POINTS * CYRILLIC_BYTES_PER_CODE_POINT) / TOKEN_BYTES);
+const MAX_ASCII_SECTION_TOKENS = Math.ceil(PRINTED_SECTION_CODE_POINTS / TOKEN_BYTES);
+export const MAX_CYRILLIC_SECTION_TOKENS = Math.ceil(
+  (PRINTED_SECTION_CODE_POINTS * CYRILLIC_BYTES_PER_CODE_POINT) / TOKEN_BYTES,
+);
 export const MAP_SECTION_LIMIT_RULE =
-  `a map section body must fit ${MAX_SECTION_CODE_POINTS} code points — twice a note; under the default ` +
-  `${DEFAULT_RECALL_BUDGET}-token recall budget one section (≈${ASCII_SECTION_TOKENS} tokens in ASCII, ` +
-  `≈${CYRILLIC_SECTION_TOKENS} in Cyrillic) still leaves room for notes, and at most 2 sections ride one recall`;
+  `a map section body must fit ${MAX_SECTION_CODE_POINTS} code points — twice a note — and its terms at most ` +
+  `${MAX_SECTION_TERMS} of ${MAX_TERM_CODE_POINTS} code points each; one section prints at most ` +
+  `≈${MAX_ASCII_SECTION_TOKENS} tokens in ASCII (≈${MAX_CYRILLIC_SECTION_TOKENS} in Cyrillic) outside the notes ` +
+  `budget, and at most 2 sections ride one recall`;
 
 export type MapSectionFrontmatter = {
   id: string;
@@ -171,18 +180,34 @@ function validateDependencies(value: unknown, ownId: string): string[] {
   });
 }
 
-// Terms share the tags' transport hygiene (no NUL/CR/LF) and none of the path restrictions.
+// Terms share the tags' transport hygiene (no NUL/CR/LF) and none of the path restrictions. Each is
+// printed on its own line inside the section's MAP block, so it passes the body's curator set too:
+// a term that could forge a fence line is refused like a body that could. A refused term is named
+// by its position, never echoed — it may be arbitrarily long.
 function validateTerms(value: unknown): string[] {
   if (!Array.isArray(value)) {
     throw new MapSectionValidationError("terms must be an array");
   }
+  if (value.length > MAX_SECTION_TERMS) {
+    throw new MapSectionValidationError(`a section holds at most ${MAX_SECTION_TERMS} terms: got ${value.length}`);
+  }
   const seen = new Set<string>();
-  return value.map((term) => {
+  return value.map((term, index) => {
+    const position = index + 1;
     if (typeof term !== "string" || term.length === 0) {
       throw new MapSectionValidationError("term must be a non-empty string");
     }
+    if ([...term].length > MAX_TERM_CODE_POINTS) {
+      throw new MapSectionValidationError(`term ${position} must be at most ${MAX_TERM_CODE_POINTS} code points`);
+    }
     if (CONTROL_CHARACTERS_REGEX.test(term)) {
       throw new MapSectionValidationError("term must not contain NUL, CR or LF");
+    }
+    const forbidden = findForbiddenMarkup(term);
+    if (forbidden !== null) {
+      throw new MapSectionValidationError(
+        `term ${position} contains foreign tool/protocol markup and was rejected: ${forbidden}`,
+      );
     }
     if (seen.has(term)) {
       throw new MapSectionValidationError(`duplicate term: ${term}`);

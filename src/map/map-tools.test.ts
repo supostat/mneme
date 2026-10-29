@@ -208,6 +208,11 @@ describe("mapPut", () => {
       { input: { ...BILLING, anchors: ["../outside.ts"] }, reason: "anchor" },
       { input: { ...BILLING, terms: ["invoice", "invoice"] }, reason: "duplicate term: invoice" },
       { input: { ...BILLING, body: "" }, reason: "body must be 1-3000 code points" },
+      {
+        input: { ...BILLING, terms: Array.from({ length: 25 }, (_, index) => `term${index}`) },
+        reason: "a section holds at most 24 terms: got 25",
+      },
+      { input: { ...BILLING, terms: ["invoice", "x".repeat(200)] }, reason: "term 2 must be at most 32 code points" },
     ];
 
     for (const { input, reason } of invalid) {

@@ -22,15 +22,17 @@
   грамматике якорей заметок (может быть `[]`); `depends_on` — id разделов, на которые опирается
   этот (поток называет домены, которые пересекает; всегда записан, `[]` допустим; существование
   целей при записи не проверяется — висячие зависимости отчитывают `map_list` и doctor); `terms` —
-  строки глоссария без NUL/CR/LF и без дубликатов (у домена попадают в glossary.md, у обоих видов —
-  в полнотекстовый поиск); `commit` — HEAD проекта в момент записи, ставит движок.
+  строки глоссария без NUL/CR/LF и без дубликатов, не больше 24 на раздел и не длиннее 32 code
+  points каждая (у домена попадают в glossary.md, у обоих видов — в полнотекстовый поиск и
+  печатаются в recall после тела); `commit` — HEAD проекта в момент записи, ставит движок.
 - Тело: 1..3000 code points, первая строка непустая — это суть раздела, по ней домен попадает в
   INDEX.md и в строку `map_list`. Правило лимита, как его печатает движок в описании `map_put`:
-  a map section body must fit 3000 code points — twice a note; under the default 2000-token recall budget one section (≈750 tokens in ASCII, ≈1500 in Cyrillic) still leaves room for notes, and at most 2 sections ride one recall
-  Разделы не считаются в `budget` recall: их объём ограничен по построению (кап 2 × 3000).
-- Тело проходит ту же проверку, что тело заметки: ограды `BEGIN/END MNEME NOTE` и
+  a map section body must fit 3000 code points — twice a note — and its terms at most 24 of 32 code points each; one section prints at most ≈948 tokens in ASCII (≈1896 in Cyrillic) outside the notes budget, and at most 2 sections ride one recall
+  Разделы не считаются в `budget` recall: всё, что recall печатает из раздела (тело и термы),
+  ограничено этими двумя лимитами, а число разделов в ответе — капом 2.
+- Тело и каждый терм проходят ту же проверку, что тело заметки: ограды `BEGIN/END MNEME NOTE` и
   `BEGIN/END MNEME MAP`, теги протоколов и невидимые разделители строк отвергаются с названным
-  токеном.
+  токеном. Файл в `map/`, нарушающий любое из этих правил, не читается вовсе (см. doctor ниже).
 - `INDEX.md` (`# Project map`, затем `- <id> — <первая строка тела>` по доменам, по id) и
   `glossary.md` (таблица `| term | domain |` по термам доменов) — ПРОИЗВОДНЫЕ: движок переписывает
   их целиком при каждом `map_put` / `map_delete`. Плагин их не пишет и не правит — правка
@@ -73,7 +75,11 @@
 - Отказы (вызов возвращается ошибкой; на диск ничего не записано, события нет): плохой id —
   `id is "<id>"; it must be a map section slug: lowercase letters, digits, underscore or dash, starting with a letter or digit, at most 64 characters`;
   тело вне лимита — `body must be 1-3000 code points`; пустая первая строка —
-  `body first line must be non-empty`; дубликат терма — `duplicate term: <term>`; самозависимость —
+  `body first line must be non-empty`; дубликат терма — `duplicate term: <term>`; термов больше
+  24 — `a section holds at most 24 terms: got <n>`; терм длиннее 32 code points —
+  `term <position> must be at most 32 code points` (позиция с 1, сам терм не повторяется); терм с
+  оградой или тегом протокола —
+  `term <position> contains foreign tool/protocol markup and was rejected: <token>`; самозависимость —
   `a section cannot depend on itself: <id>`; якорь вне грамматики — текст из грамматики якорей
   заметок; id занят другим видом — `section "<id>" exists as <kind>; delete it first`; delete или
   показ неизвестного id — `no map section "<id>" exists`; id не слаг —
