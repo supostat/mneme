@@ -27,6 +27,13 @@ export interface CorpusPaths {
   archiveDir: string;
   eventsDir: string;
   indexPath: string;
+  // The project map: sections under map/domains and map/flows, plus the two files the engine
+  // derives from them. Committed with the notes — nothing under map/ is gitignored.
+  mapDir: string;
+  mapDomainsDir: string;
+  mapFlowsDir: string;
+  mapIndexPath: string;
+  glossaryPath: string;
 }
 
 export interface Corpus extends CorpusPaths {
@@ -45,7 +52,8 @@ export interface ResolveCorpusOptions {
   clock?: () => Date;
 }
 
-const SUBDIRECTORIES = ["notes", "staging", "archive", "events"] as const;
+// Parents precede children so each directory gets the secure mode in turn.
+const SUBDIRECTORIES = ["notes", "staging", "archive", "events", "map", "map/domains", "map/flows"] as const;
 const DIRECTORY_MODE = 0o700;
 const CURRENT_FORMAT_VERSION = 3;
 const MIGRATABLE_FORMAT_VERSIONS = new Set([1, 2]);
@@ -86,6 +94,7 @@ export function corpusDirFor(
 }
 
 export function corpusPaths(corpusDir: string): CorpusPaths {
+  const mapDir = join(corpusDir, "map");
   return {
     corpusDir,
     manifestPath: join(corpusDir, MANIFEST_FILENAME),
@@ -94,6 +103,11 @@ export function corpusPaths(corpusDir: string): CorpusPaths {
     archiveDir: join(corpusDir, "archive"),
     eventsDir: join(corpusDir, "events"),
     indexPath: join(corpusDir, "index.db"),
+    mapDir,
+    mapDomainsDir: join(mapDir, "domains"),
+    mapFlowsDir: join(mapDir, "flows"),
+    mapIndexPath: join(mapDir, "INDEX.md"),
+    glossaryPath: join(mapDir, "glossary.md"),
   };
 }
 

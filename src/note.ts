@@ -1,3 +1,11 @@
+import {
+  frontmatterLine,
+  parseFrontmatterBlock,
+  renderFrontmatterDocument,
+  splitFrontmatter,
+} from "./frontmatter";
+import type { FrontmatterGrammar } from "./frontmatter";
+
 export const NOTE_TYPES = ["bugfix", "antipattern", "decision", "pattern"] as const;
 export type NoteType = (typeof NOTE_TYPES)[number];
 
@@ -32,6 +40,11 @@ export interface Note {
 
 export class NoteValidationError extends Error {}
 
+const NOTE_GRAMMAR: FrontmatterGrammar = {
+  subject: "note",
+  fail: (message) => new NoteValidationError(message),
+};
+
 const ID_REGEX =
   /^(?:[0-9ABCDEFGHJKMNPQRSTVWXYZ]{26}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
 
@@ -43,9 +56,6 @@ const CREATED_REGEX = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
 const CONTROL_CHARACTERS_REGEX = /[\0\r\n]/;
 export const MAX_BODY_CODE_POINTS = 1500;
 
-const FRONTMATTER_FENCE = "---\n";
-const FRONTMATTER_CLOSING = "\n---\n";
-const KEY_VALUE_SEPARATOR = ": ";
 const FRONTMATTER_KEYS = ["id", "type", "anchors", "tags", "commit", "created", "supersedes", "retired"] as const;
 const ALLOWED_KEYS: ReadonlySet<string> = new Set(FRONTMATTER_KEYS);
 
@@ -53,62 +63,28 @@ export function serializeNote(note: Note): string {
   const frontmatter = validateFrontmatter(note.frontmatter);
   validateBody(note.body);
   const lines = [
-    `id: ${JSON.stringify(frontmatter.id)}`,
-    `type: ${JSON.stringify(frontmatter.type)}`,
-    `anchors: ${JSON.stringify(frontmatter.anchors)}`,
+    frontmatterLine("id", frontmatter.id),
+    frontmatterLine("type", frontmatter.type),
+    frontmatterLine("anchors", frontmatter.anchors),
   ];
   if (frontmatter.tags !== undefined) {
-    lines.push(`tags: ${JSON.stringify(frontmatter.tags)}`);
+    lines.push(frontmatterLine("tags", frontmatter.tags));
   }
-  lines.push(
-    `commit: ${JSON.stringify(frontmatter.commit)}`,
-    `created: ${JSON.stringify(frontmatter.created)}`,
-  );
+  lines.push(frontmatterLine("commit", frontmatter.commit), frontmatterLine("created", frontmatter.created));
   if (frontmatter.supersedes !== undefined) {
-    lines.push(`supersedes: ${JSON.stringify(frontmatter.supersedes)}`);
+    lines.push(frontmatterLine("supersedes", frontmatter.supersedes));
   }
   if (frontmatter.retired !== undefined) {
-    lines.push("retired: true");
+    lines.push(frontmatterLine("retired", true));
   }
-  return `${FRONTMATTER_FENCE}${lines.join("\n")}${FRONTMATTER_CLOSING}${note.body}`;
+  return renderFrontmatterDocument(lines, note.body);
 }
 
 export function parseNote(text: string): Note {
-  if (!text.startsWith(FRONTMATTER_FENCE)) {
-    throw new NoteValidationError("note is missing an opening frontmatter fence");
-  }
-  const afterOpening = text.slice(FRONTMATTER_FENCE.length);
-  const closingIndex = afterOpening.indexOf(FRONTMATTER_CLOSING);
-  if (closingIndex === -1) {
-    throw new NoteValidationError("note is missing a closing frontmatter fence");
-  }
-  const block = afterOpening.slice(0, closingIndex);
-  const body = afterOpening.slice(closingIndex + FRONTMATTER_CLOSING.length);
-  const frontmatter = validateFrontmatter(parseFrontmatterBlock(block));
+  const { block, body } = splitFrontmatter(text, NOTE_GRAMMAR);
+  const frontmatter = validateFrontmatter(parseFrontmatterBlock(block, NOTE_GRAMMAR));
   validateBody(body);
   return { frontmatter, body };
-}
-
-function parseFrontmatterBlock(block: string): Record<string, unknown> {
-  const parsed: Record<string, unknown> = {};
-  for (const line of block.split("\n")) {
-    const separatorIndex = line.indexOf(KEY_VALUE_SEPARATOR);
-    if (separatorIndex === -1) {
-      throw new NoteValidationError(`malformed frontmatter line: ${line}`);
-    }
-    const key = line.slice(0, separatorIndex);
-    const rawValue = line.slice(separatorIndex + KEY_VALUE_SEPARATOR.length);
-    parsed[key] = parseJsonValue(rawValue, key);
-  }
-  return parsed;
-}
-
-function parseJsonValue(rawValue: string, key: string): unknown {
-  try {
-    return JSON.parse(rawValue);
-  } catch {
-    throw new NoteValidationError(`frontmatter value for "${key}" is not valid JSON`);
-  }
 }
 
 function validateFrontmatter(candidate: Record<string, unknown>): NoteFrontmatter {

@@ -23,6 +23,8 @@ const openingParameterTag = OPEN + "parameter name=" + '"x"' + GT;
 const openingSystemReminderTag = OPEN + "system-reminder" + GT;
 const lineSeparator = String.fromCharCode(0x2028);
 const mcpEndFence = "END MNEME NOTE";
+const mapBeginFence = "BEGIN MNEME MAP";
+const mapEndFence = "END MNEME MAP";
 
 describe("findForbiddenMarkup rejects foreign protocol markup", () => {
   test("flags a function-calling closing tag", () => {
@@ -44,6 +46,11 @@ describe("findForbiddenMarkup rejects foreign protocol markup", () => {
 
   test("flags the forgeable MCP note-fence literal", () => {
     expect(findForbiddenMarkup("body smuggling a " + mcpEndFence + " delimiter")).toBe(mcpEndFence);
+  });
+
+  test("flags the forgeable MCP map-fence literals, opening and closing alike", () => {
+    expect(findForbiddenMarkup("body smuggling a " + mapBeginFence + " delimiter")).toBe(mapBeginFence);
+    expect(findForbiddenMarkup("body smuggling a " + mapEndFence + " delimiter")).toBe(mapEndFence);
   });
 
   test("flags a framing-breaking invisible character", () => {

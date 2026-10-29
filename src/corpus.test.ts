@@ -41,10 +41,18 @@ describe("resolveCorpus first initialization", () => {
       corpus.stagingDir,
       corpus.archiveDir,
       corpus.eventsDir,
+      corpus.mapDir,
+      corpus.mapDomainsDir,
+      corpus.mapFlowsDir,
     ]) {
       expect(existsSync(directory)).toBe(true);
       expect(statSync(directory).mode & 0o777).toBe(0o700);
     }
+    expect(corpus.mapDir).toBe(join(corpus.corpusDir, "map"));
+    expect(corpus.mapDomainsDir).toBe(join(corpus.corpusDir, "map", "domains"));
+    expect(corpus.mapFlowsDir).toBe(join(corpus.corpusDir, "map", "flows"));
+    expect(corpus.mapIndexPath).toBe(join(corpus.corpusDir, "map", "INDEX.md"));
+    expect(corpus.glossaryPath).toBe(join(corpus.corpusDir, "map", "glossary.md"));
 
     const manifest = JSON.parse(readFileSync(corpus.manifestPath, "utf8"));
     expect(manifest.path).toBe(canonicalize(projectRoot));

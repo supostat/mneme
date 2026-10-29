@@ -28,9 +28,15 @@ const FORBIDDEN_TAG_PATTERN = new RegExp(
   "i",
 );
 
-// The forgeable MCP note-fence delimiters (the delimiter-forgery class): a body containing them could
-// impersonate the recall fence boundary. Plain substrings, no brackets — safe to keep as literals.
-const FORBIDDEN_FENCE_LITERALS = ["BEGIN MNEME NOTE", "END MNEME NOTE"] as const;
+// The forgeable MCP fence delimiters (the delimiter-forgery class): a body containing them could
+// impersonate the recall fence boundary of a note or of a map section. Plain substrings, no
+// brackets — safe to keep as literals.
+const FORBIDDEN_FENCE_LITERALS = [
+  "BEGIN MNEME NOTE",
+  "END MNEME NOTE",
+  "BEGIN MNEME MAP",
+  "END MNEME MAP",
+] as const;
 
 // Characters that break MCP JSON-RPC line framing; built from code points so no raw invisible byte
 // lands in this file.
