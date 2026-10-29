@@ -10,7 +10,7 @@ import type { StagedAnchor } from "./anchor-liveness";
 import type { AdoptOutcome } from "./corpus-adopt";
 import type { IndexRefresh } from "./index-refresh";
 import type { MapSection } from "./map/map-section";
-import type { MapListResult, MapWriteResult } from "./map/map-tools";
+import type { MapDeleteResult, MapListResult, MapWriteResult } from "./map/map-tools";
 
 // Renders tool results as the delimiter-fenced text handed back to the LLM. Kept apart from the
 // server wiring so mcp-server.ts stays focused on dispatch, lifecycle and dependency assembly.
@@ -257,8 +257,14 @@ export function formatMapPut(result: MapWriteResult): string {
   return appendIndexOutcome(`Stored map section ${result.kind} "${result.id}"; committed ${result.commit}.`, result.index);
 }
 
-export function formatMapDelete(result: MapWriteResult): string {
-  return appendIndexOutcome(`Deleted map section ${result.kind} "${result.id}"; committed ${result.commit}.`, result.index);
+// A corrupted map can hold one id as both kinds; the delete removes both and says so in its one line.
+export function formatMapDelete(result: MapDeleteResult): string {
+  const outcome =
+    result.kinds.length === 1
+      ? `Deleted map section ${result.kinds[0]} "${result.id}"; committed ${result.commit}.`
+      : `Deleted map sections ${result.kinds.map((kind) => `${kind} "${result.id}"`).join(" and ")} ` +
+        `(one id was held by both kinds); committed ${result.commit}.`;
+  return appendIndexOutcome(outcome, result.index);
 }
 
 // One line per section, bodies never listed (the notes_list discipline), then one warning per

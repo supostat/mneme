@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultConfig } from "../config";
+import { CorpusBusyError } from "../corpus-git";
 import { resolveCorpus } from "../corpus";
 import { EMBEDDING_DIMENSION, EMBEDDING_MODEL } from "../embeddings";
 import type { EmbeddingsClient } from "../embeddings";
@@ -11,11 +12,11 @@ import { EventWriter, readEvents } from "../events";
 import type { StoredEvent } from "../events";
 import { initRepo, runGit } from "../git";
 import { openReadOnlyDatabase } from "../index-db";
-import { formatMapList } from "../mcp-rendering";
+import { formatMapDelete, formatMapList } from "../mcp-rendering";
 import { recall } from "../recall";
 import type { StagingDeps } from "../staging";
 import { MapSectionValidationError, parseMapSection } from "./map-section";
-import { MAP_INDEX_HEADING } from "./map-store";
+import { MAP_INDEX_HEADING, writeMapSection } from "./map-store";
 import { MapToolError, mapDelete, mapList, mapPut, showMapSection } from "./map-tools";
 import type { MapPutInput } from "./map-tools";
 
@@ -131,6 +132,31 @@ function readIndexFile(deps: StagingDeps): string {
 
 function domainFile(deps: StagingDeps, id: string): string {
   return join(deps.corpus.mapDomainsDir, `${id}.md`);
+}
+
+// What git still sees changed under map/ — empty once every map write is committed.
+async function mapStatus(deps: StagingDeps): Promise<string> {
+  return (await runGit(deps.corpus.corpusDir, ["status", "--porcelain"], ["map"])).stdout.trim();
+}
+
+// Another session mid-commit: git refuses every writer while .git/index.lock exists.
+function lockCorpusIndex(deps: StagingDeps): void {
+  writeFileSync(join(deps.corpus.corpusDir, ".git", "index.lock"), "");
+}
+
+function unlockCorpusIndex(deps: StagingDeps): void {
+  rmSync(join(deps.corpus.corpusDir, ".git", "index.lock"));
+}
+
+// A corrupted map — two sessions putting one id as different kinds, or a merge of two corpora —
+// committed by hand, because map_put itself refuses to create it.
+async function commitDuplicateFlow(deps: StagingDeps, id: string): Promise<void> {
+  writeMapSection(deps.corpus, {
+    frontmatter: { id, kind: "flow", anchors: [], depends_on: [], terms: [], commit: "abc1234" },
+    body: "A flow under a domain's id.",
+  });
+  await runGit(deps.corpus.corpusDir, ["add", "."]);
+  await runGit(deps.corpus.corpusDir, ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "duplicate"]);
 }
 
 describe("mapPut", () => {
@@ -265,7 +291,7 @@ describe("mapDelete", () => {
     const result = await mapDelete(deps, "billing");
 
     const head = await corpusHead(deps);
-    expect(result).toEqual({ kind: "domain", id: "billing", commit: head, index: { rebuilt: true } });
+    expect(result).toEqual({ id: "billing", kinds: ["domain"], commit: head, index: { rebuilt: true } });
     expect(existsSync(domainFile(deps, "billing"))).toBe(false);
     expect(readIndexFile(deps)).toBe(`${MAP_INDEX_HEADING}\n`);
     expect(readFileSync(deps.corpus.glossaryPath, "utf8")).toBe(GLOSSARY_HEADER);
@@ -290,6 +316,132 @@ describe("mapDelete", () => {
     expect(existsSync(domainFile(deps, "billing"))).toBe(true);
     expect(await corpusSubjects(deps)).toEqual(['Put map domain "billing"']);
     expect(eventsOfType(deps, "map_section_deleted")).toEqual([]);
+  });
+
+  test("a delete after a put whose commit failed removes the uncommitted file, commits the derived files and converges", async () => {
+    const { deps } = await makeWorkbench();
+    lockCorpusIndex(deps);
+    await expect(mapPut(deps, BILLING)).rejects.toThrow(CorpusBusyError);
+    unlockCorpusIndex(deps);
+    expect(existsSync(domainFile(deps, "billing"))).toBe(true);
+
+    const result = await mapDelete(deps, "billing");
+
+    expect(result.kinds).toEqual(["domain"]);
+    expect(existsSync(domainFile(deps, "billing"))).toBe(false);
+    expect(readIndexFile(deps)).toBe(`${MAP_INDEX_HEADING}\n`);
+    expect(await mapStatus(deps)).toBe("");
+    expect(eventsOfType(deps, "map_section_deleted").map((event) => event.kind)).toEqual(["domain"]);
+  });
+
+  test("a delete whose commit failed is finished by its retry, not refused as an unknown section", async () => {
+    const { deps } = await makeWorkbench();
+    await mapPut(deps, BILLING);
+    lockCorpusIndex(deps);
+    await expect(mapDelete(deps, "billing")).rejects.toThrow(CorpusBusyError);
+    unlockCorpusIndex(deps);
+    expect(existsSync(domainFile(deps, "billing"))).toBe(false);
+
+    const retried = await mapDelete(deps, "billing");
+
+    expect(retried).toEqual({ id: "billing", kinds: ["domain"], commit: await corpusHead(deps), index: { rebuilt: true } });
+    expect(await corpusSubjects(deps)).toEqual(['Delete map domain "billing"', 'Put map domain "billing"']);
+    expect(await mapStatus(deps)).toBe("");
+    expect(eventsOfType(deps, "map_section_deleted").length).toBe(1);
+  });
+
+  test("an id held by both kinds is deleted whole: both files in one commit, one event per kind", async () => {
+    const { deps } = await makeWorkbench();
+    await mapPut(deps, BILLING);
+    await commitDuplicateFlow(deps, "billing");
+
+    const result = await mapDelete(deps, "billing");
+
+    const head = await corpusHead(deps);
+    expect(result).toEqual({ id: "billing", kinds: ["domain", "flow"], commit: head, index: { rebuilt: true } });
+    expect(formatMapDelete(result)).toBe(
+      `Deleted map sections domain "billing" and flow "billing" (one id was held by both kinds); committed ${head}.`,
+    );
+    expect(existsSync(domainFile(deps, "billing"))).toBe(false);
+    expect(existsSync(join(deps.corpus.mapFlowsDir, "billing.md"))).toBe(false);
+    expect((await corpusSubjects(deps))[0]).toBe('Delete map domain and flow "billing"');
+    expect(await mapStatus(deps)).toBe("");
+    expect(eventsOfType(deps, "map_section_deleted").map((event) => [event.kind, event.commit])).toEqual([
+      ["domain", head],
+      ["flow", head],
+    ]);
+  });
+
+  test("a delete while another section file is unreadable is refused before anything is removed", async () => {
+    const { deps } = await makeWorkbench();
+    await mapPut(deps, BILLING);
+    writeFileSync(domainFile(deps, "orders"), "not a section\n");
+
+    const failure = await mapDelete(deps, "billing").catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(MapSectionValidationError);
+    expect((failure as Error).message).toContain(domainFile(deps, "orders"));
+    expect(existsSync(domainFile(deps, "billing"))).toBe(true);
+    expect(eventsOfType(deps, "map_section_deleted")).toEqual([]);
+  });
+
+  test("an unreadable file is removed by a delete of its own id", async () => {
+    const { deps } = await makeWorkbench();
+    await mapPut(deps, BILLING);
+    writeFileSync(domainFile(deps, "billing"), "not a section\n");
+
+    const result = await mapDelete(deps, "billing");
+
+    expect(result.kinds).toEqual(["domain"]);
+    expect(existsSync(domainFile(deps, "billing"))).toBe(false);
+    expect(await mapStatus(deps)).toBe("");
+  });
+});
+
+describe("mapPut on a map that does not read", () => {
+  test("another unreadable section file refuses the put with its path and nothing is written", async () => {
+    const { deps } = await makeWorkbench();
+    writeFileSync(domainFile(deps, "orders"), "not a section\n");
+
+    const failure = await mapPut(deps, BILLING).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(MapSectionValidationError);
+    expect((failure as Error).message).toContain(domainFile(deps, "orders"));
+    expect(existsSync(domainFile(deps, "billing"))).toBe(false);
+    expect(await corpusSubjects(deps)).toEqual([]);
+    expect(eventsOfType(deps, "map_section_put")).toEqual([]);
+  });
+
+  test("an id held by both kinds refuses any put with both paths named, until it is deleted", async () => {
+    const { deps } = await makeWorkbench();
+    await mapPut(deps, BILLING);
+    await commitDuplicateFlow(deps, "billing");
+
+    const failure = await mapPut(deps, { ...BILLING, id: "orders" }).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(MapSectionValidationError);
+    expect((failure as Error).message).toBe(
+      `map section id "billing" is held by both ${domainFile(deps, "billing")} and ${join(deps.corpus.mapFlowsDir, "billing.md")}; ` +
+        "delete it with map_delete and put it back as one kind",
+    );
+    expect(existsSync(domainFile(deps, "orders"))).toBe(false);
+    expect(eventsOfType(deps, "map_section_put").length).toBe(1);
+  });
+
+  test("a repeated put after the project HEAD moved records the new HEAD and mints a new commit", async () => {
+    const { deps, projectHead } = await makeWorkbench();
+    const first = await mapPut(deps, BILLING);
+    writeFileSync(join(deps.projectRoot, "src/b.ts"), "more\n");
+    await runGit(deps.projectRoot, ["add", "."]);
+    await runGit(deps.projectRoot, ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "next"]);
+    const movedHead = (await runGit(deps.projectRoot, ["rev-parse", "HEAD"])).stdout.trim();
+
+    const second = await mapPut(deps, BILLING);
+
+    expect(movedHead).not.toBe(projectHead);
+    expect(second.commit).not.toBe(first.commit);
+    expect(parseMapSection(readFileSync(domainFile(deps, "billing"), "utf8")).frontmatter.commit).toBe(movedHead);
+    expect(await corpusSubjects(deps)).toEqual(['Put map domain "billing"', 'Put map domain "billing"']);
   });
 });
 

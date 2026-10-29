@@ -693,6 +693,22 @@ describe("runDoctor map sections", () => {
     expect(report.overall).toBe("fail");
   });
 
+  test("one id held by both kinds fails the component with both paths, never reads as healthy", async () => {
+    const corpus = await buildHealthyCorpus();
+    writeMapSection(corpus, section("billing"));
+    writeMapSection(corpus, section("billing", { kind: "flow" }));
+
+    const report = await runDoctor({ corpusDir: corpus.corpusDir, embedder: bagOfWordsClient() });
+
+    const sections = byName(report).get(MAP_SECTIONS_COMPONENT)!;
+    expect(sections.status).toBe("fail");
+    expect(sections.detail).toBe(
+      `map section id "billing" is held by both ${join(corpus.mapDomainsDir, "billing.md")} and ` +
+        `${join(corpus.mapFlowsDir, "billing.md")}; delete it with map_delete and put it back as one kind`,
+    );
+    expect(report.overall).toBe("fail");
+  });
+
   test("without an index the section liveness is unknown and the component degrades", async () => {
     const corpus = await buildHealthyCorpus();
     const { projectRoot, commit } = await projectOf(corpus);

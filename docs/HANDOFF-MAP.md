@@ -46,7 +46,9 @@
   точному равенству. Git и диск в правиле не участвуют. Домен без якорей не связан ни с одной
   заметкой.
 - Doctor проверяет карту компонентом `map_sections`: нечитаемый файл или расхождение имени и
-  каталога с frontmatter — `fail` с путём; висячие `depends_on` и мёртвые якоря разделов —
+  каталога с frontmatter — `fail` с путём; один id в обоих каталогах — `fail` с обоими путями:
+  `map section id "<id>" is held by both <domain path> and <flow path>; delete it with map_delete and put it back as one kind`
+  (та же ошибка роняет пересборку индекса); висячие `depends_on` и мёртвые якоря разделов —
   `degraded` с лекарством «re-anchor the section with map_put»; без индекса живость «unknown
   (rebuilt on next recall)». Только чтение.
 
@@ -62,7 +64,15 @@
   событие пишет. Put с существующим id того же вида — замена целиком: раздел не версионируется,
   старое тело остаётся только в истории git корпуса.
 - `map_delete { id }` → файл удалён → производные переписаны → commit → событие → пересборка.
-  Ответ: `Deleted map section <kind> "<id>"; committed <sha>.`
+  Ответ: `Deleted map section <kind> "<id>"; committed <sha>.` Id, который испорченная карта держит
+  в обоих каталогах, удаляется целиком — оба файла одним коммитом, событие на каждый вид:
+  `Deleted map sections domain "<id>" and flow "<id>" (one id was held by both kinds); committed <sha>.`
+  Удаление сходится при повторе: если коммит упал (`another session is committing to this corpus;
+  retry`), повторный `map_delete` того же id доводит его, а не отвечает «нет раздела»; он же
+  лечит нечитаемый файл своего id.
+- Карта читается ЦЕЛИКОМ до первой записи: если в `map/` есть нечитаемый файл или один id в обоих
+  каталогах, `map_put` любого id и `map_delete` другого id отказывают той же ошибкой с путём, и на
+  диск ничего не пишется. Лекарство — `map_delete` проблемного id, затем `map_put` заново.
 - Если пересборка индекса после коммита упала, оба инструмента отвечают УСПЕХОМ с двумя
   добавочными строками по контракту `staging_resolve` (HANDOFF-RESOLVE-INDEX):
   `Index not rebuilt: <reason>` и

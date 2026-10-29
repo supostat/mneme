@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EMBEDDING_MODEL } from "./embeddings";
@@ -47,6 +47,23 @@ describe("refreshIndexAfterDecision", () => {
     expect(refresh).toEqual({ rebuilt: true });
     expect(readEvents(layout.eventsDir).map((event) => event.type)).toEqual(["rebuild"]);
     expect(isIndexMarkedStale(join(layout.corpusDir, "index.db"))).toBe(false);
+  });
+
+  test("an unreadable map file fails the rebuild with its path in <corpus> form, never the absolute corpus path", async () => {
+    const layout = corpusLayout();
+    const notesDir = join(layout.corpusDir, "notes");
+    mkdirSync(notesDir);
+    mkdirSync(join(layout.corpusDir, "map", "domains"), { recursive: true });
+    writeFileSync(join(layout.corpusDir, "map", "domains", "broken.md"), "not a section\n");
+
+    const refresh = await refreshIndexAfterDecision(layout.deps(notesDir), layout.corpusDir);
+
+    const expectedReason =
+      "map section file <corpus>/map/domains/broken.md is unreadable: map section is missing an opening frontmatter fence";
+    expect(refresh).toEqual({ rebuilt: false, reason: expectedReason });
+    const failure = readEvents(layout.eventsDir).find((event) => event.type === "rebuild_failed")!;
+    expect(failure.message).toBe(expectedReason);
+    expect(failure.message as string).not.toContain(layout.corpusDir);
   });
 
   test("a rebuild that throws marks the index stale, so the next read rebuilds before it reads", async () => {

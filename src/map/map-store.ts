@@ -34,23 +34,58 @@ export function sectionPath(layout: MapLayout, kind: MapSectionKind, id: string)
   return join(sectionDirectory(layout, kind), `${id}${SECTION_EXTENSION}`);
 }
 
+// A section file as the directory names it, before it is read: the id is the file name.
+export interface MapSectionFile {
+  path: string;
+  kind: MapSectionKind;
+  id: string;
+}
+
 // Domains first, then flows, each sorted by id — the order every consumer (the index, the
 // derived files, the listing) sees, so no two of them disagree. A corpus provisioned before the
 // map existed has no map/ yet: that is an EMPTY map, not a fault — resolveCorpus creates the
 // directories on the next tool call.
 export function readMapSections(layout: MapLayout): MapSection[] {
-  const sections: MapSection[] = [];
+  return readSectionFiles(listSectionFiles(layout));
+}
+
+// Listed without being parsed, so a caller can tell which files an id holds even when one of them
+// would not read — the delete of a broken or duplicated section relies on it.
+export function listSectionFiles(layout: MapLayout): MapSectionFile[] {
+  const files: MapSectionFile[] = [];
   for (const kind of MAP_SECTION_KINDS) {
     const directory = sectionDirectory(layout, kind);
     if (!existsSync(directory)) continue;
-    const files = readdirSync(directory)
+    const names = readdirSync(directory)
       .filter((name) => name.endsWith(SECTION_EXTENSION))
       .sort();
-    for (const file of files) {
-      sections.push(readSectionFile(join(directory, file), kind));
+    for (const name of names) {
+      files.push({ path: join(directory, name), kind, id: basename(name, SECTION_EXTENSION) });
     }
   }
-  return sections;
+  return files;
+}
+
+// One id lives in one directory: the index keys sections by id, so an id held by both kinds is
+// refused here by name — with both paths — instead of surfacing as a bare PRIMARY KEY failure in
+// the rebuild and passing the doctor as healthy.
+export function readSectionFiles(files: MapSectionFile[]): MapSection[] {
+  requireOneFilePerId(files);
+  return files.map((file) => readSectionFile(file.path, file.kind));
+}
+
+function requireOneFilePerId(files: MapSectionFile[]): void {
+  const pathById = new Map<string, string>();
+  for (const file of files) {
+    const heldBy = pathById.get(file.id);
+    if (heldBy !== undefined) {
+      throw new MapSectionValidationError(
+        `map section id "${file.id}" is held by both ${heldBy} and ${file.path}; ` +
+          "delete it with map_delete and put it back as one kind",
+      );
+    }
+    pathById.set(file.id, file.path);
+  }
 }
 
 // Every fault names the file: the doctor and the rebuild report it verbatim, and a curator with

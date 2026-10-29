@@ -48,3 +48,11 @@ async function runGitOrThrow(
   }
   return result;
 }
+
+// The paths among `relativePaths` the corpus repository's index holds — committed or staged, still
+// on disk or already removed from it. A writer that deletes a file before committing asks this to
+// know whether the removal still has to be committed: `git add` of a path git never knew fails.
+export async function trackedPaths(corpus: Corpus, relativePaths: string[]): Promise<Set<string>> {
+  const listed = await runGitOrThrow(corpus.corpusDir, ["ls-files", "-z"], relativePaths);
+  return new Set(listed.stdout.split("\0").filter((path) => path !== ""));
+}

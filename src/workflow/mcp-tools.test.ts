@@ -854,6 +854,21 @@ describe("workflow recall domains", () => {
     );
     expect(eventsOfType(await loggedEvents(bench), "workflow_run_started").length).toBe(0);
   });
+
+  test("an unreadable map file refuses the start by its path in <corpus> form, and no run begins", async () => {
+    const bench = await makeWorkbench();
+    await writeWorkbenchDomain(bench, "payments");
+    const corpus = await resolveCorpus(bench.projectRoot, { corpusHome: bench.corpusHome });
+    writeFileSync(join(corpus.mapDomainsDir, "broken.md"), "not a section\n");
+
+    const refusal = await startRefusal(bench, { "phase-one": ["payments"] });
+
+    expect(refusal).toBe(
+      "Error: map section file <corpus>/map/domains/broken.md is unreadable: " +
+        "map section is missing an opening frontmatter fence",
+    );
+    expect(eventsOfType(await loggedEvents(bench), "workflow_run_started").length).toBe(0);
+  });
 });
 
 describe("workflow terminal sync", () => {

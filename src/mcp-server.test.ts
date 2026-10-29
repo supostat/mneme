@@ -1029,6 +1029,27 @@ describe("mcp-server map tools", () => {
     expect(textOf(gone)).toContain('no map domain "orders"');
   });
 
+  test("map_delete of an id held by both kinds answers with the one line naming both", async () => {
+    const projectRoot = await buildProjectRepo();
+    const corpusHome = corpusHomeDir();
+    const client = await connect({ projectRoot, corpusHome, embeddings: bagClient(), idFactory: sequentialIds(), clock: fixedClock });
+    await callText(client, "map_put", BILLING);
+    const corpus = await resolveCorpus(projectRoot, { corpusHome });
+    const commit = (await runGit(projectRoot, ["rev-parse", "HEAD"])).stdout.trim();
+    writeMapSection(corpus, {
+      frontmatter: { id: "billing", kind: "flow", anchors: [], depends_on: [], terms: [], commit },
+      body: "A flow under a domain's id.",
+    });
+
+    const deleted = await callText(client, "map_delete", { id: "billing" });
+
+    expect(deleted).toBe(
+      `Deleted map sections domain "billing" and flow "billing" (one id was held by both kinds); ` +
+        `committed ${await corpusHead(projectRoot, corpusHome)}.`,
+    );
+    expect(await callText(client, "map_list", {})).toBe("The project map is empty.");
+  });
+
   test("a refused put is a tool error that writes neither a file nor a map event", async () => {
     const projectRoot = await buildProjectRepo();
     const corpusHome = corpusHomeDir();

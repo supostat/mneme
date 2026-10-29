@@ -187,7 +187,8 @@ const MAP_PUT_DESCRIPTION =
 const MAP_DELETE_DESCRIPTION =
   "Delete one project-map section by id, rewrite the derived INDEX.md and glossary.md, commit the " +
   "corpus and rebuild the index — no human gate: the map is a synthetic layer the plugin rebuilds. " +
-  "An unknown id is an error.";
+  "An unknown id is an error; an id a corrupted map holds as both kinds loses both files. Retrying " +
+  "a delete whose commit failed finishes it.";
 const MAP_LIST_DESCRIPTION =
   "Read the project map. Without id: one line per section (id, kind, anchor count, dead-anchor " +
   "count, depends_on, term count, first line) plus a warning for every depends_on that names an " +

@@ -9,7 +9,9 @@ import type { MapSection, MapSectionFrontmatter } from "./map-section";
 import {
   MAP_INDEX_HEADING,
   findDanglingDependencies,
+  listSectionFiles,
   readMapSections,
+  readSectionFiles,
   removeMapSection,
   renderGlossary,
   renderMapIndex,
@@ -118,6 +120,30 @@ describe("section files", () => {
     writeFileSync(join(corpus.mapDomainsDir, "broken.md"), "not a section at all\n");
 
     expect(() => readMapSections(corpus)).toThrow(MapSectionValidationError);
+  });
+
+  test("one id held by both kinds fails the read, naming both files", async () => {
+    const corpus = await provisionedCorpus();
+    writeMapSection(corpus, billing);
+    writeMapSection(corpus, section({ id: "billing", kind: "flow" }, "A flow under a domain's id."));
+
+    expect(() => readMapSections(corpus)).toThrow(MapSectionValidationError);
+    expect(() => readMapSections(corpus)).toThrow(
+      `map section id "billing" is held by both ${sectionPath(corpus, "domain", "billing")} and ` +
+        `${sectionPath(corpus, "flow", "billing")}; delete it with map_delete and put it back as one kind`,
+    );
+  });
+
+  test("listing names every section file by kind and id without reading it, so a broken file still lists", async () => {
+    const corpus = await provisionedCorpus();
+    writeMapSection(corpus, orderToInvoice);
+    writeFileSync(join(corpus.mapDomainsDir, "broken.md"), "not a section at all\n");
+
+    expect(listSectionFiles(corpus)).toEqual([
+      { path: sectionPath(corpus, "domain", "broken"), kind: "domain", id: "broken" },
+      { path: sectionPath(corpus, "flow", "order-to-invoice"), kind: "flow", id: "order-to-invoice" },
+    ]);
+    expect(readSectionFiles(listSectionFiles(corpus).filter((file) => file.id !== "broken"))).toEqual([orderToInvoice]);
   });
 
   test("files without the .md extension are ignored", async () => {
