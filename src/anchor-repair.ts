@@ -168,9 +168,8 @@ export interface SweepReport {
   branchesChecked: number;
 }
 
-// Liveness checks and staging stay strictly sequential: unbounded parallel git spawns are a named
-// debt. A note already carrying a pending request for the same anchor is skipped SILENTLY — that,
-// plus repairing missing anchors only, is what keeps a re-run over a repaired corpus quiet.
+// A note already carrying a pending request for the same anchor is skipped SILENTLY — that, plus
+// repairing missing anchors only, is what keeps a re-run over a repaired corpus quiet.
 export async function anchorSweep(deps: StagingDeps): Promise<SweepReport> {
   const renames = await traceRenames(deps.projectRoot);
   // The branch-tips context is built ONCE for the whole sweep, never per note or per anchor.

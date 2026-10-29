@@ -2,11 +2,22 @@ import { test, expect, describe } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runGit, isRepo, initRepo } from "./git";
+import { runGit, isRepo, initRepo, GIT_PROCESS_LIMIT, gitProcessLimit } from "./git";
+
+// Long enough for `git --version` to finish many times over had runGit spawned it anyway.
+const UNSPAWNED_WAIT_MS = 250;
 
 function makeTempRepo(): Promise<string> {
   const repoDir = mkdtempSync(join(tmpdir(), "mneme-git-"));
   return initRepo(repoDir).then(() => repoDir);
+}
+
+function heldSlot(): { held: Promise<void>; release: () => void } {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { held: gitProcessLimit.run(() => gate), release };
 }
 
 describe("git adapter hardening", () => {
@@ -83,5 +94,34 @@ describe("git adapter hardening", () => {
     const unreachablePath = join(base, "missing-parent", "child");
 
     await expect(initRepo(unreachablePath)).rejects.toThrow();
+  });
+});
+
+describe("git process limit", () => {
+  test("every git child shares one limit of 16", () => {
+    expect(GIT_PROCESS_LIMIT).toBe(16);
+  });
+
+  test("runGit spawns nothing while every slot is held and runs as soon as one frees", async () => {
+    const repoDir = await makeTempRepo();
+    const slots = Array.from({ length: GIT_PROCESS_LIMIT }, () => heldSlot());
+    try {
+      let settled = false;
+      const version = runGit(repoDir, ["--version"]).then((result) => {
+        settled = true;
+        return result;
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, UNSPAWNED_WAIT_MS));
+      expect(settled).toBe(false);
+
+      slots[0]!.release();
+      const result = await version;
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toStartWith("git version");
+    } finally {
+      for (const slot of slots) slot.release();
+      await Promise.all(slots.map((slot) => slot.held));
+    }
   });
 });

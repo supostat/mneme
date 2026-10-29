@@ -102,7 +102,6 @@ interface OrphanVerdicts {
 
 async function classifyOrphans(deps: RunInspectionDeps, otherBranchRuns: ReadableRun[]): Promise<OrphanVerdicts> {
   const verdicts: OrphanVerdicts = { paused: [], orphanCandidates: [], indeterminate: [] };
-  // Branch checks stay strictly sequential: unbounded parallel git spawns are a named debt.
   for (const run of otherBranchRuns) {
     const existence = await branchExists(deps.projectRoot, run.branch);
     if (existence === "exists") {

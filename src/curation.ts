@@ -51,7 +51,6 @@ export async function notesList(deps: StagingDeps, filters: NotesListFilters): P
     (note) => filters.type === undefined || note.frontmatter.type === filters.type,
   );
   const entries: NotesListEntry[] = [];
-  // Liveness checks stay strictly sequential: unbounded parallel git spawns are a named debt.
   // The branch-tips context is built ONCE for the listing, never inside the loop.
   const context = await createLivenessContext(deps.projectRoot);
   for (const note of notes) {

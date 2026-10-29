@@ -1,4 +1,12 @@
+import { ConcurrencyLimit } from "./concurrency-limit";
+
 const GIT_EXECUTABLE = "git";
+// Every git child the engine spawns shares this one bound: a rebuild fans out over thousands of
+// anchors through Promise.all, and unbounded it runs into the per-user process limit (EAGAIN). A
+// slot covers the whole child — spawn, both pipes drained, exit — and nothing inside it waits for
+// another slot.
+export const GIT_PROCESS_LIMIT = 16;
+export const gitProcessLimit = new ConcurrencyLimit(GIT_PROCESS_LIMIT);
 const STRIPPED_ENV_KEYS: ReadonlySet<string> = new Set([
   "GIT_DIR",
   "GIT_WORK_TREE",
@@ -31,7 +39,7 @@ function sanitizedGitEnv(): Record<string, string> {
   return environment;
 }
 
-export async function runGit(
+export function runGit(
   repoDir: string,
   args: string[],
   pathArgs: string[] = [],
@@ -40,6 +48,10 @@ export async function runGit(
   if (pathArgs.length > 0) {
     command.push("--", ...pathArgs);
   }
+  return gitProcessLimit.run(() => spawnGit(command));
+}
+
+async function spawnGit(command: string[]): Promise<GitResult> {
   const subprocess = Bun.spawn({
     cmd: command,
     env: sanitizedGitEnv(),
