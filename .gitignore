@@ -42,6 +42,8 @@ docs/*
 !docs/HANDOFF-NOTE-BODY.md
 # Same reason: tests/handoff-resolve-index.test.ts pins the staging_resolve result contract.
 !docs/HANDOFF-RESOLVE-INDEX.md
+# Same reason: tests/handoff-map.test.ts pins the map storage, tools, recall and memory-gap contract.
+!docs/HANDOFF-MAP.md
 
 # analytics package (generated, local-only)
 mneme-analytics/
