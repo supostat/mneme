@@ -28,7 +28,7 @@ import type { EventInput, EventWriter } from "./events";
 // population with its own FTS document, its own staleness and its own vectors, so no note query
 // ever meets a section row — dedup's nearest neighbour, recall's note ranking and the doctor's
 // note counts keep their meaning by construction.
-const SCHEMA_STATEMENTS = [
+export const INDEX_SCHEMA_STATEMENTS = [
   "CREATE VIRTUAL TABLE IF NOT EXISTS fts USING fts5(id UNINDEXED, body, tokenize = 'porter unicode61')",
   "CREATE TABLE IF NOT EXISTS meta (id TEXT PRIMARY KEY, type TEXT NOT NULL, staleness_boost REAL NOT NULL)",
   "CREATE TABLE IF NOT EXISTS vec (id TEXT PRIMARY KEY, content_hash TEXT NOT NULL, embedding BLOB NOT NULL)",
@@ -37,10 +37,21 @@ const SCHEMA_STATEMENTS = [
   "CREATE TABLE IF NOT EXISTS map_meta (id TEXT PRIMARY KEY, kind TEXT NOT NULL, staleness_boost REAL NOT NULL)",
   "CREATE TABLE IF NOT EXISTS map_vec (id TEXT PRIMARY KEY, content_hash TEXT NOT NULL, embedding BLOB NOT NULL)",
   "CREATE TABLE IF NOT EXISTS map_links (section_id TEXT NOT NULL, note_id TEXT NOT NULL, PRIMARY KEY (section_id, note_id))",
+  "CREATE TABLE IF NOT EXISTS map_deps (section_id TEXT NOT NULL, depends_on TEXT NOT NULL, PRIMARY KEY (section_id, depends_on))",
 ];
 // Every table a complete index holds — the rebuild clears them all in one transaction, and a reader
 // that finds one missing (an index from before the map) knows the index needs a rebuild.
-export const INDEX_TABLES = ["fts", "meta", "vec", "index_config", "map_fts", "map_meta", "map_vec", "map_links"] as const;
+export const INDEX_TABLES = [
+  "fts",
+  "meta",
+  "vec",
+  "index_config",
+  "map_fts",
+  "map_meta",
+  "map_vec",
+  "map_links",
+  "map_deps",
+] as const;
 type VectorTable = "vec" | "map_vec";
 const VECTOR_TABLES: readonly VectorTable[] = ["vec", "map_vec"];
 const NOT_A_DATABASE_CODE = "SQLITE_NOTADB";
@@ -136,6 +147,9 @@ function replaceIndexContents(
   const insertMapFts = database.query("INSERT INTO map_fts(id, body) VALUES (?, ?)");
   const insertMapMeta = database.query("INSERT INTO map_meta(id, kind, staleness_boost) VALUES (?, ?, ?)");
   const insertLink = database.query("INSERT INTO map_links(section_id, note_id) VALUES (?, ?)");
+  // A section's depends_on goes into the index so a domain-scoped recall can find the flows that
+  // name the domain without reading map/ — the index stays recall's only source.
+  const insertDependency = database.query("INSERT INTO map_deps(section_id, depends_on) VALUES (?, ?)");
   const swap = database.transaction((): number => {
     for (const table of INDEX_TABLES) database.run(`DELETE FROM ${table}`);
     contents.notes.forEach((note, index) => {
@@ -145,6 +159,7 @@ function replaceIndexContents(
     contents.sections.forEach((section, index) => {
       insertMapFts.run(section.frontmatter.id, mapFtsDocument(section));
       insertMapMeta.run(section.frontmatter.id, section.frontmatter.kind, contents.sectionBoosts[index]!);
+      for (const dependency of section.frontmatter.depends_on) insertDependency.run(section.frontmatter.id, dependency);
     });
     for (const link of contents.links) insertLink.run(link.sectionId, link.noteId);
     const noteVectors = writeVectors(
@@ -236,7 +251,7 @@ function openIndexForRebuild(indexPath: string): Database {
 function openIndexWithSchema(indexPath: string): Database {
   const database = openWritableDatabase(indexPath);
   try {
-    for (const statement of SCHEMA_STATEMENTS) database.run(statement);
+    for (const statement of INDEX_SCHEMA_STATEMENTS) database.run(statement);
     return database;
   } catch (error) {
     database.close();
@@ -572,7 +587,10 @@ export function dumpMapIndex(indexPath: string): string {
     const links = database
       .query("SELECT section_id, note_id FROM map_links ORDER BY section_id, note_id")
       .all();
-    return JSON.stringify({ sections, links });
+    const deps = database
+      .query("SELECT section_id, depends_on FROM map_deps ORDER BY section_id, depends_on")
+      .all();
+    return JSON.stringify({ sections, links, deps });
   } finally {
     database.close();
   }

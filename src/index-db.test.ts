@@ -898,6 +898,7 @@ describe("rebuild indexes map sections beside the notes", () => {
         { id: "alpha-flow", kind: "flow", staleness_boost: 0, body: "Alpha flow." },
       ],
       links: [{ section_id: "alpha", note_id: ulid(0) }],
+      deps: [{ section_id: "alpha-flow", depends_on: "alpha" }],
     });
   });
 

@@ -7,7 +7,10 @@ import { runGit, initRepo } from "./git";
 import { serializeNote } from "./note";
 import type { Note, NoteFrontmatter, NoteType } from "./note";
 import { rebuild } from "./index-db";
-import { recall } from "./recall";
+import { RECALL_MAP_SECTIONS_MAX, RecallDomainError, recall } from "./recall";
+import { mapLayoutOf } from "./corpus";
+import { writeMapSection } from "./map/map-store";
+import type { MapSection, MapSectionFrontmatter } from "./map/map-section";
 import type { RecallDeps } from "./recall";
 import { EMBEDDING_DIMENSION, EMBEDDING_MODEL } from "./embeddings";
 import type { EmbeddingsClient } from "./embeddings";
@@ -93,6 +96,7 @@ async function buildProjectRepo(fileNames: string[]): Promise<{ projectRoot: str
 async function setupIndex(
   specs: NoteSpec[],
   embeddings: EmbeddingsClient,
+  sections: MapSection[] = [],
 ): Promise<{ indexPath: string; eventsDir: string }> {
   const liveFiles = specs.filter((spec) => !spec.dead && spec.anchor !== "").map((spec) => spec.anchor);
   const { projectRoot, commit } = await buildProjectRepo(liveFiles);
@@ -114,6 +118,10 @@ async function setupIndex(
     const note: Note = { frontmatter, body: spec.body };
     writeFileSync(join(notesDir, `${spec.id}.md`), serializeNote(note));
   }
+  const mapDir = join(corpusDir, "map");
+  mkdirSync(join(mapDir, "domains"), { recursive: true });
+  mkdirSync(join(mapDir, "flows"));
+  for (const section of sections) writeMapSection(mapLayoutOf(mapDir), section);
   const indexPath = join(corpusDir, "index.db");
   // The rebuild event goes to a throwaway dir, keeping the returned eventsDir holding only the events
   // the recall tests assert on.
@@ -179,7 +187,7 @@ describe("recall FTS regression", () => {
     const { indexPath, eventsDir } = await setupIndex(specs, offlineClient());
     const deps = openRecall(indexPath, eventsDir, offlineClient());
 
-    const result = await recall(deps, "payment", 10000, "tool-call");
+    const result = await recall(deps, "payment", 10000, "tool-call", []);
 
     expect(result.returnedIds).toEqual([ulid(0)]);
   });
@@ -192,7 +200,7 @@ describe("recall FTS regression", () => {
     const { indexPath, eventsDir } = await setupIndex(specs, offlineClient());
     const deps = openRecall(indexPath, eventsDir, offlineClient());
 
-    const result = await recall(deps, "react-hook-form", 10000, "tool-call");
+    const result = await recall(deps, "react-hook-form", 10000, "tool-call", []);
 
     expect(result.returnedIds).toContain(ulid(0));
   });
@@ -205,7 +213,7 @@ describe("recall FTS regression", () => {
     const { indexPath, eventsDir } = await setupIndex(specs, offlineClient());
     const deps = openRecall(indexPath, eventsDir, offlineClient());
 
-    const result = await recall(deps, "payment", 10000, "tool-call");
+    const result = await recall(deps, "payment", 10000, "tool-call", []);
 
     expect(result.returnedIds).toEqual([ulid(1)]);
   });
@@ -218,10 +226,10 @@ describe("recall FTS regression", () => {
     const { indexPath, eventsDir } = await setupIndex(specs, offlineClient());
     const deps = openRecall(indexPath, eventsDir, offlineClient());
 
-    const byTag = await recall(deps, "MultiSelect", 10000, "tool-call");
+    const byTag = await recall(deps, "MultiSelect", 10000, "tool-call", []);
     expect(byTag.returnedIds).toEqual([ulid(0)]);
 
-    const unrelated = await recall(deps, "grpc streaming", 10000, "tool-call");
+    const unrelated = await recall(deps, "grpc streaming", 10000, "tool-call", []);
     expect(unrelated.returnedIds).toEqual([]);
   });
 
@@ -232,7 +240,7 @@ describe("recall FTS regression", () => {
     const { indexPath, eventsDir } = await setupIndex(specs, offlineClient());
     const deps = openRecall(indexPath, eventsDir, offlineClient());
 
-    const result = await recall(deps, 'payment "NEAR" (foo*) OR', 10000, "tool-call");
+    const result = await recall(deps, 'payment "NEAR" (foo*) OR', 10000, "tool-call", []);
 
     expect(result.returnedIds).toContain(ulid(0));
   });
@@ -255,7 +263,7 @@ describe("recall budget", () => {
     const deps = openRecall(indexPath, eventsDir, offlineClient());
 
     for (const budget of [3, 10, 50, 100000]) {
-      const result = await recall(deps, "widget", budget, "tool-call");
+      const result = await recall(deps, "widget", budget, "tool-call", []);
       const used = result.returnedIds.reduce((sum, id) => sum + tokenEstimate(bodyById.get(id)!), 0);
       expect(used).toBeLessThanOrEqual(budget);
     }
@@ -265,10 +273,10 @@ describe("recall budget", () => {
     const { indexPath, eventsDir } = await setupIndex(specs, offlineClient());
     const deps = openRecall(indexPath, eventsDir, offlineClient());
 
-    const roomy = await recall(deps, "widget", 100000, "tool-call");
+    const roomy = await recall(deps, "widget", 100000, "tool-call", []);
     expect(roomy.returnedIds[0]).toBe(ulid(0));
 
-    const result = await recall(deps, "widget", 10, "tool-call");
+    const result = await recall(deps, "widget", 10, "tool-call", []);
 
     expect(result.returnedIds).not.toContain(ulid(0));
     expect(result.returnedIds).toContain(ulid(1));
@@ -285,7 +293,7 @@ describe("recall degraded mode", () => {
     const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
     const deps = openRecall(indexPath, eventsDir, offlineClient());
 
-    const result = await recall(deps, "payment refund ledger", 10000, "tool-call");
+    const result = await recall(deps, "payment refund ledger", 10000, "tool-call", []);
 
     expect(result.degraded).toBe(true);
     expect(result.returnedIds[0]).toBe(ulid(0));
@@ -301,7 +309,7 @@ describe("recall degraded on empty vector table", () => {
     const { indexPath, eventsDir } = await setupIndex(specs, offlineClient());
     const deps = openRecall(indexPath, eventsDir, bagOfWordsClient());
 
-    const result = await recall(deps, "payment refund ledger", 10000, "tool-call");
+    const result = await recall(deps, "payment refund ledger", 10000, "tool-call", []);
 
     expect(result.degraded).toBe(true);
     expect(result.returnedIds).toContain(ulid(0));
@@ -328,8 +336,8 @@ describe("recall relevance in both modes", () => {
     expect(specs.length).toBeGreaterThanOrEqual(20);
     const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
 
-    const fused = await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "payment refund ledger", 100000, "tool-call");
-    const degraded = await recall(openRecall(indexPath, eventsDir, offlineClient()), "payment refund ledger", 100000, "tool-call");
+    const fused = await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "payment refund ledger", 100000, "tool-call", []);
+    const degraded = await recall(openRecall(indexPath, eventsDir, offlineClient()), "payment refund ledger", 100000, "tool-call", []);
 
     expect(fused.degraded).toBe(false);
     expect(fused.returnedIds[0]).toBe(ulid(0));
@@ -349,7 +357,7 @@ describe("recall dead-anchor sink", () => {
     const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
     const deps = openRecall(indexPath, eventsDir, bagOfWordsClient());
 
-    const result = await recall(deps, "singleton pattern", 100000, "tool-call");
+    const result = await recall(deps, "singleton pattern", 100000, "tool-call", []);
 
     expect(result.returnedIds).toContain(ulid(0));
     expect(result.returnedIds).toContain(ulid(1));
@@ -370,7 +378,7 @@ describe("recall pattern anchor decoupling", () => {
     ];
     const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
 
-    const result = await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "singleton pattern usage", 100000, "tool-call");
+    const result = await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "singleton pattern usage", 100000, "tool-call", []);
 
     expect(result.returnedIds).toContain(ulid(0));
     expect(result.returnedIds).toContain(ulid(1));
@@ -389,7 +397,7 @@ describe("recall pattern anchor decoupling", () => {
     ];
     const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
 
-    const result = await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "never mock the clock", 100000, "tool-call");
+    const result = await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "never mock the clock", 100000, "tool-call", []);
 
     expect(result.returnedIds).toContain(ulid(0));
     expect(result.returnedIds).toContain(ulid(1));
@@ -404,7 +412,7 @@ describe("recall empty query", () => {
     const deps = openRecall(indexPath, eventsDir, bagOfWordsClient());
 
     // "%%% ---" yields no FTS terms and a zero-norm bag vector, so both channels stay empty.
-    const result = await recall(deps, "%%% ---", 10000, "tool-call");
+    const result = await recall(deps, "%%% ---", 10000, "tool-call", []);
 
     expect(result.returnedIds).toEqual([]);
     const events = readEvents(eventsDir);
@@ -419,7 +427,7 @@ describe("recall empty query", () => {
     const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
     const deps = openRecall(indexPath, eventsDir, offlineClient());
 
-    const result = await recall(deps, "%%% ---", 10000, "tool-call");
+    const result = await recall(deps, "%%% ---", 10000, "tool-call", []);
 
     expect(result.returnedIds).toEqual([]);
     const events = readEvents(eventsDir);
@@ -448,7 +456,7 @@ describe("recall malformed vector skip", () => {
     writable.close();
 
     const deps = openRecall(indexPath, eventsDir, bagOfWordsClient());
-    const result = await recall(deps, "payment refund ledger", 100000, "tool-call");
+    const result = await recall(deps, "payment refund ledger", 100000, "tool-call", []);
 
     expect(result.degraded).toBe(false);
     expect(result.returnedIds).toContain(ulid(0));
@@ -474,7 +482,7 @@ describe("recall malformed vector skip", () => {
     writable.close();
 
     const deps = openRecall(indexPath, eventsDir, bagOfWordsClient());
-    const result = await recall(deps, "payment refund ledger", 100000, "tool-call");
+    const result = await recall(deps, "payment refund ledger", 100000, "tool-call", []);
 
     expect(result.degraded).toBe(false);
     expect(result.returnedIds).toContain(ulid(0));
@@ -511,11 +519,11 @@ describe("recall cross-lingual and mixed queries", () => {
     // Cyrillic terms into `"term"*` MATCH syntax, so this run also pins that unicode61 tolerates
     // quoted unicode prefixes -- an empty rank map, never a raised error -- and that a query the
     // vector channel cannot serve honestly reports degradation instead of a silent empty hit.
-    const control = await recall(openRecall(indexPath, eventsDir, offlineClient()), cyrillicQuery, 100000, "tool-call");
+    const control = await recall(openRecall(indexPath, eventsDir, offlineClient()), cyrillicQuery, 100000, "tool-call", []);
     expect(control.returnedIds).toEqual([]);
     expect(control.degraded).toBe(true);
 
-    const result = await recall(openRecall(indexPath, eventsDir, crossLingualClient(translations)), cyrillicQuery, 100000, "tool-call");
+    const result = await recall(openRecall(indexPath, eventsDir, crossLingualClient(translations)), cyrillicQuery, 100000, "tool-call", []);
     // Served purely by cosine: a live embedder with stored vectors is the normal mode, not degraded.
     expect(result.degraded).toBe(false);
     expect(result.returnedIds[0]).toBe(ulid(0));
@@ -532,7 +540,7 @@ describe("recall cross-lingual and mixed queries", () => {
 
     // "починить" carries no index token; "payment"/"flow" drive FTS while the whole string drives the
     // vector. Both channels vote the payments note first -- neither the latin terms nor the prose wins alone.
-    const result = await recall(deps, "починить payment flow", 100000, "tool-call");
+    const result = await recall(deps, "починить payment flow", 100000, "tool-call", []);
 
     expect(result.degraded).toBe(false);
     expect(result.returnedIds[0]).toBe(ulid(0));
@@ -547,8 +555,8 @@ describe("recall RRF determinism", () => {
     ];
     const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
 
-    const first = await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "identical tie breaker", 100000, "tool-call");
-    const second = await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "identical tie breaker", 100000, "tool-call");
+    const first = await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "identical tie breaker", 100000, "tool-call", []);
+    const second = await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "identical tie breaker", 100000, "tool-call", []);
 
     expect(first.returnedIds).toEqual([ulid(0), ulid(1)]);
     expect(second.returnedIds).toEqual(first.returnedIds);
@@ -593,7 +601,7 @@ describe("recall candidate logging", () => {
     }));
     const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
 
-    await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "widget", 100000, "tool-call");
+    await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "widget", 100000, "tool-call", []);
 
     const event = lastRecallEvent(eventsDir);
     expect(candidatesOf(event).length).toBe(20);
@@ -605,7 +613,7 @@ describe("recall candidate logging", () => {
     const specs: NoteSpec[] = [{ id: ulid(0), body, anchor: "src/pay.ts" }];
     const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
 
-    await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "payment refund", 100000, "tool-call");
+    await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "payment refund", 100000, "tool-call", []);
 
     const candidate = candidatesOf(lastRecallEvent(eventsDir)).find((entry) => entry.id === ulid(0))!;
     expect(candidate.token_est).toBe(estimateTokens(body));
@@ -615,20 +623,20 @@ describe("recall candidate logging", () => {
     const specs: NoteSpec[] = [{ id: ulid(0), body: "payment refund ledger", anchor: "src/pay.ts" }];
     const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
 
-    await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "payment refund", 100000, "tool-call");
+    await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "payment refund", 100000, "tool-call", []);
 
     const timings = lastRecallEvent(eventsDir).timings as Record<string, number>;
     expect(Object.keys(timings).sort()).toEqual(["embed_ms", "fts_ms", "fusion_ms"]);
     for (const value of Object.values(timings)) expect(value).toBeGreaterThanOrEqual(0);
   });
 
-  test("RecallResult still exposes exactly returnedIds, notes and degraded", async () => {
+  test("RecallResult exposes exactly returnedIds, notes, sections and degraded", async () => {
     const specs: NoteSpec[] = [{ id: ulid(0), body: "payment refund ledger", anchor: "src/pay.ts" }];
     const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
 
-    const result = await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "payment refund", 100000, "tool-call");
+    const result = await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "payment refund", 100000, "tool-call", []);
 
-    expect(Object.keys(result).sort()).toEqual(["degraded", "notes", "returnedIds"]);
+    expect(Object.keys(result).sort()).toEqual(["degraded", "notes", "returnedIds", "sections"]);
     expect(result.notes.length).toBeGreaterThan(0);
     for (const note of result.notes) {
       expect(Object.keys(note).sort()).toEqual(["body", "cosine", "ftsRank", "id", "lowConfidence"]);
@@ -639,11 +647,11 @@ describe("recall candidate logging", () => {
     const specs: NoteSpec[] = [{ id: ulid(0), body: "payment refund ledger", anchor: "src/pay.ts" }];
     const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
 
-    const fused = await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "payment refund", 100000, "tool-call");
+    const fused = await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "payment refund", 100000, "tool-call", []);
     expect(fused.notes[0]!.ftsRank).toBe(1);
     expect(fused.notes[0]!.cosine).toBeGreaterThan(0);
 
-    const degraded = await recall(openRecall(indexPath, eventsDir, offlineClient()), "payment refund", 100000, "tool-call");
+    const degraded = await recall(openRecall(indexPath, eventsDir, offlineClient()), "payment refund", 100000, "tool-call", []);
     expect(degraded.degraded).toBe(true);
     expect(degraded.notes[0]!.ftsRank).toBe(1);
     expect(degraded.notes[0]!.cosine).toBeNull();
@@ -656,7 +664,7 @@ describe("recall candidate logging", () => {
     ];
     const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
 
-    const result = await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "payment refund ledger", 100000, "tool-call");
+    const result = await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "payment refund ledger", 100000, "tool-call", []);
 
     // The orthogonal note falls below the cosine threshold, so the noise tail is dropped from the
     // returned notes while the relevant fts match survives; its null fts_rank and cosine 0 are still
@@ -677,26 +685,26 @@ describe("recall mode derivation", () => {
 
   test("both channels active is fused", async () => {
     const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
-    await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "payment refund", 100000, "tool-call");
+    await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "payment refund", 100000, "tool-call", []);
     expect(lastRecallEvent(eventsDir).mode).toBe("fused");
   });
 
   test("terms with an unavailable embedder is fts_only", async () => {
     const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
-    await recall(openRecall(indexPath, eventsDir, offlineClient()), "payment refund", 100000, "tool-call");
+    await recall(openRecall(indexPath, eventsDir, offlineClient()), "payment refund", 100000, "tool-call", []);
     expect(lastRecallEvent(eventsDir).mode).toBe("fts_only");
   });
 
   test("a term-less query with a live vector signal is vector_only", async () => {
     const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
     // "%%% ---" yields no FTS terms; the constant client still returns a non-zero query vector.
-    await recall(openRecall(indexPath, eventsDir, constantVectorClient()), "%%% ---", 100000, "tool-call");
+    await recall(openRecall(indexPath, eventsDir, constantVectorClient()), "%%% ---", 100000, "tool-call", []);
     expect(lastRecallEvent(eventsDir).mode).toBe("vector_only");
   });
 
   test("neither channel active is none", async () => {
     const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
-    await recall(openRecall(indexPath, eventsDir, offlineClient()), "%%% ---", 100000, "tool-call");
+    await recall(openRecall(indexPath, eventsDir, offlineClient()), "%%% ---", 100000, "tool-call", []);
     expect(lastRecallEvent(eventsDir).mode).toBe("none");
   });
 });
@@ -706,13 +714,13 @@ describe("recall origin marker", () => {
 
   test("a manual recall stamps origin=tool-call on the event", async () => {
     const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
-    await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "payment refund", 100000, "tool-call");
+    await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "payment refund", 100000, "tool-call", []);
     expect(lastRecallEvent(eventsDir).origin).toBe("tool-call");
   });
 
   test("an engine recall stamps origin=workflow-step on the event", async () => {
     const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
-    await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "payment refund", 100000, "workflow-step");
+    await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "payment refund", 100000, "workflow-step", []);
     expect(lastRecallEvent(eventsDir).origin).toBe("workflow-step");
   });
 
@@ -740,5 +748,161 @@ describe("recall origin marker", () => {
     expect(events.length).toBe(1);
     expect(events[0]!.type).toBe("recall");
     expect(events[0]!.origin).toBeUndefined();
+  });
+});
+
+describe("recall map sections", () => {
+  const sectionBase: MapSectionFrontmatter = {
+    id: "billing",
+    kind: "domain",
+    anchors: [],
+    depends_on: [],
+    terms: [],
+    commit: "abc1234",
+  };
+
+  function section(overrides: Partial<MapSectionFrontmatter>, body: string): MapSection {
+    return { frontmatter: { ...sectionBase, ...overrides }, body };
+  }
+
+  // Bodies whose vectors the test chooses outright: a known text maps to its components, anything
+  // else (the embedder sees every note and section body) to a zero vector with no signal.
+  function keyedClient(byText: Map<string, number[]>): EmbeddingsClient {
+    return {
+      model: EMBEDDING_MODEL,
+      embed: async (inputs) => ({
+        available: true,
+        retries: 0,
+        embeddings: inputs.map((text) => {
+          const vector = new Float32Array(EMBEDDING_DIMENSION);
+          (byText.get(text) ?? []).forEach((value, index) => {
+            vector[index] = value;
+          });
+          return vector;
+        }),
+      }),
+    };
+  }
+
+  const billingNote: NoteSpec = { id: ulid(0), body: "invoice generation path", anchor: "src/invoice.ts" };
+  const ordersNote: NoteSpec = { id: ulid(1), body: "cart checkout invoice flow", anchor: "src/order.ts" };
+  const strayNote: NoteSpec = { id: ulid(2), body: "invoice gamma elsewhere", anchor: "src/c.ts" };
+  const billing = section({ id: "billing", anchors: ["src/invoice.ts"], terms: ["ledger"] }, "Billing issues invoices.");
+  const orders = section({ id: "orders", anchors: ["src/order.ts"] }, "Orders are placed by customers.");
+  const orderToInvoice = section(
+    { id: "order-to-invoice", kind: "flow", depends_on: ["orders", "billing"] },
+    "An order becomes an invoice.",
+  );
+
+  test("a section matched by FTS rides the result, a domain naming its linked notes and a flow none", async () => {
+    const { indexPath, eventsDir } = await setupIndex([billingNote, ordersNote], bagOfWordsClient(), [billing, orders, orderToInvoice]);
+    const deps = openRecall(indexPath, eventsDir, bagOfWordsClient());
+
+    const result = await recall(deps, "invoice", 10000, "tool-call", []);
+
+    expect(result.sections.map((candidate) => candidate.id).sort()).toEqual(["billing", "order-to-invoice"]);
+    const domain = result.sections.find((candidate) => candidate.id === "billing")!;
+    expect(domain.kind).toBe("domain");
+    expect(domain.noteIds).toEqual([ulid(0)]);
+    expect(domain.ftsRank).not.toBeNull();
+    expect(domain.body).toBe("Billing issues invoices.\nledger");
+    const flow = result.sections.find((candidate) => candidate.id === "order-to-invoice")!;
+    expect(flow.kind).toBe("flow");
+    expect(flow.noteIds).toEqual([]);
+    expect(result.returnedIds).toEqual([ulid(0), ulid(1)]);
+    const event = readEvents(eventsDir)[0]!;
+    expect(event.domains).toEqual([]);
+    const logged = event.sections as Array<{ id: string; kind: string; returned: boolean }>;
+    expect(logged.filter((candidate) => candidate.returned).map((candidate) => candidate.id).sort()).toEqual(["billing", "order-to-invoice"]);
+    // Every section with a vector is a candidate of the cosine channel, exactly as every note is;
+    // orders scores zero against the query and is logged as not returned.
+    expect(logged.find((candidate) => candidate.id === "orders")).toMatchObject({ kind: "domain", cosine: 0, returned: false });
+  });
+
+  test("at most RECALL_MAP_SECTIONS_MAX sections return while every candidate is logged", async () => {
+    const three = [
+      section({ id: "alpha" }, "alpha invoice domain"),
+      section({ id: "beta" }, "beta invoice domain"),
+      section({ id: "gamma" }, "gamma invoice domain"),
+    ];
+    const { indexPath, eventsDir } = await setupIndex([billingNote], bagOfWordsClient(), three);
+
+    const result = await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "invoice", 10000, "tool-call", []);
+
+    expect(RECALL_MAP_SECTIONS_MAX).toBe(2);
+    expect(result.sections.length).toBe(2);
+    const logged = readEvents(eventsDir)[0]!.sections as Array<{ id: string; returned: boolean }>;
+    expect(logged.length).toBe(3);
+    expect(logged.filter((candidate) => candidate.returned).length).toBe(2);
+  });
+
+  test("a section reached by cosine alone passes the same threshold a note does", async () => {
+    const near = section({ id: "near" }, "ledger postings reconcile");
+    const far = section({ id: "far" }, "unrelated prose about nothing");
+    const client = keyedClient(
+      new Map([
+        ["zzqq", [1, 0]],
+        ["ledger postings reconcile", [1, 0]],
+        ["unrelated prose about nothing", [0, 1]],
+        ["invoice generation path", [0, 1]],
+      ]),
+    );
+    const { indexPath, eventsDir } = await setupIndex([billingNote], client, [near, far]);
+
+    const result = await recall(openRecall(indexPath, eventsDir, client), "zzqq", 10000, "tool-call", []);
+
+    expect(result.sections.map((candidate) => candidate.id)).toEqual(["near"]);
+    expect(result.sections[0]!.ftsRank).toBeNull();
+    expect(result.sections[0]!.cosine).toBe(1);
+    // The note scores zero and fails the threshold; the cold-start floor hands it back marked
+    // low-confidence — the section channel has no such floor, so "far" stays out.
+    expect(result.notes.map((note) => [note.id, note.lowConfidence])).toEqual([[ulid(0), true]]);
+  });
+
+  test("a domain filter keeps only the linked notes with dense ranks, logs them filtered, and scopes the sections", async () => {
+    const { indexPath, eventsDir } = await setupIndex(
+      [billingNote, ordersNote, strayNote],
+      bagOfWordsClient(),
+      [billing, orders, orderToInvoice],
+    );
+    const deps = openRecall(indexPath, eventsDir, bagOfWordsClient());
+
+    const result = await recall(deps, "invoice", 10000, "tool-call", ["billing"]);
+
+    expect(result.returnedIds).toEqual([ulid(0)]);
+    expect(result.sections.map((candidate) => candidate.id).sort()).toEqual(["billing", "order-to-invoice"]);
+    const event = readEvents(eventsDir)[0]!;
+    expect(event.domains).toEqual(["billing"]);
+    const candidates = event.candidates as Array<{ id: string; fts_rank: number | null; vector_rank: number | null }>;
+    expect(candidates.map((candidate) => candidate.id)).toEqual([ulid(0)]);
+    expect(candidates[0]!.fts_rank).toBe(1);
+    expect(candidates[0]!.vector_rank).toBe(1);
+    const logged = event.sections as Array<{ id: string }>;
+    expect(logged.map((candidate) => candidate.id).sort()).toEqual(["billing", "order-to-invoice"]);
+  });
+
+  test("an unknown or malformed domain is refused before anything is ranked or logged", async () => {
+    const { indexPath, eventsDir } = await setupIndex([billingNote], bagOfWordsClient(), [billing]);
+    const deps = openRecall(indexPath, eventsDir, bagOfWordsClient());
+
+    await expect(recall(deps, "invoice", 10000, "tool-call", ["nowhere"])).rejects.toThrow(RecallDomainError);
+    await expect(recall(deps, "invoice", 10000, "tool-call", ["nowhere"])).rejects.toThrow('no map domain "nowhere"');
+    await expect(recall(deps, "invoice", 10000, "tool-call", ["Billing"])).rejects.toThrow('no map domain "Billing"');
+    await expect(recall(deps, "invoice", 10000, "tool-call", ["order-to-invoice"])).rejects.toThrow(RecallDomainError);
+    expect(readEvents(eventsDir)).toEqual([]);
+  });
+
+  test("note ranking without a filter is byte-identical with and without sections in the index", async () => {
+    const notes = [billingNote, ordersNote, strayNote];
+    const bare = await setupIndex(notes, bagOfWordsClient());
+    const mapped = await setupIndex(notes, bagOfWordsClient(), [billing, orders, orderToInvoice]);
+
+    const withoutSections = await recall(openRecall(bare.indexPath, bare.eventsDir, bagOfWordsClient()), "invoice", 10000, "tool-call", []);
+    const withSections = await recall(openRecall(mapped.indexPath, mapped.eventsDir, bagOfWordsClient()), "invoice", 10000, "tool-call", []);
+
+    expect(withSections.returnedIds).toEqual(withoutSections.returnedIds);
+    expect(withSections.notes).toEqual(withoutSections.notes);
+    expect(readEvents(mapped.eventsDir)[0]!.candidates).toEqual(readEvents(bare.eventsDir)[0]!.candidates);
+    expect(withoutSections.sections).toEqual([]);
   });
 });

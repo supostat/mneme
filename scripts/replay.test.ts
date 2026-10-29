@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { EMBEDDING_DIMENSION, EMBEDDING_MODEL } from "../src/embeddings";
 import type { EmbeddingsClient } from "../src/embeddings";
 import { SCHEMA_VERSION } from "../src/event-schema";
+import { INDEX_SCHEMA_STATEMENTS } from "../src/index-db";
 import { EVENT_FILE_EXTENSION, EventWriter, readEvents } from "../src/events";
 import type { StoredEvent } from "../src/events";
 import { recall } from "../src/recall";
@@ -14,12 +15,7 @@ import { replayLog, canonicalDecisionVector, parseReplayArgs, hasOverrides, main
 
 // The index schema is copied verbatim from index-db.ts so the integration test can build a real,
 // queryable index without git or a full rebuild.
-const SCHEMA_STATEMENTS = [
-  "CREATE VIRTUAL TABLE fts USING fts5(id UNINDEXED, body, tokenize = 'porter unicode61')",
-  "CREATE TABLE meta (id TEXT PRIMARY KEY, type TEXT NOT NULL, staleness_boost REAL NOT NULL)",
-  "CREATE TABLE vec (id TEXT PRIMARY KEY, content_hash TEXT NOT NULL, embedding BLOB NOT NULL)",
-  "CREATE TABLE index_config (embedding_model TEXT NOT NULL)",
-];
+// The engine's own schema, so the hand-built fixture index holds every table recall reads.
 
 function bagVector(text: string): Float32Array {
   const vector = new Float32Array(EMBEDDING_DIMENSION);
@@ -47,7 +43,7 @@ interface NoteRow {
 function buildIndex(rows: NoteRow[]): string {
   const indexPath = join(mkdtempSync(join(tmpdir(), "mneme-replay-idx-")), "index.db");
   const db = new Database(indexPath, { create: true });
-  for (const statement of SCHEMA_STATEMENTS) db.run(statement);
+  for (const statement of INDEX_SCHEMA_STATEMENTS) db.run(statement);
   const insertFts = db.query("INSERT INTO fts(id, body) VALUES (?, ?)");
   const insertMeta = db.query("INSERT INTO meta(id, type, staleness_boost) VALUES (?, ?, ?)");
   const insertVec = db.query("INSERT INTO vec(id, content_hash, embedding) VALUES (?, ?, ?)");
@@ -127,7 +123,7 @@ describe("replayLog integration with the real recall path", () => {
     ]);
     const deps = openRecallDeps(indexPath, eventsDir);
     // Budget 10 admits the two small notes but skips the large one, so in_budget is mixed.
-    await recall(deps, "widget", 10, "tool-call");
+    await recall(deps, "widget", 10, "tool-call", []);
     deps.db.close();
 
     const report = replayLog(readEvents(eventsDir), {});
@@ -392,5 +388,24 @@ describe("main exit codes", () => {
 
   test("a usage error exits 2", () => {
     expect(runMainSilently(["/events", "--nope", "1"])).toBe(2);
+  });
+});
+
+describe("replayLog with the map channel in the log", () => {
+  test("a domain-filtered recall replays identical: candidates are already scoped, sections and domains are ignored", () => {
+    const events = [
+      recallEventFixture({
+        schema_version: 21,
+        candidates: orderedCandidates(),
+        domains: ["billing"],
+        sections: [{ id: "billing", kind: "domain", fts_rank: 1, vector_rank: null, cosine: null, returned: true }],
+      }),
+    ];
+
+    const report = replayLog(events, {});
+
+    expect(report.replays.length).toBe(1);
+    expect(report.replays[0]!.identical).toBe(true);
+    expect(report.replays[0]!.loggedVector).toBe("c1 1\nc2 1\nc3 1");
   });
 });

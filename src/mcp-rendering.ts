@@ -1,6 +1,6 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { RememberResult, StagingEntry, ResolveResult } from "./staging";
-import type { RecalledNote } from "./recall";
+import type { RecalledNote, RecalledSection } from "./recall";
 import type { NotesListResult, ReanchorRequest, RetagRequest, RetireRequest } from "./curation";
 import type { SweepReport, ScoredCandidate } from "./anchor-repair";
 import type { DedupSummary } from "./dedup-sidecar";
@@ -19,11 +19,43 @@ interface NoteFence {
   end: string;
 }
 
-// A random per-response nonce is woven into both fences so a poisoned note body cannot forge the
-// closing delimiter and break out of the retrieved-DATA block (memory-poisoning mitigation).
+// The fence labels: a note block and a map section block are told apart by the label, never by
+// their contents. Both labels are forbidden inside bodies by the write-path curator set, so a
+// body can impersonate neither.
+const NOTE_FENCE_BEGIN_LABEL = "BEGIN MNEME NOTE";
+const NOTE_FENCE_END_LABEL = "END MNEME NOTE";
+export const MAP_FENCE_BEGIN_LABEL = "BEGIN MNEME MAP";
+const MAP_FENCE_END_LABEL = "END MNEME MAP";
+
+// A random per-response nonce is woven into every fence of the response so a poisoned body cannot
+// forge a closing delimiter and break out of the retrieved-DATA block (memory-poisoning
+// mitigation). One nonce per response: note and map blocks of the same answer share it.
+export function makeNonce(): string {
+  return crypto.randomUUID().replaceAll("-", "").slice(0, 16);
+}
+
+export function noteFence(nonce: string): NoteFence {
+  return { begin: `----- ${NOTE_FENCE_BEGIN_LABEL} ${nonce} -----`, end: `----- ${NOTE_FENCE_END_LABEL} ${nonce} -----` };
+}
+
+export function mapFence(nonce: string): NoteFence {
+  return { begin: `----- ${MAP_FENCE_BEGIN_LABEL} ${nonce} -----`, end: `----- ${MAP_FENCE_END_LABEL} ${nonce} -----` };
+}
+
 function makeFence(): NoteFence {
-  const nonce = crypto.randomUUID().replaceAll("-", "").slice(0, 16);
-  return { begin: `----- BEGIN MNEME NOTE ${nonce} -----`, end: `----- END MNEME NOTE ${nonce} -----` };
+  return noteFence(makeNonce());
+}
+
+// A map section block: id, kind, the linked notes of a domain (a flow has none and shows no line),
+// then the body. Shared by the recall tool and the workflow bundle so the plugin parses one shape.
+export function renderMapSectionBlock(section: RecalledSection, nonce: string): string {
+  const fence = mapFence(nonce);
+  const lines = [fence.begin, `id: ${section.id}`, `kind: ${section.kind}`];
+  if (section.kind === "domain") {
+    lines.push(`notes: ${section.noteIds.length === 0 ? "(none)" : section.noteIds.join(", ")}`);
+  }
+  lines.push(section.body, fence.end);
+  return lines.join("\n");
 }
 
 export function textResult(text: string): CallToolResult {
@@ -47,13 +79,24 @@ export function formatRemember(result: RememberResult): string {
   ].join("\n");
 }
 
-export function formatRecall(notes: RecalledNote[], degraded: boolean): string {
-  if (notes.length === 0) {
-    return degraded ? "No matching notes (recall ran in degraded mode)." : "No matching notes.";
+export interface RecallRendering {
+  notes: RecalledNote[];
+  sections: RecalledSection[];
+  degraded: boolean;
+}
+
+// Map sections come BEFORE the notes: a section is the frame, the notes are the detail inside it.
+export function formatRecall(result: RecallRendering): string {
+  if (result.notes.length === 0 && result.sections.length === 0) {
+    return result.degraded ? "No matching notes (recall ran in degraded mode)." : "No matching notes.";
   }
-  const fence = makeFence();
-  const blocks = notes.map((note) => `${fence.begin}\nid: ${note.id}\n${note.body}\n${fence.end}`);
-  const header = degraded ? `${RETRIEVED_DATA_NOTICE} Recall ran in degraded mode.` : RETRIEVED_DATA_NOTICE;
+  const nonce = makeNonce();
+  const fence = noteFence(nonce);
+  const blocks = [
+    ...result.sections.map((section) => renderMapSectionBlock(section, nonce)),
+    ...result.notes.map((note) => `${fence.begin}\nid: ${note.id}\n${note.body}\n${fence.end}`),
+  ];
+  const header = result.degraded ? `${RETRIEVED_DATA_NOTICE} Recall ran in degraded mode.` : RETRIEVED_DATA_NOTICE;
   return `${header}\n${blocks.join("\n")}`;
 }
 

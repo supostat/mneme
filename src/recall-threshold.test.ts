@@ -158,7 +158,7 @@ describe("recall threshold cut", () => {
     const client = keyedClient(vectorMap(query, specs));
     const { indexPath, eventsDir } = await setupIndex(specs, client);
 
-    const result = await recall(openRecall(indexPath, eventsDir, client), query, 100000, "tool-call");
+    const result = await recall(openRecall(indexPath, eventsDir, client), query, 100000, "tool-call", []);
 
     expect(result.degraded).toBe(false);
     expect(result.returnedIds).toContain(relevant.id);
@@ -195,7 +195,7 @@ describe("recall cold-start floor", () => {
     const client = keyedClient(vectorMap(query, specs));
     const { indexPath, eventsDir } = await setupIndex(specs, client);
 
-    const result = await recall(openRecall(indexPath, eventsDir, client), query, 100000, "tool-call");
+    const result = await recall(openRecall(indexPath, eventsDir, client), query, 100000, "tool-call", []);
 
     expect(result.degraded).toBe(false);
     expect(result.notes.length).toBe(RECALL_LOW_CONFIDENCE_FLOOR);
@@ -224,7 +224,7 @@ describe("recall fts bypass", () => {
     const client = keyedClient(vectorMap(query, specs));
     const { indexPath, eventsDir } = await setupIndex(specs, client);
 
-    const result = await recall(openRecall(indexPath, eventsDir, client), query, 100000, "tool-call");
+    const result = await recall(openRecall(indexPath, eventsDir, client), query, 100000, "tool-call", []);
 
     expect(result.degraded).toBe(false);
     expect(result.returnedIds).toContain(ftsNote.id);

@@ -24,6 +24,8 @@ import type { PhaseArtifact } from "./harvest-artifacts";
 import { MemoryStepError, compileRecallBundle, formatRecallBundle, harvestPhase } from "./memory-steps";
 import type { RecallBundle } from "./memory-steps";
 import { RECALL_BUNDLE_COSINE_THRESHOLD } from "../recall";
+import { writeMapSection } from "../map/map-store";
+import type { MapSection } from "../map/map-section";
 
 const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
@@ -876,6 +878,7 @@ describe("formatRecallBundle fences", () => {
     const bundle: RecallBundle = {
       query: "q",
       degraded: false,
+      sections: [],
       notes: [
         {
           id: ulid(200),
@@ -915,5 +918,43 @@ describe("formatRecallBundle fences", () => {
     const endMatches = [...text.matchAll(/----- END MNEME NOTE ([0-9a-f]{16}) -----/g)];
     expect(endMatches.filter((match) => match[1] === nonce).length).toBe(2);
     expect(endMatches.filter((match) => match[1] === forgedNonce).length).toBe(1);
+  });
+});
+
+describe("compileRecallBundle map sections", () => {
+  test("a domain section rides the bundle before the notes, naming its linked note, under one nonce", async () => {
+    const { projectRoot, commit } = await buildProjectRepo();
+    const deps = await makeDeps(projectRoot, bagClient());
+    writeNote(deps, ulid(100), "pattern", "payment refund ledger reconciliation", ["src/a.ts"], commit);
+    const payments: MapSection = {
+      frontmatter: { id: "payments", kind: "domain", anchors: ["src/a.ts"], depends_on: [], terms: [], commit },
+      body: "Payments domain: refunds and ledgers.",
+    };
+    writeMapSection(deps.corpus, payments);
+
+    const bundle = await compileRecallBundle(deps, {
+      phaseDescription: "payment refund handling",
+      anchorPaths: ["src/a.ts"],
+      budget: 2000,
+    });
+
+    expect(bundle.sections.map((section) => [section.id, section.kind, section.noteIds])).toEqual([["payments", "domain", [ulid(100)]]]);
+    expect(bundle.notes.map((note) => note.id)).toEqual([ulid(100)]);
+    const lines = formatRecallBundle(bundle).split("\n");
+    const nonce = /^----- BEGIN MNEME MAP ([0-9a-f]{16}) -----$/.exec(lines[1]!)?.[1];
+    expect(nonce).toBeDefined();
+    expect(lines.slice(1, 7)).toEqual([
+      `----- BEGIN MNEME MAP ${nonce} -----`,
+      "id: payments",
+      "kind: domain",
+      `notes: ${ulid(100)}`,
+      "Payments domain: refunds and ledgers.",
+      `----- END MNEME MAP ${nonce} -----`,
+    ]);
+    expect(lines[7]).toBe(`----- BEGIN MNEME NOTE ${nonce} -----`);
+    expect(lines[lines.length - 1]).toBe(`----- END MNEME NOTE ${nonce} -----`);
+    const recallEvents = eventsOfType(deps, "recall");
+    expect(recallEvents[0]!.domains).toEqual([]);
+    expect((recallEvents[0]!.sections as Array<{ id: string; returned: boolean }>).map((section) => [section.id, section.returned])).toEqual([["payments", true]]);
   });
 });

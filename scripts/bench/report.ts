@@ -81,13 +81,7 @@ export function abstained(observation: QuestionObservation): boolean {
   return observation.returnedIds.every((returnedId) => {
     const candidate = candidateById.get(returnedId);
     if (candidate === undefined) return false;
-    return !passesRecallThreshold({
-      id: candidate.id,
-      body: "",
-      ftsRank: candidate.fts_rank,
-      cosine: candidate.cosine,
-      lowConfidence: false,
-    });
+    return !passesRecallThreshold({ ftsRank: candidate.fts_rank, cosine: candidate.cosine });
   });
 }
 

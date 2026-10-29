@@ -128,6 +128,7 @@ async function recalledIds(deps: StagingDeps, query: string): Promise<string[]> 
       query,
       RECALL_BUDGET,
       "tool-call",
+      [],
     );
     return result.notes.map((note) => note.id);
   } finally {

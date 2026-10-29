@@ -109,6 +109,7 @@ async function recallIds(deps: StagingDeps, query: string): Promise<string[]> {
       query,
       10000,
       "tool-call",
+      [],
     );
     return result.returnedIds;
   } finally {

@@ -64,7 +64,7 @@ export async function runCase(
   });
   try {
     for (const question of questions) {
-      const result = await recall({ db, embeddings: deps.embeddings, eventWriter, clock }, question.text, budget, "tool-call");
+      const result = await recall({ db, embeddings: deps.embeddings, eventWriter, clock }, question.text, budget, "tool-call", []);
       if (result.degraded) {
         throw new BenchRunError(
           `case ${ingested.caseId}: recall ran degraded (embedder down or vector-less index); ` +

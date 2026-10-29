@@ -1,11 +1,12 @@
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { runGit } from "../git";
-import { openReadOnlyDatabase, rebuild } from "../index-db";
+import { indexNeedsRebuild, openReadOnlyDatabase, rebuild } from "../index-db";
+import { makeNonce, noteFence, renderMapSectionBlock } from "../mcp-rendering";
 import { isAnchorNeutral, isNoteId, parseNote } from "../note";
 import type { Note, NoteType } from "../note";
 import { passesRecallThreshold, recall } from "../recall";
-import type { RecallResult, RecalledNote } from "../recall";
+import type { RecallResult, RecalledNote, RecalledSection } from "../recall";
 import { findForbiddenMarkup } from "../sanitize-body";
 import { remember } from "../staging";
 import type { RememberResult, StagingDeps } from "../staging";
@@ -48,6 +49,9 @@ export interface BundleNote {
 export interface RecallBundle {
   query: string;
   notes: BundleNote[];
+  // The map sections the phase's query reached, in recall's order. Their bodies passed the
+  // curator set when the section was parsed, so no read-side re-check is needed.
+  sections: RecalledSection[];
   degraded: boolean;
 }
 
@@ -73,17 +77,21 @@ export async function compileRecallBundle(
     }
     notes.push(await buildBundleNote(deps, survivor, request.anchorPaths));
   }
-  return { query, notes: rankBundleNotes(notes), degraded: recalled.degraded };
+  return { query, notes: rankBundleNotes(notes), sections: recalled.sections, degraded: recalled.degraded };
 }
 
+// Map sections first, then the notes, every block under one nonce: the same shape the recall tool
+// prints, so the plugin reads a bundle and a tool answer with one parser.
 export function formatRecallBundle(bundle: RecallBundle): string {
   const notice = bundle.degraded
     ? `${RETRIEVED_DATA_NOTICE} Recall ran in degraded mode.`
     : RETRIEVED_DATA_NOTICE;
-  const fence = makeFence();
-  const blocks = bundle.notes.map(
-    (note) => `${fence.begin}\n${noteHeader(note)}\n${note.body}\n${fence.end}`,
-  );
+  const nonce = makeNonce();
+  const fence = noteFence(nonce);
+  const blocks = [
+    ...bundle.sections.map((section) => renderMapSectionBlock(section, nonce)),
+    ...bundle.notes.map((note) => `${fence.begin}\n${noteHeader(note)}\n${note.body}\n${fence.end}`),
+  ];
   return [notice, ...blocks].join("\n");
 }
 
@@ -104,8 +112,9 @@ export async function harvestPhase(
   return results;
 }
 
+// "Missing" includes an index from before the map tables: indexNeedsRebuild heals both the same way.
 async function rebuildIndexWhenMissing(deps: StagingDeps): Promise<void> {
-  if (existsSync(deps.corpus.indexPath)) return;
+  if (!indexNeedsRebuild(deps.corpus.indexPath)) return;
   await rebuild({
     indexPath: deps.corpus.indexPath,
     notesDir: deps.corpus.notesDir,
@@ -122,11 +131,13 @@ async function rebuildIndexWhenMissing(deps: StagingDeps): Promise<void> {
 async function runRecall(deps: StagingDeps, query: string, budget: number): Promise<RecallResult> {
   const db = openReadOnlyDatabase(deps.corpus.indexPath);
   try {
+    // No domain filter yet: the phase's recall_domains reach this call in the workflow-domains phase.
     return await recall(
       { db, embeddings: deps.embeddings, eventWriter: deps.eventWriter, clock: deps.clock },
       query,
       budget,
       "workflow-step",
+      [],
     );
   } finally {
     db.close();
@@ -233,12 +244,3 @@ function noteHeader(note: BundleNote): string {
   return `[${note.type}] ${note.id}${branchSuffix}${tagsSuffix}`;
 }
 
-// A random per-call nonce is woven into both fences so a poisoned note body cannot forge the closing
-// delimiter — the mcp-rendering.ts memory-poisoning mitigation, duplicated by design.
-function makeFence(): { begin: string; end: string } {
-  const nonce = crypto.randomUUID().replaceAll("-", "").slice(0, 16);
-  return {
-    begin: `----- BEGIN MNEME NOTE ${nonce} -----`,
-    end: `----- END MNEME NOTE ${nonce} -----`,
-  };
-}

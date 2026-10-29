@@ -232,6 +232,17 @@ const recallCandidate = z.object({
   in_budget: z.boolean(),
 });
 
+// One map section candidate in the section channel's fused order; returned marks the ones the
+// cap and the threshold let through.
+const recallSectionCandidate = z.object({
+  id: z.string(),
+  kind: z.enum(["domain", "flow"]),
+  fts_rank: z.number().nullable(),
+  vector_rank: z.number().nullable(),
+  cosine: z.number().nullable(),
+  returned: z.boolean(),
+});
+
 const recallEvent = z.object({
   type: z.literal("recall"),
   ...envelope,
@@ -248,6 +259,10 @@ const recallEvent = z.object({
     fusion_ms: z.number(),
   }),
   candidates: z.array(recallCandidate).max(RECALL_CANDIDATE_WINDOW),
+  // v21: the domain filter the call rode on and the section channel's candidates. Optional in the
+  // shape so a pre-21 event still validates; returned_ids and candidates stay notes only.
+  domains: z.array(z.string()).optional(),
+  sections: z.array(recallSectionCandidate).max(RECALL_CANDIDATE_WINDOW).optional(),
 });
 
 const rememberEvent = z.object({
