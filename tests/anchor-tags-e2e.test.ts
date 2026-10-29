@@ -222,7 +222,7 @@ test("doctor names a legacy markup artifact in exactly one note_bodies finding",
   );
   await rebuild({
     indexPath: deps.corpus.indexPath,
-    notesDir: deps.corpus.notesDir,
+    notesDir: deps.corpus.notesDir, mapDir: deps.corpus.mapDir,
     projectRoot: deps.projectRoot,
     embeddings: deps.embeddings,
     eventWriter: deps.eventWriter,

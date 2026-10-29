@@ -709,7 +709,7 @@ describe("harvestPhase dedup rejection", () => {
     );
     await rebuild({
       indexPath: deps.corpus.indexPath,
-      notesDir: deps.corpus.notesDir,
+      notesDir: deps.corpus.notesDir, mapDir: deps.corpus.mapDir,
       projectRoot,
       embeddings: deps.embeddings,
       eventWriter: deps.eventWriter,

@@ -13,6 +13,8 @@ import type { GitResult } from "./git";
 import { EMBEDDING_DIMENSION } from "./embeddings";
 import type { EmbeddingsClient } from "./embeddings";
 import { readActiveNotes } from "./index-db";
+import { findDanglingDependencies, readMapSections } from "./map/map-store";
+import type { MapSection } from "./map/map-section";
 import { MAX_BODY_CODE_POINTS } from "./note";
 import { findForbiddenMarkup } from "./sanitize-body";
 import { HARVEST_SOURCE } from "./workflow/harvest-artifacts";
@@ -24,6 +26,7 @@ import { HARVEST_SOURCE } from "./workflow/harvest-artifacts";
 export type DoctorStatus = "ok" | "degraded" | "fail";
 
 export const CLIPPED_BODIES_COMPONENT = "clipped_bodies";
+export const MAP_SECTIONS_COMPONENT = "map_sections";
 
 export interface DoctorComponentReport {
   name: string;
@@ -78,6 +81,7 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
     runGuarded("git", () => checkGit(gitRunner, deps.corpusDir)),
     runGuarded("note_bodies", () => checkNoteBodies(paths)),
     runGuarded(CLIPPED_BODIES_COMPONENT, () => checkClippedBodies(paths)),
+    runGuarded(MAP_SECTIONS_COMPONENT, () => checkMapSections(paths, indexProbe)),
   ]);
   return { components, overall: worstStatus(components) };
 }
@@ -345,6 +349,45 @@ function clippedHarvestNoteIds(events: StoredEvent[]): Set<string> {
     }
   }
   return ids;
+}
+
+// The map is diagnosed from its two witnesses: the section FILES (the truth — count, parseability,
+// dependency closure) and the last rebuild's verdict on their anchors, read back from the index.
+// The doctor never probes git for a section itself (it has no project root and must stay
+// read-only), so without a complete index the liveness is honestly unknown. Report-only.
+function checkMapSections(paths: CorpusPaths, probe: IndexProbe): CheckOutcome {
+  let sections: MapSection[];
+  try {
+    sections = readMapSections(paths);
+  } catch (error) {
+    return { status: "fail", detail: errorMessage(error) };
+  }
+  if (sections.length === 0) {
+    return { status: "ok", detail: "the project map is empty" };
+  }
+  const findings = findDanglingDependencies(sections).map(
+    (dangling) => `${dangling.id} depends on unknown section(s) ${dangling.missing.join(", ")}`,
+  );
+  if (!probe.ok || !probe.inspection.present || !probe.inspection.hasRequiredTables) {
+    findings.push("section liveness unknown (rebuilt on next recall)");
+    return { status: "degraded", detail: findings.join("; ") };
+  }
+  const dead = probe.inspection.deadAnchorSectionIds;
+  if (dead.length > 0) {
+    findings.push(
+      `${dead.length} section(s) have a dead anchor as of the last rebuild (re-anchor the section with map_put): ${dead.join(", ")}`,
+    );
+  }
+  if (findings.length > 0) {
+    return { status: "degraded", detail: findings.join("; ") };
+  }
+  const domains = sections.filter((section) => section.frontmatter.kind === "domain").length;
+  return {
+    status: "ok",
+    detail:
+      `${sections.length} section(s) (${domains} domains, ${sections.length - domains} flows), ` +
+      `${probe.inspection.linkCount} note link(s), all anchors live`,
+  };
 }
 
 async function checkGit(gitRunner: GitRunner, corpusDir: string): Promise<CheckOutcome> {

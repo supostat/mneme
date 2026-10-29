@@ -141,6 +141,7 @@ async function receivingDeps(specs: NoteSpec[], indexed = false): Promise<Stagin
     await rebuild({
       indexPath: corpus.indexPath,
       notesDir: corpus.notesDir,
+      mapDir: corpus.mapDir,
       projectRoot,
       embeddings: deps.embeddings,
       eventWriter: deps.eventWriter,

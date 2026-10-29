@@ -19,7 +19,19 @@ export interface CorpusManifest {
   name?: string;
 }
 
-export interface CorpusPaths {
+// The project map's layout under map/: sections under domains/ and flows/, plus the two files the
+// engine derives from them. Committed with the notes — nothing under map/ is gitignored. Derived
+// from ONE directory by mapLayoutOf, so a caller that only knows the map directory (the index
+// rebuild) and one that holds the whole corpus (the tools, the doctor) address the same files.
+export interface MapLayout {
+  mapDir: string;
+  mapDomainsDir: string;
+  mapFlowsDir: string;
+  mapIndexPath: string;
+  glossaryPath: string;
+}
+
+export interface CorpusPaths extends MapLayout {
   corpusDir: string;
   manifestPath: string;
   notesDir: string;
@@ -27,13 +39,6 @@ export interface CorpusPaths {
   archiveDir: string;
   eventsDir: string;
   indexPath: string;
-  // The project map: sections under map/domains and map/flows, plus the two files the engine
-  // derives from them. Committed with the notes — nothing under map/ is gitignored.
-  mapDir: string;
-  mapDomainsDir: string;
-  mapFlowsDir: string;
-  mapIndexPath: string;
-  glossaryPath: string;
 }
 
 export interface Corpus extends CorpusPaths {
@@ -93,8 +98,17 @@ export function corpusDirFor(
   return { corpusHome: home, canonicalRoot, corpusDir: join(home, directoryName) };
 }
 
+export function mapLayoutOf(mapDir: string): MapLayout {
+  return {
+    mapDir,
+    mapDomainsDir: join(mapDir, "domains"),
+    mapFlowsDir: join(mapDir, "flows"),
+    mapIndexPath: join(mapDir, "INDEX.md"),
+    glossaryPath: join(mapDir, "glossary.md"),
+  };
+}
+
 export function corpusPaths(corpusDir: string): CorpusPaths {
-  const mapDir = join(corpusDir, "map");
   return {
     corpusDir,
     manifestPath: join(corpusDir, MANIFEST_FILENAME),
@@ -103,11 +117,7 @@ export function corpusPaths(corpusDir: string): CorpusPaths {
     archiveDir: join(corpusDir, "archive"),
     eventsDir: join(corpusDir, "events"),
     indexPath: join(corpusDir, "index.db"),
-    mapDir,
-    mapDomainsDir: join(mapDir, "domains"),
-    mapFlowsDir: join(mapDir, "flows"),
-    mapIndexPath: join(mapDir, "INDEX.md"),
-    glossaryPath: join(mapDir, "glossary.md"),
+    ...mapLayoutOf(join(corpusDir, "map")),
   };
 }
 

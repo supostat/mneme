@@ -8,6 +8,10 @@
 
 export const RRF_K = 60;
 export const TOKEN_BYTES = 4;
+// The recall budget in tokens a project runs on until its config says otherwise. It lives here,
+// with the token arithmetic it is measured in, because this module imports nothing: every
+// consumer — config, recall, the map section limit — can take it without forming an import cycle.
+export const DEFAULT_RECALL_BUDGET = 2000;
 
 export interface FusionInput {
   id: string;

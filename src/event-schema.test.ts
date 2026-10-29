@@ -188,8 +188,8 @@ const AGENT_VOTE_MIRROR = {
 } as const satisfies Record<Vote, true>;
 
 describe("event-schema constants", () => {
-  test("SCHEMA_VERSION is 20", () => {
-    expect(SCHEMA_VERSION).toBe(20);
+  test("SCHEMA_VERSION is 21", () => {
+    expect(SCHEMA_VERSION).toBe(21);
   });
 
   test("the unclipped-harvest boundary is fixed at 19 and never ahead of the producer", () => {

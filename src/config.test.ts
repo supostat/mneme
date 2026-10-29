@@ -2,7 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CONFIG_FILE_NAME, ConfigError, DEFAULT_RECALL_BUDGET, defaultConfig, loadConfig } from "./config";
+import { CONFIG_FILE_NAME, ConfigError, defaultConfig, loadConfig } from "./config";
+import { DEFAULT_RECALL_BUDGET } from "./fusion";
 import { DEDUP_NOOP_THRESHOLD, DEDUP_SUPERSEDE_THRESHOLD } from "./dedup";
 import { EMBEDDING_MODEL, OLLAMA_BASE_URL } from "./embeddings";
 

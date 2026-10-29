@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import type { CorpusPaths } from "../corpus";
+import type { MapLayout } from "../corpus";
 import {
   MAP_SECTION_KINDS,
   MapSectionValidationError,
@@ -26,22 +26,22 @@ export interface DanglingDependency {
   missing: string[];
 }
 
-export function sectionDirectory(corpus: CorpusPaths, kind: MapSectionKind): string {
-  return kind === "domain" ? corpus.mapDomainsDir : corpus.mapFlowsDir;
+export function sectionDirectory(layout: MapLayout, kind: MapSectionKind): string {
+  return kind === "domain" ? layout.mapDomainsDir : layout.mapFlowsDir;
 }
 
-export function sectionPath(corpus: CorpusPaths, kind: MapSectionKind, id: string): string {
-  return join(sectionDirectory(corpus, kind), `${id}${SECTION_EXTENSION}`);
+export function sectionPath(layout: MapLayout, kind: MapSectionKind, id: string): string {
+  return join(sectionDirectory(layout, kind), `${id}${SECTION_EXTENSION}`);
 }
 
 // Domains first, then flows, each sorted by id — the order every consumer (the index, the
 // derived files, the listing) sees, so no two of them disagree. A corpus provisioned before the
 // map existed has no map/ yet: that is an EMPTY map, not a fault — resolveCorpus creates the
 // directories on the next tool call.
-export function readMapSections(corpus: CorpusPaths): MapSection[] {
+export function readMapSections(layout: MapLayout): MapSection[] {
   const sections: MapSection[] = [];
   for (const kind of MAP_SECTION_KINDS) {
-    const directory = sectionDirectory(corpus, kind);
+    const directory = sectionDirectory(layout, kind);
     if (!existsSync(directory)) continue;
     const files = readdirSync(directory)
       .filter((name) => name.endsWith(SECTION_EXTENSION))
@@ -53,8 +53,15 @@ export function readMapSections(corpus: CorpusPaths): MapSection[] {
   return sections;
 }
 
+// Every fault names the file: the doctor and the rebuild report it verbatim, and a curator with
+// a path can open the offending section without searching the corpus.
 function readSectionFile(path: string, kind: MapSectionKind): MapSection {
-  const section = parseMapSection(readFileSync(path, "utf8"));
+  let section: MapSection;
+  try {
+    section = parseMapSection(readFileSync(path, "utf8"));
+  } catch (error) {
+    throw new MapSectionValidationError(`map section file ${path} is unreadable: ${errorMessage(error)}`);
+  }
   const expectedId = basename(path, SECTION_EXTENSION);
   if (section.frontmatter.kind !== kind) {
     throw new MapSectionValidationError(
@@ -69,16 +76,16 @@ function readSectionFile(path: string, kind: MapSectionKind): MapSection {
   return section;
 }
 
-export function writeMapSection(corpus: CorpusPaths, section: MapSection): void {
+export function writeMapSection(layout: MapLayout, section: MapSection): void {
   writeFileSync(
-    sectionPath(corpus, section.frontmatter.kind, section.frontmatter.id),
+    sectionPath(layout, section.frontmatter.kind, section.frontmatter.id),
     serializeMapSection(section),
   );
 }
 
 // A missing file throws: the caller decides whether a section exists before asking for its removal.
-export function removeMapSection(corpus: CorpusPaths, kind: MapSectionKind, id: string): void {
-  rmSync(sectionPath(corpus, kind, id));
+export function removeMapSection(layout: MapLayout, kind: MapSectionKind, id: string): void {
+  rmSync(sectionPath(layout, kind, id));
 }
 
 export function renderMapIndex(sections: MapSection[]): string {
@@ -102,9 +109,9 @@ export function renderGlossary(sections: MapSection[]): string {
   return `${lines.join("\n")}\n`;
 }
 
-export function writeDerivedFiles(corpus: CorpusPaths, sections: MapSection[]): void {
-  writeFileSync(corpus.mapIndexPath, renderMapIndex(sections));
-  writeFileSync(corpus.glossaryPath, renderGlossary(sections));
+export function writeDerivedFiles(layout: MapLayout, sections: MapSection[]): void {
+  writeFileSync(layout.mapIndexPath, renderMapIndex(sections));
+  writeFileSync(layout.glossaryPath, renderGlossary(sections));
 }
 
 // A dependency on a section that does not exist is reported, never refused: sections are written
@@ -142,4 +149,8 @@ function firstLineOf(body: string): string {
 
 function escapeTablePipes(term: string): string {
   return term.replaceAll(MARKDOWN_TABLE_PIPE, ESCAPED_TABLE_PIPE);
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

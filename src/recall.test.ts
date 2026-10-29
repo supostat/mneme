@@ -123,7 +123,7 @@ async function setupIndex(
     mnemeVersion: "0.1.0",
     clock: () => new Date("2026-07-06T10:00:00.000Z"),
   });
-  await rebuild({ indexPath, notesDir, projectRoot, embeddings, eventWriter, clock: () => new Date("2026-07-06T10:00:00.000Z") });
+  await rebuild({ indexPath, notesDir, mapDir: join(corpusDir, "map"), projectRoot, embeddings, eventWriter, clock: () => new Date("2026-07-06T10:00:00.000Z") });
   return { indexPath, eventsDir };
 }
 

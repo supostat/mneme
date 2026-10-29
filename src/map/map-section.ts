@@ -1,4 +1,3 @@
-import { DEFAULT_RECALL_BUDGET } from "../config";
 import {
   frontmatterLine,
   parseFrontmatterBlock,
@@ -6,7 +5,7 @@ import {
   splitFrontmatter,
 } from "../frontmatter";
 import type { FrontmatterGrammar } from "../frontmatter";
-import { TOKEN_BYTES } from "../fusion";
+import { DEFAULT_RECALL_BUDGET, TOKEN_BYTES } from "../fusion";
 import { NoteValidationError, validateAnchor } from "../note";
 import { assertCleanNoteBody } from "../sanitize-body";
 

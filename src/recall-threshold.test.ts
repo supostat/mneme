@@ -115,7 +115,7 @@ async function setupIndex(
     mnemeVersion: "0.1.0",
     clock: FIXED_CLOCK,
   });
-  await rebuild({ indexPath, notesDir, projectRoot, embeddings, eventWriter, clock: FIXED_CLOCK });
+  await rebuild({ indexPath, notesDir, mapDir: join(corpusDir, "map"), projectRoot, embeddings, eventWriter, clock: FIXED_CLOCK });
   return { indexPath, eventsDir };
 }
 

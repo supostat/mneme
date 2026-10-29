@@ -109,6 +109,7 @@ async function rebuildIndexWhenMissing(deps: StagingDeps): Promise<void> {
   await rebuild({
     indexPath: deps.corpus.indexPath,
     notesDir: deps.corpus.notesDir,
+    mapDir: deps.corpus.mapDir,
     projectRoot: deps.projectRoot,
     embeddings: deps.embeddings,
     eventWriter: deps.eventWriter,

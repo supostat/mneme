@@ -125,7 +125,7 @@ test("parked, concept and deleted anchors travel three honest paths, and the mer
   // deleted note keep sinking (their anchors are truly not here).
   await rebuild({
     indexPath: deps.corpus.indexPath,
-    notesDir: deps.corpus.notesDir,
+    notesDir: deps.corpus.notesDir, mapDir: deps.corpus.mapDir,
     projectRoot: deps.projectRoot,
     embeddings: deps.embeddings,
     eventWriter: deps.eventWriter,

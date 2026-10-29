@@ -494,6 +494,7 @@ export function rebuildDeps(deps: StagingDeps): RebuildDeps {
   return {
     indexPath: deps.corpus.indexPath,
     notesDir: deps.corpus.notesDir,
+    mapDir: deps.corpus.mapDir,
     projectRoot: deps.projectRoot,
     embeddings: deps.embeddings,
     eventWriter: deps.eventWriter,

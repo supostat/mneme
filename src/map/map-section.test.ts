@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { DEFAULT_RECALL_BUDGET } from "../config";
+import { DEFAULT_RECALL_BUDGET } from "../fusion";
 import { MAX_BODY_CODE_POINTS } from "../note";
 import { ForbiddenMarkupError } from "../sanitize-body";
 import {

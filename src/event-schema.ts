@@ -100,7 +100,21 @@ import { z } from "zod";
 //       precedes it; message is sanitized exactly like tool_error's. Such a failure is no longer a
 //       staging_resolve tool_error — the call succeeds and reports the index as not rebuilt.
 //       Other events unchanged.
-export const SCHEMA_VERSION = 20;
+//  21 — project map: the corpus gains map/ (domain and flow sections the plugin writes) indexed in
+//       their own tables beside the notes. rebuild gains sections_n, section_links_n (section-to-
+//       note links by anchor intersection, recomputed every rebuild) and section_dead_anchors_n;
+//       bodies_n now counts section bodies too. Two new events record the map's writes:
+//       map_section_put {id, kind, body_len, anchors_n, depends_on_n, terms_n, commit} and
+//       map_section_deleted {id, kind, commit} — no human gate, the map is a synthetic layer the
+//       plugin rebuilds. recall gains domains (the domain filter the call rode on, [] for none),
+//       sections [{id, kind, fts_rank, vector_rank, cosine, returned}] (the section channel's
+//       candidates, capped like candidates) and gap (true when neither a note nor a section passed
+//       the relevance threshold — the memory-gap notice was shown); returned_ids and candidates
+//       stay notes only, so replay and the never-retrieved metric keep their meaning.
+//       workflow_run_started.definition gains recall_domains {phaseId: [domain id]} beside
+//       recall_anchors. Every new key is optional in the shape (the v4 extend-never-repurpose rule):
+//       a pre-21 event restores unchanged, and a reader treats a missing gap as "not instrumented".
+export const SCHEMA_VERSION = 21;
 
 // The first schema version whose harvest bodies are guaranteed whole. A fixed boundary, not an alias
 // of SCHEMA_VERSION: later bumps must never move it, or old clipped bodies would read as whole.
@@ -285,6 +299,10 @@ const rebuildEvent = z.object({
   chunks_ok_n: z.number(),
   dead_anchors_n: z.number(),
   staleness: z.array(z.number()),
+  // v21: the map population's counters. Optional in the shape so a pre-21 event still validates.
+  sections_n: z.number().optional(),
+  section_links_n: z.number().optional(),
+  section_dead_anchors_n: z.number().optional(),
   ollama: z.object({ available: z.boolean(), retries: z.number() }),
 });
 

@@ -204,7 +204,7 @@ describe("index rebuild with two live writers and a reader", () => {
       const seedEventsDir = tempDirectory("mneme-rebuild-seed-events-");
       await rebuild({
         indexPath: corpus.indexPath,
-        notesDir: corpus.notesDir,
+        notesDir: corpus.notesDir, mapDir: corpus.mapDir,
         projectRoot,
         embeddings: instantClient(SEED_MODEL),
         eventWriter: new EventWriter(seedEventsDir, { sessionId: "seed", mnemeVersion: "0.1.0", clock: fixedClock }),
@@ -219,7 +219,7 @@ describe("index rebuild with two live writers and a reader", () => {
         `import { rebuild } from ${JSON.stringify(join(REPO_ROOT, "src", "index-db.ts"))};
 import { EventWriter } from ${JSON.stringify(join(REPO_ROOT, "src", "events.ts"))};
 import { EMBEDDING_DIMENSION } from ${JSON.stringify(join(REPO_ROOT, "src", "embeddings.ts"))};
-const [indexPath, notesDir, projectRoot, eventsDir, sessionId] = process.argv.slice(2);
+const [indexPath, notesDir, mapDir, projectRoot, eventsDir, sessionId] = process.argv.slice(2);
 const clock = () => new Date("2026-09-04T10:00:00.000Z");
 // Sleeps before answering so the two writers are guaranteed to overlap in their slow phase.
 const sleepyEmbedder = {
@@ -232,6 +232,7 @@ const sleepyEmbedder = {
 await rebuild({
   indexPath: indexPath!,
   notesDir: notesDir!,
+  mapDir: mapDir!,
   projectRoot: projectRoot!,
   embeddings: sleepyEmbedder,
   eventWriter: new EventWriter(eventsDir!, { sessionId: sessionId!, mnemeVersion: "0.1.0", clock }),
@@ -270,8 +271,8 @@ console.log(JSON.stringify({ ticks, anomalies }));
       const [, , readerStdout] = await runConcurrently(
         [writerScript, writerScript, readerScript],
         [
-          [corpus.indexPath, corpus.notesDir, projectRoot, corpus.eventsDir, "writer-a"],
-          [corpus.indexPath, corpus.notesDir, projectRoot, corpus.eventsDir, "writer-b"],
+          [corpus.indexPath, corpus.notesDir, corpus.mapDir, projectRoot, corpus.eventsDir, "writer-a"],
+          [corpus.indexPath, corpus.notesDir, corpus.mapDir, projectRoot, corpus.eventsDir, "writer-b"],
           [corpus.indexPath, String(REBUILD_NOTES)],
         ],
       );

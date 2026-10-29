@@ -21,7 +21,10 @@ import { EventWriter } from "./events";
 import { EMBEDDING_DIMENSION, EMBEDDING_MODEL } from "./embeddings";
 import type { EmbeddingsClient } from "./embeddings";
 import { defaultConfig } from "./config";
-import { CLIPPED_BODIES_COMPONENT, runDoctor, renderDoctorReport } from "./doctor";
+import { CLIPPED_BODIES_COMPONENT, MAP_SECTIONS_COMPONENT, runDoctor, renderDoctorReport } from "./doctor";
+import { writeMapSection } from "./map/map-store";
+import { serializeMapSection } from "./map/map-section";
+import type { MapSection } from "./map/map-section";
 import { MAX_BODY_CODE_POINTS } from "./note";
 import { remember, stagingResolve } from "./staging";
 import type { StagingDeps } from "./staging";
@@ -41,6 +44,7 @@ const EXPECTED_COMPONENTS = [
   "git",
   "note_bodies",
   "clipped_bodies",
+  "map_sections",
 ];
 
 function ulid(n: number): string {
@@ -132,7 +136,7 @@ async function buildHealthyCorpus(
     mnemeVersion: "0.1.0",
     clock: CLOCK,
   });
-  await rebuild({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, embeddings, eventWriter, clock: CLOCK });
+  await rebuild({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, mapDir: corpus.mapDir, projectRoot, embeddings, eventWriter, clock: CLOCK });
   return corpus;
 }
 
@@ -257,7 +261,7 @@ describe("runDoctor broken components are named, isolated, and typed", () => {
     };
     writeFileSync(join(corpus.notesDir, `${second.frontmatter.id}.md`), serializeNote(second));
     const eventWriter = new EventWriter(corpus.eventsDir, { sessionId: "s-doctor", mnemeVersion: "0.1.0", clock: CLOCK });
-    await rebuild({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, embeddings: offlineClient(), eventWriter, clock: CLOCK });
+    await rebuild({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, mapDir: corpus.mapDir, projectRoot, embeddings: offlineClient(), eventWriter, clock: CLOCK });
     return corpus;
   }
 
@@ -574,4 +578,119 @@ describe("runDoctor on a WAL index whose sidecars are gone", () => {
       expect(sidecarsExist(corpus.indexPath)).toBe(false);
     },
   );
+});
+
+describe("runDoctor map sections", () => {
+  function section(id: string, overrides: Partial<MapSection["frontmatter"]> = {}): MapSection {
+    return {
+      frontmatter: { id, kind: "domain", anchors: [], depends_on: [], terms: [], commit: "abc1234", ...overrides },
+      body: `${id} section essence`,
+    };
+  }
+
+  // The project root and its HEAD come from the manifest: a section anchored at a tracked file
+  // needs the real commit for the drift count, exactly like a note.
+  async function projectOf(corpus: Corpus): Promise<{ projectRoot: string; commit: string }> {
+    const projectRoot = (JSON.parse(readFileSync(corpus.manifestPath, "utf8")) as { path: string }).path;
+    return { projectRoot, commit: (await runGit(projectRoot, ["rev-parse", "HEAD"])).stdout.trim() };
+  }
+
+  async function rebuildCorpus(corpus: Corpus, projectRoot: string): Promise<void> {
+    const eventWriter = new EventWriter(corpus.eventsDir, { sessionId: "s-doctor-map", mnemeVersion: "0.1.0", clock: CLOCK });
+    await rebuild({
+      indexPath: corpus.indexPath,
+      notesDir: corpus.notesDir,
+      mapDir: corpus.mapDir,
+      projectRoot,
+      embeddings: bagOfWordsClient(),
+      eventWriter,
+      clock: CLOCK,
+    });
+  }
+
+  test("an empty map is ok", async () => {
+    const corpus = await buildHealthyCorpus();
+
+    const report = await runDoctor({ corpusDir: corpus.corpusDir, embedder: bagOfWordsClient() });
+
+    expect(byName(report).get(MAP_SECTIONS_COMPONENT)).toEqual({
+      name: MAP_SECTIONS_COMPONENT,
+      status: "ok",
+      detail: "the project map is empty",
+    });
+  });
+
+  test("live sections with a linked note report ok with the counts", async () => {
+    const corpus = await buildHealthyCorpus();
+    const { projectRoot, commit } = await projectOf(corpus);
+    writeMapSection(corpus, section("alpha", { anchors: ["src/a.ts"], commit }));
+    writeMapSection(corpus, section("alpha-flow", { kind: "flow", depends_on: ["alpha"], commit }));
+    await rebuildCorpus(corpus, projectRoot);
+
+    const report = await runDoctor({ corpusDir: corpus.corpusDir, embedder: bagOfWordsClient() });
+
+    const sections = byName(report).get(MAP_SECTIONS_COMPONENT)!;
+    expect(sections.status).toBe("ok");
+    expect(sections.detail).toBe("2 section(s) (1 domains, 1 flows), 1 note link(s), all anchors live");
+    expect(report.overall).toBe("ok");
+  });
+
+  test("a section whose anchor is dead degrades with its id and the map_put cure, touching nothing", async () => {
+    const corpus = await buildHealthyCorpus();
+    const { projectRoot, commit } = await projectOf(corpus);
+    const stale = section("stale", { anchors: ["src/gone.ts"], commit });
+    writeMapSection(corpus, stale);
+    await rebuildCorpus(corpus, projectRoot);
+
+    const report = await runDoctor({ corpusDir: corpus.corpusDir, embedder: bagOfWordsClient() });
+
+    const sections = byName(report).get(MAP_SECTIONS_COMPONENT)!;
+    expect(sections.status).toBe("degraded");
+    expect(sections.detail).toBe(
+      "1 section(s) have a dead anchor as of the last rebuild (re-anchor the section with map_put): stale",
+    );
+    expect(readFileSync(join(corpus.mapDomainsDir, "stale.md"), "utf8")).toBe(serializeMapSection(stale));
+    expect(report.overall).toBe("degraded");
+  });
+
+  test("a dangling dependency degrades, naming the section and the missing target", async () => {
+    const corpus = await buildHealthyCorpus();
+    const { projectRoot, commit } = await projectOf(corpus);
+    writeMapSection(corpus, section("lonely", { kind: "flow", depends_on: ["nowhere"], commit }));
+    await rebuildCorpus(corpus, projectRoot);
+
+    const report = await runDoctor({ corpusDir: corpus.corpusDir, embedder: bagOfWordsClient() });
+
+    const sections = byName(report).get(MAP_SECTIONS_COMPONENT)!;
+    expect(sections.status).toBe("degraded");
+    expect(sections.detail).toBe("lonely depends on unknown section(s) nowhere");
+  });
+
+  test("an unreadable section file fails the component by path without touching the others", async () => {
+    const corpus = await buildHealthyCorpus();
+    writeFileSync(join(corpus.mapDomainsDir, "broken.md"), "not a section at all\n");
+
+    const report = await runDoctor({ corpusDir: corpus.corpusDir, embedder: bagOfWordsClient() });
+
+    const sections = byName(report).get(MAP_SECTIONS_COMPONENT)!;
+    expect(sections.status).toBe("fail");
+    expect(sections.detail).toContain("broken.md");
+    expect(sections.detail).toContain("is unreadable");
+    expect(byName(report).get("index")!.status).toBe("ok");
+    expect(report.overall).toBe("fail");
+  });
+
+  test("without an index the section liveness is unknown and the component degrades", async () => {
+    const corpus = await buildHealthyCorpus();
+    const { projectRoot, commit } = await projectOf(corpus);
+    writeMapSection(corpus, section("alpha", { anchors: ["src/a.ts"], commit }));
+    await rebuildCorpus(corpus, projectRoot);
+    rmSync(corpus.indexPath, { force: true });
+
+    const report = await runDoctor({ corpusDir: corpus.corpusDir, embedder: bagOfWordsClient() });
+
+    const sections = byName(report).get(MAP_SECTIONS_COMPONENT)!;
+    expect(sections.status).toBe("degraded");
+    expect(sections.detail).toBe("section liveness unknown (rebuilt on next recall)");
+  });
 });

@@ -349,8 +349,8 @@ async function recallTool(
 ): Promise<CallToolResult> {
   const indexPath = context.corpus.indexPath;
   if (!existsSync(indexPath)) {
-    const notesDir = context.corpus.notesDir;
-    await rebuild({ indexPath, notesDir, projectRoot, embeddings, eventWriter: context.eventWriter, clock });
+    const { notesDir, mapDir } = context.corpus;
+    await rebuild({ indexPath, notesDir, mapDir, projectRoot, embeddings, eventWriter: context.eventWriter, clock });
   }
   const db = openReadOnlyDatabase(indexPath);
   try {

@@ -26,6 +26,7 @@ function corpusLayout(): { corpusDir: string; eventsDir: string; deps: (notesDir
     deps: (notesDir) => ({
       indexPath: join(corpusDir, "index.db"),
       notesDir,
+      mapDir: join(corpusDir, "map"),
       projectRoot: corpusDir,
       embeddings: silentClient,
       eventWriter,

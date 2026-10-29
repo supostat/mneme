@@ -6,8 +6,11 @@ import { join } from "node:path";
 import { runGit, initRepo } from "./git";
 import { serializeNote } from "./note";
 import type { Note, NoteFrontmatter } from "./note";
-import { rebuild, dumpIndex, dumpVectors, nearestNeighbor, openReadOnlyDatabase } from "./index-db";
+import { rebuild, dumpIndex, dumpMapIndex, dumpVectors, indexNeedsRebuild, nearestNeighbor, openReadOnlyDatabase } from "./index-db";
 import type { RebuildDeps } from "./index-db";
+import { mapLayoutOf } from "./corpus";
+import { writeMapSection } from "./map/map-store";
+import type { MapSection, MapSectionFrontmatter } from "./map/map-section";
 import {
   HttpEmbeddingsClient,
   EMBEDDING_DIMENSION,
@@ -25,6 +28,7 @@ const fixedClock = () => new Date("2026-07-06T10:00:00.000Z");
 interface RebuildBase {
   indexPath: string;
   notesDir: string;
+  mapDir: string;
   projectRoot: string;
   embeddings: EmbeddingsClient;
 }
@@ -61,11 +65,14 @@ function writeNote(notesDir: string, value: Note): void {
   writeFileSync(join(notesDir, `${value.frontmatter.id}.md`), serializeNote(value));
 }
 
-function makeCorpus(): { notesDir: string; indexPath: string } {
+function makeCorpus(): { notesDir: string; mapDir: string; indexPath: string } {
   const corpusDir = mkdtempSync(join(tmpdir(), "mneme-index-"));
   const notesDir = join(corpusDir, "notes");
+  const mapDir = join(corpusDir, "map");
   mkdirSync(notesDir);
-  return { notesDir, indexPath: join(corpusDir, "index.db") };
+  mkdirSync(join(mapDir, "domains"), { recursive: true });
+  mkdirSync(join(mapDir, "flows"));
+  return { notesDir, mapDir, indexPath: join(corpusDir, "index.db") };
 }
 
 async function buildProjectRepo(fileNames: string[]): Promise<{ projectRoot: string; commit: string }> {
@@ -153,7 +160,7 @@ describe("rebuild FTS and meta determinism", () => {
     const corpus = makeCorpus();
     writeNote(corpus.notesDir, note({ id: ulid(0), anchors: ["src/a.ts"], commit }, "payment ledger essence"));
     writeNote(corpus.notesDir, note({ id: ulid(1), anchors: ["src/b.ts"], commit }, "refund workflow essence"));
-    const deps = rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, embeddings: offlineClient() });
+    const deps = rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, mapDir: corpus.mapDir, projectRoot, embeddings: offlineClient() });
 
     await rebuild(deps);
     const first = dumpIndex(corpus.indexPath);
@@ -175,7 +182,7 @@ describe("rebuild FTS document with tags", () => {
       note({ id: ulid(0), anchors: ["src/a.ts"], tags: ["MultiSelect", "lock ordering"], commit }, "plain body text"),
     );
 
-    await rebuild(rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, embeddings: offlineClient() }));
+    await rebuild(rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, mapDir: corpus.mapDir, projectRoot, embeddings: offlineClient() }));
 
     const rows = JSON.parse(dumpIndex(corpus.indexPath)) as Array<{ id: string; body: string }>;
     expect(rows[0]!.body).toBe("plain body text\nMultiSelect\nlock ordering");
@@ -188,7 +195,7 @@ describe("rebuild supersede exclusion", () => {
     const projectRoot = mkdtempSync(join(tmpdir(), "mneme-norepo-"));
     writeNote(corpus.notesDir, note({ id: ulid(0) }, "original insight"));
     writeNote(corpus.notesDir, note({ id: ulid(1), supersedes: ulid(0) }, "revised insight"));
-    await rebuild(rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, embeddings: offlineClient() }));
+    await rebuild(rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, mapDir: corpus.mapDir, projectRoot, embeddings: offlineClient() }));
 
     const ids = (JSON.parse(dumpIndex(corpus.indexPath)) as Array<{ id: string }>).map((row) => row.id);
     expect(ids).toEqual([ulid(1)]);
@@ -200,7 +207,7 @@ describe("rebuild supersede exclusion", () => {
     writeNote(corpus.notesDir, note({ id: ulid(0) }, "v1"));
     writeNote(corpus.notesDir, note({ id: ulid(1), supersedes: ulid(0) }, "v2"));
     writeNote(corpus.notesDir, note({ id: ulid(2), supersedes: ulid(1) }, "v3"));
-    await rebuild(rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, embeddings: offlineClient() }));
+    await rebuild(rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, mapDir: corpus.mapDir, projectRoot, embeddings: offlineClient() }));
 
     const ids = (JSON.parse(dumpIndex(corpus.indexPath)) as Array<{ id: string }>).map((row) => row.id);
     expect(ids).toEqual([ulid(2)]);
@@ -215,7 +222,7 @@ describe("rebuild non-markdown filter", () => {
     writeFileSync(join(corpus.notesDir, ".DS_Store"), "\0\0 binary junk not a note");
     writeFileSync(join(corpus.notesDir, "notes.txt"), "plain text that is not a note");
 
-    await rebuild(rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, embeddings: offlineClient() }));
+    await rebuild(rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, mapDir: corpus.mapDir, projectRoot, embeddings: offlineClient() }));
 
     const ids = (JSON.parse(dumpIndex(corpus.indexPath)) as Array<{ id: string }>).map((row) => row.id);
     expect(ids).toEqual([ulid(0)]);
@@ -228,7 +235,7 @@ describe("rebuild empty corpus", () => {
     const projectRoot = mkdtempSync(join(tmpdir(), "mneme-norepo-"));
     const log: EmbedLog = { calls: [] };
 
-    await rebuild(rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, embeddings: jitterClient(log) }));
+    await rebuild(rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, mapDir: corpus.mapDir, projectRoot, embeddings: jitterClient(log) }));
 
     expect(dumpIndex(corpus.indexPath)).toBe("[]");
     expect(dumpVectors(corpus.indexPath)).toBe("[]");
@@ -242,7 +249,7 @@ describe("rebuild corrupt index recovery", () => {
     const corpus = makeCorpus();
     const projectRoot = mkdtempSync(join(tmpdir(), "mneme-norepo-"));
     writeNote(corpus.notesDir, note({ id: ulid(0) }, "durable note body"));
-    const deps = rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, embeddings: offlineClient() });
+    const deps = rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, mapDir: corpus.mapDir, projectRoot, embeddings: offlineClient() });
 
     await rebuild(deps);
     const healthy = dumpIndex(corpus.indexPath);
@@ -274,7 +281,7 @@ describe("rebuild corrupt index recovery", () => {
     halfSchema.close();
     const inodeBefore = statSync(corpus.indexPath).ino;
 
-    await rebuild(rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, embeddings: offlineClient() }));
+    await rebuild(rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, mapDir: corpus.mapDir, projectRoot, embeddings: offlineClient() }));
 
     expect(statSync(corpus.indexPath).ino).toBe(inodeBefore);
     const ids = (JSON.parse(dumpIndex(corpus.indexPath)) as Array<{ id: string }>).map((row) => row.id);
@@ -289,7 +296,7 @@ describe("rebuild keeps the index file and its readers alive", () => {
     const corpus = makeCorpus();
     const projectRoot = mkdtempSync(join(tmpdir(), "mneme-norepo-"));
     writeNote(corpus.notesDir, note({ id: ulid(0) }, "first body"));
-    const deps = rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, embeddings: offlineClient() });
+    const deps = rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, mapDir: corpus.mapDir, projectRoot, embeddings: offlineClient() });
 
     await rebuild(deps);
     const inode = statSync(corpus.indexPath).ino;
@@ -304,7 +311,7 @@ describe("rebuild keeps the index file and its readers alive", () => {
     const corpus = makeCorpus();
     const projectRoot = mkdtempSync(join(tmpdir(), "mneme-norepo-"));
     writeNote(corpus.notesDir, note({ id: ulid(0) }, "first body"));
-    const deps = rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, embeddings: offlineClient() });
+    const deps = rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, mapDir: corpus.mapDir, projectRoot, embeddings: offlineClient() });
     await rebuild(deps);
     const reader = openReadOnlyDatabase(corpus.indexPath);
     const countNotes = () => (reader.query("SELECT COUNT(*) AS count FROM meta").get() as { count: number }).count;
@@ -325,7 +332,7 @@ describe("rebuild keeps the index file and its readers alive", () => {
     const corpus = makeCorpus();
     const projectRoot = mkdtempSync(join(tmpdir(), "mneme-norepo-"));
     writeNote(corpus.notesDir, note({ id: ulid(0) }, "first body"));
-    const deps = rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, embeddings: offlineClient() });
+    const deps = rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, mapDir: corpus.mapDir, projectRoot, embeddings: offlineClient() });
     await rebuild(deps);
     const reader = openReadOnlyDatabase(corpus.indexPath);
     const countNotes = () => (reader.query("SELECT COUNT(*) AS count FROM meta").get() as { count: number }).count;
@@ -353,7 +360,7 @@ describe("rebuild content-hash embedding cache", () => {
     writeNote(corpus.notesDir, note({ id: ulid(1), anchors: ["src/b.ts"], commit }, "beta body"));
     const log: EmbedLog = { calls: [] };
     const embeddings = jitterClient(log);
-    const deps = rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, embeddings });
+    const deps = rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, mapDir: corpus.mapDir, projectRoot, embeddings });
 
     await rebuild(deps);
     const first = dumpVectors(corpus.indexPath);
@@ -373,7 +380,7 @@ describe("rebuild content-hash embedding cache", () => {
     writeNote(corpus.notesDir, note({ id: ulid(1), anchors: ["src/b.ts"], commit }, "shared body text"));
     const log: EmbedLog = { calls: [] };
 
-    await rebuild(rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, embeddings: jitterClient(log) }));
+    await rebuild(rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, mapDir: corpus.mapDir, projectRoot, embeddings: jitterClient(log) }));
 
     const rows = JSON.parse(dumpVectors(corpus.indexPath)) as Array<{ content_hash: string; embedding: string }>;
     expect(rows.length).toBe(2);
@@ -387,7 +394,7 @@ describe("rebuild content-hash embedding cache", () => {
     const corpus = makeCorpus();
     writeNote(corpus.notesDir, note({ id: ulid(0), anchors: ["src/a.ts"], commit }, "alpha body"));
     const log: EmbedLog = { calls: [] };
-    const deps = rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, embeddings: jitterClient(log) });
+    const deps = rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, mapDir: corpus.mapDir, projectRoot, embeddings: jitterClient(log) });
 
     await rebuild(deps);
     const first = dumpVectors(corpus.indexPath);
@@ -406,7 +413,7 @@ describe("rebuild content-hash embedding cache", () => {
     writeNote(corpus.notesDir, note({ id: ulid(0), anchors: ["src/a.ts"], commit }, "alpha body"));
     writeNote(corpus.notesDir, note({ id: ulid(1), anchors: ["src/b.ts"], commit }, "beta body"));
     const log: EmbedLog = { calls: [] };
-    const deps = rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, embeddings: jitterClient(log) });
+    const deps = rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, mapDir: corpus.mapDir, projectRoot, embeddings: jitterClient(log) });
 
     await rebuild(deps);
     const tamper = new Database(corpus.indexPath);
@@ -424,7 +431,7 @@ describe("rebuild content-hash embedding cache", () => {
     writeNote(corpus.notesDir, note({ id: ulid(0), anchors: ["src/a.ts"], commit }, "alpha body"));
     writeNote(corpus.notesDir, note({ id: ulid(1), anchors: ["src/b.ts"], commit }, "beta body"));
     const log: EmbedLog = { calls: [] };
-    const base = { indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot };
+    const base = { indexPath: corpus.indexPath, notesDir: corpus.notesDir, mapDir: corpus.mapDir, projectRoot };
 
     await rebuild(rebuildDeps({ ...base, embeddings: jitterClient(log, "model-a") }));
     expect(stampedModel(corpus.indexPath)).toBe("model-a");
@@ -458,7 +465,7 @@ function bodyOf(index: number): string {
   return `distinct note body number ${index}`;
 }
 
-async function fortyNoteCorpus(): Promise<{ corpus: { notesDir: string; indexPath: string }; projectRoot: string }> {
+async function fortyNoteCorpus(): Promise<{ corpus: { notesDir: string; mapDir: string; indexPath: string }; projectRoot: string }> {
   const { projectRoot, commit } = await buildProjectRepo(["src/a.ts"]);
   const corpus = makeCorpus();
   for (let index = 0; index < 40; index++) {
@@ -480,7 +487,7 @@ describe("rebuild embeds in chunks and keeps what it got", () => {
       },
     };
 
-    await rebuild(rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, embeddings: recording }));
+    await rebuild(rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, mapDir: corpus.mapDir, projectRoot, embeddings: recording }));
 
     expect(seen.map((call) => call.inputs.length)).toEqual([16, 16, 8]);
     expect(seen.map((call) => call.options)).toEqual(
@@ -494,7 +501,7 @@ describe("rebuild embeds in chunks and keeps what it got", () => {
     const { corpus, projectRoot } = await fortyNoteCorpus();
     const log: EmbedLog = { calls: [] };
 
-    await rebuild(rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, embeddings: failingOnCallClient(log, 2) }));
+    await rebuild(rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, mapDir: corpus.mapDir, projectRoot, embeddings: failingOnCallClient(log, 2) }));
 
     expect(log.calls.map((call) => call.length)).toEqual([16, 16]);
     const rows = JSON.parse(dumpVectors(corpus.indexPath)) as Array<{ id: string }>;
@@ -504,7 +511,7 @@ describe("rebuild embeds in chunks and keeps what it got", () => {
 
   test("the next rebuild after a partial one only asks for the bodies that still lack a vector", async () => {
     const { corpus, projectRoot } = await fortyNoteCorpus();
-    const base = { indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot };
+    const base = { indexPath: corpus.indexPath, notesDir: corpus.notesDir, mapDir: corpus.mapDir, projectRoot };
     await rebuild(rebuildDeps({ ...base, embeddings: failingOnCallClient({ calls: [] }, 2) }));
     const firstSixteen = (JSON.parse(dumpVectors(corpus.indexPath)) as Array<{ id: string; embedding: string }>).map(
       (row) => row.embedding,
@@ -525,7 +532,7 @@ describe("rebuild embeds in chunks and keeps what it got", () => {
     const { corpus, projectRoot } = await fortyNoteCorpus();
     const log: EmbedLog = { calls: [] };
 
-    await rebuild(rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, embeddings: failingOnCallClient(log, 1) }));
+    await rebuild(rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, mapDir: corpus.mapDir, projectRoot, embeddings: failingOnCallClient(log, 1) }));
 
     expect(log.calls.map((call) => call.length)).toEqual([16]);
     expect(dumpVectors(corpus.indexPath)).toBe("[]");
@@ -571,7 +578,7 @@ describe("rebuild telemetry event", () => {
     const eventWriter = new EventWriter(eventsDir, { sessionId: "s-index", mnemeVersion: "0.1.0", clock: fixedClock });
     const embeddings = keyedVectorClient(new Map([["alpha body", [1, 0]], ["beta body", [0, 1]]]));
 
-    await rebuild({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, embeddings, eventWriter, clock: fixedClock });
+    await rebuild({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, mapDir: corpus.mapDir, projectRoot, embeddings, eventWriter, clock: fixedClock });
 
     const events = readEvents(eventsDir).filter((event) => event.type === "rebuild");
     expect(events.length).toBe(1);
@@ -597,7 +604,7 @@ describe("rebuild telemetry event", () => {
     const eventWriter = new EventWriter(eventsDir, { sessionId: "s-index-pattern", mnemeVersion: "0.1.0", clock: fixedClock });
     const embeddings = keyedVectorClient(new Map([["pattern body", [1, 0]], ["bugfix body", [0, 1]]]));
 
-    await rebuild({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, embeddings, eventWriter, clock: fixedClock });
+    await rebuild({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, mapDir: corpus.mapDir, projectRoot, embeddings, eventWriter, clock: fixedClock });
 
     const emitted = readEvents(eventsDir).filter((event) => event.type === "rebuild")[0]!;
     // staleness[] follows note (id-sorted) order: pattern ulid(0) first, bugfix ulid(1) second.
@@ -617,7 +624,7 @@ describe("rebuild telemetry event", () => {
     const eventWriter = new EventWriter(eventsDir, { sessionId: "s-index-antipattern", mnemeVersion: "0.1.0", clock: fixedClock });
     const embeddings = keyedVectorClient(new Map([["antipattern body", [1, 0]], ["bugfix body", [0, 1]]]));
 
-    await rebuild({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, embeddings, eventWriter, clock: fixedClock });
+    await rebuild({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, mapDir: corpus.mapDir, projectRoot, embeddings, eventWriter, clock: fixedClock });
 
     const emitted = readEvents(eventsDir).filter((event) => event.type === "rebuild")[0]!;
     expect(emitted.staleness).toEqual([0, -1]);
@@ -635,7 +642,7 @@ describe("rebuild telemetry event", () => {
     const eventWriter = new EventWriter(eventsDir, { sessionId: "s-index-tags", mnemeVersion: "0.1.0", clock: fixedClock });
     const embeddings = keyedVectorClient(new Map([["tagged concept body", [1, 0]], ["concept anchor body", [0, 1]]]));
 
-    await rebuild({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, embeddings, eventWriter, clock: fixedClock });
+    await rebuild({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, mapDir: corpus.mapDir, projectRoot, embeddings, eventWriter, clock: fixedClock });
 
     const emitted = readEvents(eventsDir).filter((event) => event.type === "rebuild")[0]!;
     expect(emitted.staleness).toEqual([0, -1]);
@@ -650,7 +657,7 @@ describe("rebuild telemetry event", () => {
     const eventsDir = mkdtempSync(join(tmpdir(), "mneme-index-events-"));
     const eventWriter = new EventWriter(eventsDir, { sessionId: "s-index", mnemeVersion: "0.1.0", clock: fixedClock });
 
-    await rebuild({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, embeddings: offlineClient(), eventWriter, clock: fixedClock });
+    await rebuild({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, mapDir: corpus.mapDir, projectRoot, embeddings: offlineClient(), eventWriter, clock: fixedClock });
 
     const events = readEvents(eventsDir).filter((event) => event.type === "rebuild");
     expect(events.length).toBe(1);
@@ -667,7 +674,7 @@ describe("rebuild telemetry event", () => {
     const { corpus, projectRoot } = await fortyNoteCorpus();
     const eventsDir = mkdtempSync(join(tmpdir(), "mneme-index-events-"));
     const eventWriter = new EventWriter(eventsDir, { sessionId: "s-index", mnemeVersion: "0.1.0", clock: fixedClock });
-    const base = { indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, eventWriter, clock: fixedClock };
+    const base = { indexPath: corpus.indexPath, notesDir: corpus.notesDir, mapDir: corpus.mapDir, projectRoot, eventWriter, clock: fixedClock };
 
     await rebuild({ ...base, embeddings: failingOnCallClient({ calls: [] }, 2) });
     await rebuild({ ...base, embeddings: jitterClient({ calls: [] }) });
@@ -683,7 +690,7 @@ describe("rebuild telemetry event", () => {
     const { corpus, projectRoot } = await fortyNoteCorpus();
     const eventsDir = mkdtempSync(join(tmpdir(), "mneme-index-events-"));
     const eventWriter = new EventWriter(eventsDir, { sessionId: "s-index", mnemeVersion: "0.1.0", clock: fixedClock });
-    const deps = { indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, eventWriter, clock: fixedClock, embeddings: jitterClient({ calls: [] }) };
+    const deps = { indexPath: corpus.indexPath, notesDir: corpus.notesDir, mapDir: corpus.mapDir, projectRoot, eventWriter, clock: fixedClock, embeddings: jitterClient({ calls: [] }) };
 
     await rebuild(deps);
     await rebuild(deps);
@@ -701,7 +708,7 @@ describe("nearestNeighbor", () => {
     writeNote(corpus.notesDir, note({ id: ulid(0) }, "alpha body"));
     writeNote(corpus.notesDir, note({ id: ulid(1) }, "beta body"));
     const client = keyedVectorClient(new Map([["alpha body", [1, 0]], ["beta body", [0, 1]]]));
-    await rebuild(rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, embeddings: client }));
+    await rebuild(rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, mapDir: corpus.mapDir, projectRoot, embeddings: client }));
 
     const result = nearestNeighbor(corpus.indexPath, vectorFrom([0.9, 0.1]));
 
@@ -715,7 +722,7 @@ describe("nearestNeighbor", () => {
     writeNote(corpus.notesDir, note({ id: ulid(1) }, "shared body"));
     writeNote(corpus.notesDir, note({ id: ulid(0) }, "shared body"));
     const client = keyedVectorClient(new Map([["shared body", [1, 1]]]));
-    await rebuild(rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, embeddings: client }));
+    await rebuild(rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, mapDir: corpus.mapDir, projectRoot, embeddings: client }));
 
     const result = nearestNeighbor(corpus.indexPath, vectorFrom([1, 1]));
 
@@ -730,7 +737,7 @@ describe("nearestNeighbor", () => {
     const corpus = makeCorpus();
     const projectRoot = mkdtempSync(join(tmpdir(), "mneme-norepo-"));
     writeNote(corpus.notesDir, note({ id: ulid(0) }, "no vectors stored offline"));
-    await rebuild(rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, embeddings: offlineClient() }));
+    await rebuild(rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, mapDir: corpus.mapDir, projectRoot, embeddings: offlineClient() }));
 
     expect(nearestNeighbor(corpus.indexPath, vectorFrom([1, 0]))).toBeUndefined();
   });
@@ -745,7 +752,7 @@ describe("rebuild with real Ollama", () => {
       writeNote(corpus.notesDir, note({ id: ulid(0), anchors: ["src/a.ts"], commit }, "durable ollama vector body"));
       const deps = rebuildDeps({
         indexPath: corpus.indexPath,
-        notesDir: corpus.notesDir,
+        notesDir: corpus.notesDir, mapDir: corpus.mapDir,
         projectRoot,
         embeddings: new HttpEmbeddingsClient(),
       });
@@ -797,7 +804,7 @@ describe("openReadOnlyDatabase", () => {
     const { projectRoot } = await buildProjectRepo(["src/a.ts"]);
     const corpus = makeCorpus();
     writeNote(corpus.notesDir, note({ id: ulid(0) }, "reader must not write"));
-    await rebuild(rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, embeddings: offlineClient() }));
+    await rebuild(rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, mapDir: corpus.mapDir, projectRoot, embeddings: offlineClient() }));
 
     const db = openReadOnlyDatabase(corpus.indexPath);
     try {
@@ -817,7 +824,7 @@ describe("openReadOnlyDatabase", () => {
       const { projectRoot } = await buildProjectRepo(["src/a.ts"]);
       const corpus = makeCorpus();
       writeNote(corpus.notesDir, note({ id: ulid(0) }, "survives a sidecar wipe"));
-      await rebuild(rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, projectRoot, embeddings: offlineClient() }));
+      await rebuild(rebuildDeps({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, mapDir: corpus.mapDir, projectRoot, embeddings: offlineClient() }));
       for (const sidecar of sidecarPaths(corpus.indexPath)) rmSync(sidecar, { force: true });
       expect(sidecarPaths(corpus.indexPath).some((path) => existsSync(path))).toBe(false);
 
@@ -841,4 +848,120 @@ describe("openReadOnlyDatabase", () => {
       }
     },
   );
+});
+
+describe("rebuild indexes map sections beside the notes", () => {
+  const sectionBase: MapSectionFrontmatter = {
+    id: "alpha",
+    kind: "domain",
+    anchors: [],
+    depends_on: [],
+    terms: [],
+    commit: "abc1234",
+  };
+
+  function section(overrides: Partial<MapSectionFrontmatter>, body: string): MapSection {
+    return { frontmatter: { ...sectionBase, ...overrides }, body };
+  }
+
+  function writeSection(mapDir: string, value: MapSection): void {
+    writeMapSection(mapLayoutOf(mapDir), value);
+  }
+
+  function countRows(indexPath: string, table: string): number {
+    const db = openReadOnlyDatabase(indexPath);
+    try {
+      return (db.query(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number }).count;
+    } finally {
+      db.close();
+    }
+  }
+
+  test("two rebuilds give byte-identical map tables; links follow the anchor intersection across note types but never a retired note", async () => {
+    const { projectRoot, commit } = await buildProjectRepo(["src/a.ts", "src/b.ts"]);
+    const corpus = makeCorpus();
+    writeNote(corpus.notesDir, note({ id: ulid(0), type: "pattern", anchors: ["src/a.ts"], commit }, "pattern on a"));
+    writeNote(corpus.notesDir, note({ id: ulid(1), type: "bugfix", anchors: ["src/b.ts"], commit }, "bugfix on b"));
+    writeNote(corpus.notesDir, note({ id: ulid(2), type: "bugfix", anchors: ["src/a.ts"], commit, retired: true }, "retired on a"));
+    writeSection(corpus.mapDir, section({ id: "alpha", anchors: ["src/a.ts"], terms: ["ledger"], commit }, "Alpha domain.\nIt owns a."));
+    writeSection(corpus.mapDir, section({ id: "alpha-flow", kind: "flow", depends_on: ["alpha"], commit }, "Alpha flow."));
+    const deps = rebuildDeps({ ...corpus, projectRoot, embeddings: offlineClient() });
+
+    await rebuild(deps);
+    const first = dumpMapIndex(corpus.indexPath);
+    await rebuild(deps);
+
+    expect(dumpMapIndex(corpus.indexPath)).toBe(first);
+    expect(JSON.parse(first)).toEqual({
+      sections: [
+        { id: "alpha", kind: "domain", staleness_boost: 0, body: "Alpha domain.\nIt owns a.\nledger" },
+        { id: "alpha-flow", kind: "flow", staleness_boost: 0, body: "Alpha flow." },
+      ],
+      links: [{ section_id: "alpha", note_id: ulid(0) }],
+    });
+  });
+
+  test("a section with a dead anchor sinks and is counted; a section without anchors is pinned neutral", async () => {
+    const { projectRoot, commit } = await buildProjectRepo(["src/a.ts"]);
+    const corpus = makeCorpus();
+    writeSection(corpus.mapDir, section({ id: "gone", anchors: ["src/gone.ts"], commit }, "Gone domain."));
+    writeSection(corpus.mapDir, section({ id: "free", kind: "flow", anchors: [], commit }, "Free flow."));
+    const eventsDir = mkdtempSync(join(tmpdir(), "mneme-index-map-events-"));
+    const eventWriter = new EventWriter(eventsDir, { sessionId: "s-index-map", mnemeVersion: "0.1.0", clock: fixedClock });
+
+    await rebuild({ ...corpus, projectRoot, embeddings: offlineClient(), eventWriter, clock: fixedClock });
+
+    const dump = JSON.parse(dumpMapIndex(corpus.indexPath)) as { sections: Array<{ id: string; staleness_boost: number }> };
+    expect(dump.sections.map((row) => [row.id, row.staleness_boost])).toEqual([["free", 0], ["gone", -1]]);
+    const emitted = readEvents(eventsDir).filter((event) => event.type === "rebuild")[0]!;
+    expect(emitted).toMatchObject({ notes_n: 0, dead_anchors_n: 0, sections_n: 2, section_links_n: 0, section_dead_anchors_n: 1 });
+  });
+
+  test("a section vector lands in map_vec, stamps the model, and is served from the cache on the next rebuild", async () => {
+    const { projectRoot, commit } = await buildProjectRepo(["src/a.ts"]);
+    const corpus = makeCorpus();
+    writeSection(corpus.mapDir, section({ id: "cached", anchors: ["src/a.ts"], commit }, "section body text"));
+    const log: EmbedLog = { calls: [] };
+    const deps = rebuildDeps({ ...corpus, projectRoot, embeddings: jitterClient(log) });
+
+    await rebuild(deps);
+    expect(log.calls.filter((call) => call.length > 0)).toEqual([["section body text"]]);
+    await rebuild(deps);
+
+    expect(log.calls.filter((call) => call.length > 0)).toEqual([["section body text"]]);
+    expect(countRows(corpus.indexPath, "map_vec")).toBe(1);
+    expect(dumpVectors(corpus.indexPath)).toBe("[]");
+    expect(configCount(corpus.indexPath)).toBe(1);
+  });
+
+  test("indexNeedsRebuild: a missing file, an index from before the map tables, and a complete index", async () => {
+    const { projectRoot } = await buildProjectRepo(["src/a.ts"]);
+    const corpus = makeCorpus();
+    expect(indexNeedsRebuild(corpus.indexPath)).toBe(true);
+
+    const legacy = new Database(corpus.indexPath, { create: true });
+    legacy.run("CREATE VIRTUAL TABLE fts USING fts5(id UNINDEXED, body)");
+    legacy.run("CREATE TABLE meta (id TEXT PRIMARY KEY, type TEXT NOT NULL, staleness_boost REAL NOT NULL)");
+    legacy.run("CREATE TABLE vec (id TEXT PRIMARY KEY, content_hash TEXT NOT NULL, embedding BLOB NOT NULL)");
+    legacy.run("CREATE TABLE index_config (embedding_model TEXT NOT NULL)");
+    legacy.close();
+    expect(indexNeedsRebuild(corpus.indexPath)).toBe(true);
+
+    await rebuild(rebuildDeps({ ...corpus, projectRoot, embeddings: offlineClient() }));
+    expect(indexNeedsRebuild(corpus.indexPath)).toBe(false);
+  });
+
+  test("dedup's nearest neighbour never sees a section vector (real-dep smoke on the vec table)", async () => {
+    const { projectRoot, commit } = await buildProjectRepo(["src/a.ts"]);
+    const corpus = makeCorpus();
+    writeSection(corpus.mapDir, section({ id: "only", anchors: ["src/a.ts"], commit }, "section body"));
+    const embeddings = keyedVectorClient(new Map([["section body", [1, 0]]]));
+
+    await rebuild(rebuildDeps({ ...corpus, projectRoot, embeddings }));
+
+    expect(countRows(corpus.indexPath, "map_vec")).toBe(1);
+    const query = new Float32Array(EMBEDDING_DIMENSION);
+    query[0] = 1;
+    expect(nearestNeighbor(corpus.indexPath, query)).toBeUndefined();
+  });
 });

@@ -192,7 +192,7 @@ describe("applyHarvest defers the next phase's recall (lazy)", () => {
     writeAcceptedNote(deps, "01ARZ3NDEKTSV4RRFFQ69G5FB0", noteBody, commit);
     await rebuild({
       indexPath: deps.corpus.indexPath,
-      notesDir: deps.corpus.notesDir,
+      notesDir: deps.corpus.notesDir, mapDir: deps.corpus.mapDir,
       projectRoot,
       embeddings: deps.embeddings,
       eventWriter: deps.eventWriter,
@@ -220,7 +220,7 @@ describe("applyHarvest dedup visibility", () => {
     );
     await rebuild({
       indexPath: deps.corpus.indexPath,
-      notesDir: deps.corpus.notesDir,
+      notesDir: deps.corpus.notesDir, mapDir: deps.corpus.mapDir,
       projectRoot,
       embeddings: deps.embeddings,
       eventWriter: deps.eventWriter,
@@ -387,7 +387,7 @@ describe("runEngineSteps records the bundle composition it compiled", () => {
     writeAcceptedNote(deps, noteId, noteBody, commit);
     await rebuild({
       indexPath: deps.corpus.indexPath,
-      notesDir: deps.corpus.notesDir,
+      notesDir: deps.corpus.notesDir, mapDir: deps.corpus.mapDir,
       projectRoot,
       embeddings: deps.embeddings,
       eventWriter: deps.eventWriter,
@@ -424,7 +424,7 @@ describe("runEngineSteps records the bundle composition it compiled", () => {
     writeAcceptedNote(deps, noteId, "phase one module ranking probe restored evidence", commit);
     await rebuild({
       indexPath: deps.corpus.indexPath,
-      notesDir: deps.corpus.notesDir,
+      notesDir: deps.corpus.notesDir, mapDir: deps.corpus.mapDir,
       projectRoot,
       embeddings: deps.embeddings,
       eventWriter: deps.eventWriter,

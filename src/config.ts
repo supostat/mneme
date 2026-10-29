@@ -4,6 +4,7 @@ import { z } from "zod";
 import { DEDUP_NOOP_THRESHOLD, DEDUP_SUPERSEDE_THRESHOLD } from "./dedup";
 import { EMBEDDER_FORMATS, EMBEDDING_MODEL, OLLAMA_BASE_URL } from "./embeddings";
 import type { EmbedderFormat } from "./embeddings";
+import { DEFAULT_RECALL_BUDGET } from "./fusion";
 
 // Project-level configuration: <projectRoot>/.mneme.json overridden by MNEME_* environment
 // variables. Every default IS the historical constant, imported from its canonical module, so a
@@ -13,7 +14,6 @@ import type { EmbedderFormat } from "./embeddings";
 export class ConfigError extends Error {}
 
 export const CONFIG_FILE_NAME = ".mneme.json";
-export const DEFAULT_RECALL_BUDGET = 2000;
 
 // The corpus name becomes a directory under the corpus home, so its grammar is the security guard
 // that keeps a configured value from escaping that home: no slashes and no dots means traversal is
