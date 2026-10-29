@@ -51,7 +51,11 @@ function makeDefinition(phases: PhaseDocument[]): RunDefinition {
   };
 }
 
-const RETRIEVAL = { recallBudget: 2000, recallAnchors: { "phase-one": ["src/a.ts"] } };
+const RETRIEVAL = {
+  recallBudget: 2000,
+  recallAnchors: { "phase-one": ["src/a.ts"] },
+  recallDomains: { "phase-one": ["payments"] },
+};
 
 interface LogFixture {
   eventsDir: string;
@@ -806,5 +810,35 @@ describe("restoreRuns absorbs inconclusive gate runs", () => {
     log.writer.append({ ...payload, type: "workflow_step_applied" });
 
     expect(onlyUnreadable(log).problem).toContain("missing its duration or limit");
+  });
+});
+
+describe("restoreRuns carries each phase's recall domains", () => {
+  test("the domain scope rides the started event and restores unchanged", () => {
+    const log = makeLog();
+    appendStarted(log, RUN_ID, "main", makeDefinition([phaseDocument("phase-one")]));
+
+    const [event] = readEvents(log.eventsDir);
+    expect(definitionOf(event!)["recall_domains"]).toEqual({ "phase-one": ["payments"] });
+    expect(onlyRun(log).retrieval.recallDomains).toEqual({ "phase-one": ["payments"] });
+  });
+
+  test("a pre-21 definition without recall_domains restores onto an empty scope", () => {
+    const log = makeLog();
+    const payload = JSON.parse(
+      JSON.stringify(runStartedPayload(RUN_ID, "main", makeDefinition([phaseDocument("phase-one")]), RETRIEVAL)),
+    ) as Record<string, unknown>;
+    delete definitionOf(payload)["recall_domains"];
+    const raw = {
+      ...payload,
+      type: "workflow_run_started",
+      session_id: "s-v20",
+      ts: "2026-07-06T10:00:00.000Z",
+      mneme_version: "0.1.20",
+      schema_version: 20,
+    };
+    appendFileSync(join(log.eventsDir, EVENTS_FILE), JSON.stringify(raw) + "\n");
+
+    expect(onlyRun(log).retrieval).toEqual({ ...RETRIEVAL, recallDomains: {} });
   });
 });

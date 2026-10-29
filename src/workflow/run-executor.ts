@@ -31,6 +31,7 @@ export async function runEngineSteps(deps: StagingDeps, active: ReadableRun): Pr
     const bundle = await compileRecallBundle(deps, {
       phaseDescription: phase.description,
       anchorPaths: active.retrieval.recallAnchors[directive.phaseId] ?? [],
+      domains: active.retrieval.recallDomains[directive.phaseId] ?? [],
       budget: active.retrieval.recallBudget,
     });
     const result: StepResult = { kind: "recall", phaseId: directive.phaseId };

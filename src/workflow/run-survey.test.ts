@@ -56,7 +56,7 @@ describe("surveyRuns with unanswerable branch questions", () => {
   test("a foreign-branch run is warned about as indeterminate and NEVER marked stale", async () => {
     const deps = await makeNonRepoDeps();
     deps.eventWriter.append({
-      ...runStartedPayload(FOREIGN_RUN_ID, "feature", makeDefinition(), { recallBudget: 2000, recallAnchors: {} }),
+      ...runStartedPayload(FOREIGN_RUN_ID, "feature", makeDefinition(), { recallBudget: 2000, recallAnchors: {}, recallDomains: {} }),
       type: "workflow_run_started",
     });
 
@@ -79,7 +79,7 @@ describe("surveyRuns with unanswerable branch questions", () => {
   test("an abandoned run leaves every live listing before the orphan scan", async () => {
     const deps = await makeNonRepoDeps();
     deps.eventWriter.append({
-      ...runStartedPayload(FOREIGN_RUN_ID, "feature", makeDefinition(), { recallBudget: 2000, recallAnchors: {} }),
+      ...runStartedPayload(FOREIGN_RUN_ID, "feature", makeDefinition(), { recallBudget: 2000, recallAnchors: {}, recallDomains: {} }),
       type: "workflow_run_started",
     });
     deps.eventWriter.append({
@@ -108,7 +108,7 @@ async function makeDeletedBranchDeps(): Promise<StagingDeps> {
   await runGit(deps.projectRoot, ["branch", "feature"]);
   await runGit(deps.projectRoot, ["branch", "-D", "feature"]);
   deps.eventWriter.append({
-    ...runStartedPayload(FOREIGN_RUN_ID, "feature", makeDefinition(), { recallBudget: 2000, recallAnchors: {} }),
+    ...runStartedPayload(FOREIGN_RUN_ID, "feature", makeDefinition(), { recallBudget: 2000, recallAnchors: {}, recallDomains: {} }),
     type: "workflow_run_started",
   });
   return deps;

@@ -474,6 +474,9 @@ const runDefinitionPayload = z.object({
   max_iterations: z.number().int(),
   recall_budget: z.number().int(),
   recall_anchors: z.record(z.string(), z.array(z.string())),
+  // Optional in the shape (producer and restore alike): a pre-v21 definition carries no key and
+  // restores unscoped (the v4 extend-never-repurpose rule).
+  recall_domains: z.record(z.string(), z.array(z.string())).optional(),
 });
 
 const gateVotePayload = z.object({

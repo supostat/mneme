@@ -37,7 +37,7 @@ function activeRunFrom(definition: RunDefinition): ReadableRun {
     runId: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
     branch: "main",
     definition,
-    retrieval: { recallBudget: 2000, recallAnchors: {} },
+    retrieval: { recallBudget: 2000, recallAnchors: {}, recallDomains: {} },
     run: initialRun(definition),
     startedTs: "2026-07-06T10:00:00.000Z",
     lastActivityTs: "2026-07-06T10:00:00.000Z",

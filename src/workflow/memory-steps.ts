@@ -5,7 +5,7 @@ import { indexNeedsRebuild, openReadOnlyDatabase, rebuild } from "../index-db";
 import { makeNonce, noteFence, renderMapSectionBlock } from "../mcp-rendering";
 import { isAnchorNeutral, isNoteId, parseNote } from "../note";
 import type { Note, NoteType } from "../note";
-import { passesRecallThreshold, recall } from "../recall";
+import { RecallDomainError, passesRecallThreshold, recall } from "../recall";
 import type { RecallResult, RecalledNote, RecalledSection } from "../recall";
 import { findForbiddenMarkup } from "../sanitize-body";
 import { remember } from "../staging";
@@ -31,6 +31,9 @@ const BRANCH_NEUTRAL_TYPES: ReadonlySet<NoteType> = new Set(["bugfix", "antipatt
 export interface RecallBundleRequest {
   phaseDescription: string;
   anchorPaths: string[];
+  // The map domains the phase's recall is scoped to ([] = the whole corpus): recall's precondition,
+  // applied before ranking in both channels, never a query term.
+  domains: string[];
   budget: number;
 }
 
@@ -61,7 +64,7 @@ export async function compileRecallBundle(
 ): Promise<RecallBundle> {
   await rebuildIndexWhenMissing(deps);
   const query = [request.phaseDescription, ...request.anchorPaths].join("\n");
-  const recalled = await runRecall(deps, query, request.budget);
+  const recalled = await runRecall(deps, query, request.budget, request.domains);
   // recall already applied this cut; re-applying it strips the cold-start floor's low-confidence
   // notes, so the workflow bundle stays a hard threshold with no top-K fallback.
   const survivors = recalled.notes.filter(passesRecallThreshold);
@@ -127,18 +130,27 @@ async function rebuildIndexWhenMissing(deps: StagingDeps): Promise<void> {
 }
 
 // recall() itself appends the recall event, so an engine-invoked recall is logged by construction.
-// It is issued as the phase's memory step, hence the "workflow-step" origin on every event.
-async function runRecall(deps: StagingDeps, query: string, budget: number): Promise<RecallResult> {
+// It is issued as the phase's memory step, hence the "workflow-step" origin on every event. A domain
+// the index no longer holds (deleted after the run started) is refused by recall before it embeds
+// or logs anything, and surfaces as a memory-step fault — never a silently unscoped bundle.
+async function runRecall(
+  deps: StagingDeps,
+  query: string,
+  budget: number,
+  domains: string[],
+): Promise<RecallResult> {
   const db = openReadOnlyDatabase(deps.corpus.indexPath);
   try {
-    // No domain filter yet: the phase's recall_domains reach this call in the workflow-domains phase.
     return await recall(
       { db, embeddings: deps.embeddings, eventWriter: deps.eventWriter, clock: deps.clock },
       query,
       budget,
       "workflow-step",
-      [],
+      domains,
     );
+  } catch (error) {
+    if (error instanceof RecallDomainError) throw new MemoryStepError(error.message);
+    throw error;
   } finally {
     db.close();
   }

@@ -4,6 +4,8 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { AGENT_VOTE_VALUES, WORKFLOW_ON_FAIL_ACTIONS, WORKFLOW_STEP_OUTCOMES } from "../event-schema";
 import { readEvents } from "../events";
+import { isMapSectionId } from "../map/map-section";
+import { readMapSections } from "../map/map-store";
 import { textResult } from "../mcp-rendering";
 import { isNoteId, validateAnchor } from "../note";
 import { countStagedNotes } from "../staging";
@@ -113,6 +115,7 @@ export const WORKFLOW_START_INPUT = {
   max_iterations: z.number().int().positive(),
   recall_budget: z.number().int().positive().optional(),
   recall_anchors: z.record(z.string(), z.array(z.string())).optional(),
+  recall_domains: z.record(z.string(), z.array(z.string())).optional(),
 };
 
 export const WORKFLOW_MIGRATE_INPUT = {
@@ -184,6 +187,7 @@ export interface WorkflowStartArgs {
   max_iterations: number;
   recall_budget?: number;
   recall_anchors?: Record<string, string[]>;
+  recall_domains?: Record<string, string[]>;
 }
 
 export interface SubmittedStepResult {
@@ -346,8 +350,10 @@ export async function workflowStartTool(deps: StagingDeps, args: WorkflowStartAr
   const retrieval: RunRetrievalConfig = {
     recallBudget: args.recall_budget ?? deps.config.recall.budget,
     recallAnchors: args.recall_anchors ?? {},
+    recallDomains: args.recall_domains ?? {},
   };
   requireValidRecallAnchors(definition, retrieval.recallAnchors);
+  requireValidRecallDomains(deps, definition, retrieval.recallDomains);
   initialRun(definition); // re-validates the step policy before anything is persisted
   const runId = deps.idFactory();
   deps.eventWriter.append({
@@ -567,5 +573,41 @@ function requireValidRecallAnchor(phaseId: string, anchor: string): void {
   } catch (error) {
     const problem = error instanceof Error ? error.message : String(error);
     throw new WorkflowToolError(`recall_anchors for phase "${phaseId}": ${problem}`);
+  }
+}
+
+// Domains are checked against map/ itself, not the index: the definition is persisted at start and
+// the index may not exist yet. A domain deleted AFTER the start is caught when the phase's bundle is
+// compiled (MemoryStepError), so a stale scope never silently widens to the whole corpus.
+function requireValidRecallDomains(
+  deps: StagingDeps,
+  definition: RunDefinition,
+  recallDomains: Record<string, string[]>,
+): void {
+  const entries = Object.entries(recallDomains);
+  if (entries.length === 0) return;
+  const knownDomainIds: ReadonlySet<string> = new Set(
+    readMapSections(deps.corpus)
+      .filter((section) => section.frontmatter.kind === "domain")
+      .map((section) => section.frontmatter.id),
+  );
+  for (const [phaseId, domains] of entries) {
+    if (!(phaseId in definition.graph.phases)) {
+      throw new WorkflowToolError(`recall_domains names unknown phase "${phaseId}"`);
+    }
+    for (const domain of domains) {
+      requireKnownDomain(phaseId, domain, knownDomainIds);
+    }
+  }
+}
+
+function requireKnownDomain(phaseId: string, domain: string, knownDomainIds: ReadonlySet<string>): void {
+  if (!isMapSectionId(domain)) {
+    throw new WorkflowToolError(
+      `recall_domains for phase "${phaseId}": ${JSON.stringify(domain)} is not a map section slug`,
+    );
+  }
+  if (!knownDomainIds.has(domain)) {
+    throw new WorkflowToolError(`recall_domains for phase "${phaseId}": no map domain ${JSON.stringify(domain)}`);
   }
 }

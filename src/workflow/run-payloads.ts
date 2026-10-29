@@ -105,6 +105,7 @@ function definitionToPayload(
     max_iterations: definition.maxIterations,
     recall_budget: retrieval.recallBudget,
     recall_anchors: retrieval.recallAnchors,
+    recall_domains: retrieval.recallDomains,
   };
 }
 

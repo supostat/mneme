@@ -24,6 +24,8 @@ const ID_GRAMMAR_PROBLEM = "run_id does not match the ULID/UUID id grammar";
 export interface RunRetrievalConfig {
   recallBudget: number;
   recallAnchors: Record<string, string[]>;
+  // Map domain ids per phase — the scope of that phase's recall. A phase absent here runs unscoped.
+  recallDomains: Record<string, string[]>;
 }
 
 // The fail-vote remarks of the LAST failed gate run, kept so the retry attempt's directive can
@@ -181,6 +183,9 @@ function restoredRunFrom(runId: string, payload: RunStartedPayload): ReadableRun
     retrieval: {
       recallBudget: payload.definition.recall_budget,
       recallAnchors: payload.definition.recall_anchors,
+      // A pre-v21 definition carries no recall_domains key: the run predates the map and restores
+      // unscoped, exactly as it ran.
+      recallDomains: payload.definition.recall_domains ?? {},
     },
     run: initialRun(definition),
     startedTs: payload.ts,

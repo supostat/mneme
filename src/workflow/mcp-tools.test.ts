@@ -11,6 +11,7 @@ import { eventSchema } from "../event-schema";
 import { EventWriter, readEvents } from "../events";
 import type { StoredEvent } from "../events";
 import { initRepo, runGit } from "../git";
+import { writeMapSection } from "../map/map-store";
 import { createServer } from "../mcp-server";
 import type { CreateServerOptions } from "../mcp-server";
 import { HARVEST_BODY_LIMIT_RULE } from "./harvest-artifacts";
@@ -699,7 +700,7 @@ describe("workflow gates", () => {
 });
 
 describe("workflow log anomaly surfacing", () => {
-  const SEEDED_RETRIEVAL = { recallBudget: 2000, recallAnchors: {} };
+  const SEEDED_RETRIEVAL = { recallBudget: 2000, recallAnchors: {}, recallDomains: {} };
 
   test("two started events on one branch sync to the newest run and name the superseded one", async () => {
     const bench = await makeWorkbench();
@@ -798,6 +799,60 @@ describe("workflow recall retrieval", () => {
     expect(recallEvents.length).toBe(1);
     expect(String(recallEvents[0]!.query)).toContain("src/a.ts");
     expect(recallEvents[0]!.budget).toBe(123);
+  });
+});
+
+describe("workflow recall domains", () => {
+  async function writeWorkbenchDomain(bench: Workbench, id: string): Promise<void> {
+    const corpus = await resolveCorpus(bench.projectRoot, { corpusHome: bench.corpusHome });
+    const commit = (await runGit(bench.projectRoot, ["rev-parse", "HEAD"])).stdout.trim();
+    writeMapSection(corpus, {
+      frontmatter: { id, kind: "domain", anchors: ["src/a.ts"], depends_on: [], terms: [], commit },
+      body: `${id} domain`,
+    });
+  }
+
+  async function startRefusal(bench: Workbench, recallDomains: Record<string, string[]>): Promise<string> {
+    const result = await bench.client.callTool({
+      name: "workflow_start",
+      arguments: { ...startArgs([phaseText("phase-one")]), recall_domains: recallDomains },
+    });
+    expect(result.isError).toBe(true);
+    return (result.content as Array<{ text: string }>)[0]!.text;
+  }
+
+  test("a valid config lands in workflow_run_started and scopes the phase's recall", async () => {
+    const bench = await makeWorkbench();
+    await writeWorkbenchDomain(bench, "payments");
+    await startRun(bench.client, {
+      ...startArgs([phaseText("phase-one")]),
+      recall_domains: { "phase-one": ["payments"] },
+    });
+
+    const opened = await callText(bench.client, "workflow_step", {});
+
+    expect(opened).toContain('Recall bundle for phase "phase-one"');
+    const events = await loggedEvents(bench);
+    const started = eventsOfType(events, "workflow_run_started")[0]!;
+    expect((started.definition as Record<string, unknown>)["recall_domains"]).toEqual({ "phase-one": ["payments"] });
+    const recallEvents = eventsOfType(events, "recall");
+    expect(recallEvents.length).toBe(1);
+    expect(recallEvents[0]!.domains).toEqual(["payments"]);
+  });
+
+  test("an unknown phase, a non-slug and a domain the map lacks are refused before any event", async () => {
+    const bench = await makeWorkbench();
+    await writeWorkbenchDomain(bench, "payments");
+
+    expect(await startRefusal(bench, { "ghost-phase": ["payments"] })).toContain('unknown phase "ghost-phase"');
+    expect(await startRefusal(bench, { "phase-one": ["Payments"] })).toContain(
+      'recall_domains for phase "phase-one": "Payments" is not a map section slug',
+    );
+    expect(await startRefusal(bench, { "phase-one": ["../etc"] })).toContain("is not a map section slug");
+    expect(await startRefusal(bench, { "phase-one": ["billing"] })).toContain(
+      'recall_domains for phase "phase-one": no map domain "billing"',
+    );
+    expect(eventsOfType(await loggedEvents(bench), "workflow_run_started").length).toBe(0);
   });
 });
 

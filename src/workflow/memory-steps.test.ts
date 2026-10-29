@@ -203,6 +203,7 @@ describe("compileRecallBundle happy path", () => {
     const bundle = await compileRecallBundle(deps, {
       phaseDescription: "payment refund handling",
       anchorPaths: ["src/a.ts"],
+      domains: [],
       budget: 2000,
     });
 
@@ -248,6 +249,7 @@ describe("reducer lifecycle integration through the memory-steps seam", () => {
     await compileRecallBundle(deps, {
       phaseDescription: "solo phase work",
       anchorPaths: ["src/a.ts"],
+      domains: [],
       budget: 2000,
     });
     run = applyStepResult(run, definition, { kind: "recall", phaseId: recallDirective.phaseId });
@@ -294,6 +296,7 @@ describe("compileRecallBundle threshold cut", () => {
     const bundle = await compileRecallBundle(deps, {
       phaseDescription: "payment refund ledger",
       anchorPaths: [],
+      domains: [],
       budget: 100000,
     });
 
@@ -334,6 +337,7 @@ describe("compileRecallBundle threshold cut", () => {
     const bundle = await compileRecallBundle(deps, {
       phaseDescription: query,
       anchorPaths: [],
+      domains: [],
       budget: 100000,
     });
 
@@ -367,6 +371,7 @@ describe("compileRecallBundle branch awareness", () => {
     const bundle = await compileRecallBundle(deps, {
       phaseDescription: "shared module split",
       anchorPaths: ["src/shared.ts"],
+      domains: [],
       budget: 100000,
     });
 
@@ -406,6 +411,7 @@ describe("compileRecallBundle branch awareness", () => {
     const bundle = await compileRecallBundle(deps, {
       phaseDescription: "payment refund ledger",
       anchorPaths: ["src/a.ts"],
+      domains: [],
       budget: 100000,
     });
 
@@ -427,6 +433,7 @@ describe("compileRecallBundle anchor-overlap ranking", () => {
     const bundle = await compileRecallBundle(deps, {
       phaseDescription: "module ranking probe",
       anchorPaths: ["src/shared.ts", "src/main-only.ts"],
+      domains: [],
       budget: 100000,
     });
 
@@ -457,6 +464,7 @@ describe("compileRecallBundle pattern anchor decoupling", () => {
     const bundle = await compileRecallBundle(deps, {
       phaseDescription: "module ranking probe",
       anchorPaths: ["src/a.ts"],
+      domains: [],
       budget: 100000,
     });
 
@@ -475,6 +483,7 @@ describe("compileRecallBundle pattern anchor decoupling", () => {
     const bundle = await compileRecallBundle(deps, {
       phaseDescription: "payment refund handling",
       anchorPaths: ["src/a.ts"],
+      domains: [],
       budget: 4000,
     });
 
@@ -494,6 +503,7 @@ describe("compileRecallBundle pattern anchor decoupling", () => {
     const bundle = await compileRecallBundle(deps, {
       phaseDescription: "payment refund handling",
       anchorPaths: [],
+      domains: [],
       budget: 2000,
     });
 
@@ -513,6 +523,7 @@ describe("compileRecallBundle pattern anchor decoupling", () => {
     const bundle = await compileRecallBundle(deps, {
       phaseDescription: "module ranking probe",
       anchorPaths: ["src/a.ts"],
+      domains: [],
       budget: 100000,
     });
 
@@ -538,6 +549,7 @@ describe("compileRecallBundle read-side sanitize", () => {
     const bundle = await compileRecallBundle(deps, {
       phaseDescription: "payment ledger reconciliation",
       anchorPaths: [],
+      domains: [],
       budget: 100000,
     });
 
@@ -561,6 +573,7 @@ describe("compileRecallBundle degraded mode", () => {
     const bundle = await compileRecallBundle(deps, {
       phaseDescription: "payment refund ledger",
       anchorPaths: [],
+      domains: [],
       budget: 100000,
     });
 
@@ -579,6 +592,7 @@ describe("compileRecallBundle empty corpus", () => {
     const bundle = await compileRecallBundle(deps, {
       phaseDescription: "anything at all",
       anchorPaths: ["src/a.ts"],
+      domains: [],
       budget: 2000,
     });
 
@@ -847,7 +861,7 @@ describe("compileRecallBundle index tampering", () => {
     const { projectRoot, commit } = await buildProjectRepo();
     const deps = await makeDeps(projectRoot, offlineClient());
     writeNote(deps, ulid(100), "bugfix", "payment refund ledger reconciliation", ["src/a.ts"], commit);
-    await compileRecallBundle(deps, { phaseDescription: "payment refund", anchorPaths: [], budget: 2000 });
+    await compileRecallBundle(deps, { phaseDescription: "payment refund", anchorPaths: [], domains: [], budget: 2000 });
     // A valid, branch-neutral decoy note OUTSIDE notesDir: without id re-validation the traversal id
     // would read and parse it successfully, so only the guard can make this compile fail.
     const decoyFrontmatter: NoteFrontmatter = {
@@ -867,7 +881,7 @@ describe("compileRecallBundle index tampering", () => {
     index.close();
 
     await expect(
-      compileRecallBundle(deps, { phaseDescription: "payment refund", anchorPaths: [], budget: 2000 }),
+      compileRecallBundle(deps, { phaseDescription: "payment refund", anchorPaths: [], domains: [], budget: 2000 }),
     ).rejects.toThrow(MemoryStepError);
   });
 });
@@ -935,6 +949,7 @@ describe("compileRecallBundle map sections", () => {
     const bundle = await compileRecallBundle(deps, {
       phaseDescription: "payment refund handling",
       anchorPaths: ["src/a.ts"],
+      domains: [],
       budget: 2000,
     });
 
@@ -956,5 +971,50 @@ describe("compileRecallBundle map sections", () => {
     const recallEvents = eventsOfType(deps, "recall");
     expect(recallEvents[0]!.domains).toEqual([]);
     expect((recallEvents[0]!.sections as Array<{ id: string; returned: boolean }>).map((section) => [section.id, section.returned])).toEqual([["payments", true]]);
+  });
+});
+
+describe("compileRecallBundle domain scope", () => {
+  function paymentsDomain(commit: string): MapSection {
+    return {
+      frontmatter: { id: "payments", kind: "domain", anchors: ["src/a.ts"], depends_on: [], terms: [], commit },
+      body: "Payments domain: refunds and ledgers.",
+    };
+  }
+
+  test("the request's domains reach the recall event as the filter the call rode on", async () => {
+    const { projectRoot, commit } = await buildProjectRepo();
+    const deps = await makeDeps(projectRoot, bagClient());
+    writeNote(deps, ulid(100), "pattern", "payment refund ledger reconciliation", ["src/a.ts"], commit);
+    writeMapSection(deps.corpus, paymentsDomain(commit));
+
+    const bundle = await compileRecallBundle(deps, {
+      phaseDescription: "payment refund handling",
+      anchorPaths: ["src/a.ts"],
+      domains: ["payments"],
+      budget: 2000,
+    });
+
+    expect(bundle.notes.map((note) => note.id)).toEqual([ulid(100)]);
+    const recallEvents = eventsOfType(deps, "recall");
+    expect(recallEvents.length).toBe(1);
+    expect(recallEvents[0]!.domains).toEqual(["payments"]);
+  });
+
+  test("a domain the map does not hold is a MemoryStepError, and no recall event is written", async () => {
+    const { projectRoot, commit } = await buildProjectRepo();
+    const deps = await makeDeps(projectRoot, bagClient());
+    writeNote(deps, ulid(100), "pattern", "payment refund ledger reconciliation", ["src/a.ts"], commit);
+
+    const failure = await compileRecallBundle(deps, {
+      phaseDescription: "payment refund handling",
+      anchorPaths: [],
+      domains: ["nowhere"],
+      budget: 2000,
+    }).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(MemoryStepError);
+    expect((failure as Error).message).toBe('no map domain "nowhere"');
+    expect(eventsOfType(deps, "recall").length).toBe(0);
   });
 });

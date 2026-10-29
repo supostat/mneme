@@ -10,9 +10,12 @@ import { EventWriter, readEvents } from "../events";
 import type { StoredEvent } from "../events";
 import { initRepo, runGit } from "../git";
 import { rebuild } from "../index-db";
+import type { MapSection } from "../map/map-section";
+import { removeMapSection, writeMapSection } from "../map/map-store";
 import { serializeNote } from "../note";
 import type { NoteFrontmatter } from "../note";
 import type { StagingDeps } from "../staging";
+import { MemoryStepError } from "./memory-steps";
 import { buildPhaseGraph } from "./phase-graph";
 import type { DoneWhenCriterion, PhaseDocument } from "./phase-document";
 import { initialRun } from "./reducer";
@@ -107,7 +110,7 @@ function activeRunFrom(definition: RunDefinition): ReadableRun {
     runId: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
     branch: "main",
     definition,
-    retrieval: { recallBudget: 2000, recallAnchors: {} },
+    retrieval: { recallBudget: 2000, recallAnchors: {}, recallDomains: {} },
     run: initialRun(definition),
     startedTs: "2026-07-06T10:00:00.000Z",
     lastActivityTs: "2026-07-06T10:00:00.000Z",
@@ -123,11 +126,17 @@ function recallEventCount(deps: StagingDeps): number {
   ).length;
 }
 
-function writeAcceptedNote(deps: StagingDeps, id: string, body: string, commit: string): void {
+function writeAcceptedNote(
+  deps: StagingDeps,
+  id: string,
+  body: string,
+  commit: string,
+  anchors: string[] = ["src/a.ts"],
+): void {
   const frontmatter: NoteFrontmatter = {
     id,
     type: "decision",
-    anchors: ["src/a.ts"],
+    anchors,
     commit,
     created: "2026-07-06T10:00:00.000Z",
   };
@@ -607,4 +616,88 @@ describe("applyGatedFinalStep on a gate whose every red criterion timed out", ()
     expect(lines[1]).toBe("Timeout counted as a failure: 2 environment re-runs already spent on attempt 1.");
     expect(pendingDirectiveOf(active)).toMatchObject({ kind: "execute_step", attempt: 2 });
   }, 30_000);
+});
+
+// Real deps end to end: the genuine compileRecallBundle over a genuine index holding two domains,
+// no seam stubbed — the scope must hold where the plugin will actually rely on it.
+describe("runEngineSteps scopes the phase's bundle by its recall domains", () => {
+  const PAYMENTS_NOTE = "01ARZ3NDEKTSV4RRFFQ69G5FC0";
+  const BILLING_NOTE = "01ARZ3NDEKTSV4RRFFQ69G5FC1";
+
+  function domain(id: string, anchor: string, commit: string): MapSection {
+    return {
+      frontmatter: { id, kind: "domain", anchors: [anchor], depends_on: [], terms: [], commit },
+      body: `${id} domain`,
+    };
+  }
+
+  async function rebuildIndex(deps: StagingDeps): Promise<void> {
+    await rebuild({
+      indexPath: deps.corpus.indexPath,
+      notesDir: deps.corpus.notesDir,
+      mapDir: deps.corpus.mapDir,
+      projectRoot: deps.projectRoot,
+      embeddings: deps.embeddings,
+      eventWriter: deps.eventWriter,
+      clock: fixedClock,
+    });
+  }
+
+  // Two domains, each linking one note by anchor intersection; both notes match the phase query.
+  async function twoDomainCorpus(): Promise<StagingDeps> {
+    const { projectRoot, commit } = await buildProjectRepo();
+    const deps = await makeDeps(projectRoot);
+    writeAcceptedNote(deps, PAYMENTS_NOTE, "phase one module ranking probe payments evidence", commit, ["src/a.ts"]);
+    writeAcceptedNote(deps, BILLING_NOTE, "phase one module ranking probe billing evidence", commit, ["src/b.ts"]);
+    writeMapSection(deps.corpus, domain("payments", "src/a.ts", commit));
+    writeMapSection(deps.corpus, domain("billing", "src/b.ts", commit));
+    await rebuildIndex(deps);
+    return deps;
+  }
+
+  function scopedRun(recallDomains: Record<string, string[]>): ReadableRun {
+    const active = activeRunFrom(twoPhaseDefinition());
+    active.retrieval = { ...active.retrieval, recallDomains };
+    return active;
+  }
+
+  function bundleIdsOf(active: ReadableRun): string[] {
+    return (active.bundleNotesByPhase["phase-one"] ?? []).map((note) => note.id);
+  }
+
+  function liveRecallEvents(deps: StagingDeps): StoredEvent[] {
+    return readEvents(deps.corpus.eventsDir).filter((event: StoredEvent) => event.type === "recall");
+  }
+
+  test("a note linked to a foreign domain never enters the phase's bundle", async () => {
+    const deps = await twoDomainCorpus();
+    const unscoped = scopedRun({});
+    await runEngineSteps(deps, unscoped);
+    expect(bundleIdsOf(unscoped).sort()).toEqual([PAYMENTS_NOTE, BILLING_NOTE]);
+
+    const scoped = scopedRun({ "phase-one": ["payments"] });
+    const sections = await runEngineSteps(deps, scoped);
+
+    expect(bundleIdsOf(scoped)).toEqual([PAYMENTS_NOTE]);
+    const bundleText = sections.find((section) => section.includes('Recall bundle for phase "phase-one"'))!;
+    expect(bundleText).toContain(PAYMENTS_NOTE);
+    expect(bundleText).not.toContain(BILLING_NOTE);
+    expect(liveRecallEvents(deps).map((event) => event.domains)).toEqual([[], ["payments"]]);
+  });
+
+  test("a domain deleted after the start refuses the phase's recall before any event is written", async () => {
+    const deps = await twoDomainCorpus();
+    const active = scopedRun({ "phase-one": ["payments"] });
+    removeMapSection(deps.corpus, "domain", "payments");
+    await rebuildIndex(deps);
+
+    const failure = await runEngineSteps(deps, active).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(MemoryStepError);
+    expect((failure as Error).message).toBe('no map domain "payments"');
+    expect(liveRecallEvents(deps).length).toBe(0);
+    expect(recallEventCount(deps)).toBe(0);
+    expect(pendingDirectiveOf(active).kind).toBe("recall");
+    expect(active.bundleNotesByPhase).toEqual({});
+  });
 });
