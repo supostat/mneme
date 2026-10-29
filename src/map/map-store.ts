@@ -142,7 +142,8 @@ function compare(left: string, right: string): number {
   return 0;
 }
 
-function firstLineOf(body: string): string {
+// The first line is the section's essence: INDEX.md lists domains by it and the map listing shows it.
+export function firstLineOf(body: string): string {
   const newlineIndex = body.indexOf("\n");
   return newlineIndex === -1 ? body : body.slice(0, newlineIndex);
 }

@@ -8,8 +8,10 @@ silently: you accept, reject, or supersede staged notes yourself, so the corpus 
 memory you approved. Recall fuses full-text and vector search under a token budget and logs its
 candidates so retrieval decisions can be replayed and audited offline.
 
-The binary exposes fourteen MCP tools over stdio. Five are the memory surface: `remember` (stage a
-note), `recall` (token-budgeted fused retrieval), `staging_list` and `staging_resolve` (review and
+The binary exposes eighteen MCP tools over stdio. Five are the memory surface: `remember` (stage a
+note), `recall` (token-budgeted fused retrieval; `domains` narrows it to the notes linked to the
+named map domains and the sections around them, and an answer with nothing above the relevance
+threshold ends with a memory-gap notice), `staging_list` and `staging_resolve` (review and
 accept/reject/supersede staged notes), and `stats` (reuse and footprint metrics from the event log).
 Five curate the accepted corpus: `notes_list` (one line per live note with anchor health, or one full
 note by id), `note_retire` (queue a retirement — the decision still travels through the
@@ -19,7 +21,13 @@ same gate, and an accepted repair rewrites the address while the body stays immu
 `anchor_sweep` (batch-stage repairs by tracing renames in the project's git history: a single
 confident successor is staged, ambiguity and outright deletions are only reported, and a repaired
 corpus sweeps to silence), and `corpus_adopt` (merge a corpus that drifted apart from this one — see
-Merging corpora below). The remaining five drive the workflow engine: `workflow_start` opens a run anchored to
+Merging corpora below). Three maintain the project map — the synthetic layer of domain and flow
+sections the plugin writes over the notes: `map_put` (create or replace a section, written to the
+corpus `map/` directly and committed with no human gate; `INDEX.md` and `glossary.md` are derived
+from the sections and never written by hand), `map_delete` (remove a section and rewrite the derived
+files), and `map_list` (one line per section with anchor health and a warning for every dependency
+that names an unknown section, or one whole section by id). A domain links the notes whose anchors
+intersect its own, so `recall` can be scoped to it. Five drive the workflow engine: `workflow_start` opens a run anchored to
 the current project branch; `workflow_step` is the live executor — it loops directives (recall at
 phase start, gated steps, harvest on close) decided by the reducer, resumes a branch's unfinished
 run from the event log after an interruption, and never silently resumes a run whose branch is gone;

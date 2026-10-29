@@ -113,6 +113,8 @@ const LIVE_EVENTS: Record<string, EventInput> = {
   staging_listed: { type: "staging_listed", count: 1, liveness: [{ id: "n1", anchors: [{ path: "src/a.ts", liveness: "tracked" }] }] },
   rebuild: { type: "rebuild", duration_ms: 0, notes_n: 2, embedded_n: 2, bodies_n: 2, chunks_n: 1, chunks_ok_n: 1, dead_anchors_n: 1, staleness: [0, -1], ollama: { available: true, retries: 0 } },
   rebuild_failed: { type: "rebuild_failed", message: "unable to open database file" },
+  map_section_put: { type: "map_section_put", id: "billing", kind: "domain", body_len: 24, anchors_n: 1, depends_on_n: 0, terms_n: 2, commit: "abc1234" },
+  map_section_deleted: { type: "map_section_deleted", id: "billing", kind: "domain", commit: "abc1234" },
   session_start: { type: "session_start" },
   session_end: { type: "session_end" },
   tool_error: { type: "tool_error", tool: "recall", message: "boom" },
@@ -268,6 +270,16 @@ describe("eventSchema rejects malformed producer events", () => {
 
   test("a rebuild_failed without a message fails", () => {
     expect(eventSchema.safeParse(stamp({ type: "rebuild_failed" })).success).toBe(false);
+  });
+
+  test("a map_section_put with an unknown kind fails", () => {
+    const event = stamp({ ...LIVE_EVENTS["map_section_put"]!, kind: "chapter" });
+    expect(eventSchema.safeParse(event).success).toBe(false);
+  });
+
+  test("a map_section_deleted without a commit fails", () => {
+    const { commit: _omitted, ...withoutCommit } = LIVE_EVENTS["map_section_deleted"]!;
+    expect(eventSchema.safeParse(stamp(withoutCommit)).success).toBe(false);
   });
 
   test("a workflow_step_applied with an unknown result_kind fails", () => {

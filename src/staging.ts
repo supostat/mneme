@@ -111,11 +111,13 @@ export async function remember(deps: StagingDeps, input: RememberInput): Promise
   return stageNote(deps, noteId, commit, input, classification);
 }
 
-async function resolveHead(projectRoot: string): Promise<string> {
+// The project HEAD every corpus write pins as its drift base — a note's frontmatter commit and a
+// map section's alike.
+export async function resolveHead(projectRoot: string): Promise<string> {
   const result = await runGit(projectRoot, ["rev-parse", "HEAD"]);
   if (result.exitCode !== 0) {
     throw new StagingError(
-      "project has no resolvable HEAD - a repository without commits cannot anchor notes; " +
+      "project has no resolvable HEAD - a repository without commits cannot anchor notes or map sections; " +
         `make the first commit, then retry: ${result.stderr.trim()}`,
     );
   }

@@ -425,6 +425,29 @@ const corpusAdoptedEvent = z.object({
   skipped_n: z.number().int(),
 });
 
+// v21: one map write. No human gate — the map is a synthetic layer the plugin rebuilds — so the
+// write itself is the record; commit is the corpus commit that carries it, and the counts are the
+// section's measures at write time (code points for the body, like remember's body_len).
+const mapSectionPutEvent = z.object({
+  type: z.literal("map_section_put"),
+  ...envelope,
+  id: z.string(),
+  kind: z.enum(["domain", "flow"]),
+  body_len: z.number().int(),
+  anchors_n: z.number().int(),
+  depends_on_n: z.number().int(),
+  terms_n: z.number().int(),
+  commit: z.string(),
+});
+
+const mapSectionDeletedEvent = z.object({
+  type: z.literal("map_section_deleted"),
+  ...envelope,
+  id: z.string(),
+  kind: z.enum(["domain", "flow"]),
+  commit: z.string(),
+});
+
 // session_start / session_end carry only the envelope. An ABSENT session_end means the session was
 // cut off (SIGKILL, kernel panic, killed terminal) — that is normal, NOT a data error; Phase-6
 // duration analysis pairs each session_start with its session_end and treats a missing end as open.
@@ -621,6 +644,8 @@ export const eventSchema = z.discriminatedUnion("type", [
   anchorSweepEvent,
   bundleNoteRejectedEvent,
   corpusAdoptedEvent,
+  mapSectionPutEvent,
+  mapSectionDeletedEvent,
   rebuildEvent,
   rebuildFailedEvent,
   sessionStartEvent,

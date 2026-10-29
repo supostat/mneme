@@ -8,6 +8,9 @@ import type { DedupSummary } from "./dedup-sidecar";
 import type { Note } from "./note";
 import type { StagedAnchor } from "./anchor-liveness";
 import type { AdoptOutcome } from "./corpus-adopt";
+import type { IndexRefresh } from "./index-refresh";
+import type { MapSection } from "./map/map-section";
+import type { MapListResult, MapWriteResult } from "./map/map-tools";
 
 // Renders tool results as the delimiter-fenced text handed back to the LLM. Kept apart from the
 // server wiring so mcp-server.ts stays focused on dispatch, lifecycle and dependency assembly.
@@ -236,12 +239,62 @@ export const INDEX_NOT_REBUILT_LABEL = "Index not rebuilt:";
 export const INDEX_CATCH_UP_ADVICE =
   "The decision is committed — do not retry it; the index catches up on the next successful rebuild.";
 
-// A committed outcome whose rebuild failed keeps its own line byte for byte and gains two more: the
-// reason, and the advice that keeps a caller from retrying a decision that already went through.
 export function formatResolve(result: ResolveResult): string {
   const outcomeLine = formatOutcome(result);
-  if (!("index" in result) || result.index.rebuilt) return outcomeLine;
-  return [outcomeLine, `${INDEX_NOT_REBUILT_LABEL} ${result.index.reason}`, INDEX_CATCH_UP_ADVICE].join("\n");
+  if (!("index" in result)) return outcomeLine;
+  return appendIndexOutcome(outcomeLine, result.index);
+}
+
+// A committed outcome whose rebuild failed keeps its own line byte for byte and gains two more: the
+// reason, and the advice that keeps a caller from retrying a decision that already went through.
+// One contract for every committing tool — a staging decision and a map write read alike.
+function appendIndexOutcome(outcomeLine: string, index: IndexRefresh): string {
+  if (index.rebuilt) return outcomeLine;
+  return [outcomeLine, `${INDEX_NOT_REBUILT_LABEL} ${index.reason}`, INDEX_CATCH_UP_ADVICE].join("\n");
+}
+
+export function formatMapPut(result: MapWriteResult): string {
+  return appendIndexOutcome(`Stored map section ${result.kind} "${result.id}"; committed ${result.commit}.`, result.index);
+}
+
+export function formatMapDelete(result: MapWriteResult): string {
+  return appendIndexOutcome(`Deleted map section ${result.kind} "${result.id}"; committed ${result.commit}.`, result.index);
+}
+
+// One line per section, bodies never listed (the notes_list discipline), then one warning per
+// dependency that names a section the map does not hold.
+export function formatMapList(result: MapListResult): string {
+  if (result.entries.length === 0) return "The project map is empty.";
+  const lines = result.entries.map(
+    (entry) =>
+      `${entry.id} [${entry.kind}] anchors: ${entry.anchorsN}, dead: ${entry.deadN}, ` +
+      `depends_on: ${listOrNone(entry.dependsOn)}, terms: ${entry.termsN} — ${entry.firstLine}`,
+  );
+  const warnings = result.dangling.flatMap((dangling) =>
+    dangling.missing.map((missing) => `warning: depends_on of "${dangling.id}" names unknown section "${missing}"`),
+  );
+  return [...lines, ...warnings, "Bodies are not listed; call map_list with an id to read one section in full."].join("\n");
+}
+
+// The whole section under the MAP fence: every frontmatter field, then the body, retrieved DATA.
+export function formatMapSection(section: MapSection): string {
+  const fence = mapFence(makeNonce());
+  return [
+    RETRIEVED_DATA_NOTICE,
+    fence.begin,
+    `id: ${section.frontmatter.id}`,
+    `kind: ${section.frontmatter.kind}`,
+    `anchors: ${listOrNone(section.frontmatter.anchors)}`,
+    `depends_on: ${listOrNone(section.frontmatter.depends_on)}`,
+    `terms: ${listOrNone(section.frontmatter.terms)}`,
+    `commit: ${section.frontmatter.commit}`,
+    section.body,
+    fence.end,
+  ].join("\n");
+}
+
+function listOrNone(values: string[]): string {
+  return values.length === 0 ? "(none)" : values.join(", ");
 }
 
 function formatOutcome(result: ResolveResult): string {
