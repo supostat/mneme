@@ -40,6 +40,8 @@ docs/*
 !docs/HANDOFF-GATE-TIMEOUT.md
 # Same reason: tests/handoff-note-body.test.ts pins the harvest-limit, staging-body and doctor contract.
 !docs/HANDOFF-NOTE-BODY.md
+# Same reason: tests/handoff-resolve-index.test.ts pins the staging_resolve result contract.
+!docs/HANDOFF-RESOLVE-INDEX.md
 
 # analytics package (generated, local-only)
 mneme-analytics/
