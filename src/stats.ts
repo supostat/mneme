@@ -280,6 +280,11 @@ function ratio(numerator: number, denominator: number): RatioMetric {
   return { numerator, denominator, ratio: denominator === 0 ? null : numerator / denominator };
 }
 
+// Lettered (n), not (d): the report numbers its lines in ONE sequence across every renderer
+// ((d)-(f) friction, (g)-(j) gate, (k) footprint, (l)-(m) use), so the next free letter is (n);
+// it is printed beside (c) because it is a recall question.
+export const MEMORY_GAPS_LABEL = "(n) Memory gaps:";
+
 export function formatStats(summary: StatsSummary): string {
   return [
     "Mneme proof metrics (from the event log)",
@@ -291,10 +296,7 @@ export function formatStats(summary: StatsSummary): string {
     `(a) Cross-session reuse: ${renderRatio(summary.crossSessionReuse, "accepted notes")}`,
     `(b) Never retrieved: ${renderRatio(summary.neverRetrieved, "accepted notes")} (of which ${summary.neverRetrievedSupersededCount} superseded)`,
     `(c) Recall degradation: ${renderRatio(summary.degradationFrequency, "recall events")}`,
-    // Lettered (n), not (d): the report numbers its lines in ONE sequence across every renderer
-    // ((d)-(f) friction, (g)-(j) gate, (k) footprint, (l)-(m) use), so the next free letter is (n);
-    // it is printed here, beside (c), because it is a recall question.
-    `(n) Memory gaps: ${renderRatio(summary.memoryGaps, "instrumented recall events")}`,
+    `${MEMORY_GAPS_LABEL} ${renderRatio(summary.memoryGaps, "instrumented recall events")}`,
     "",
     "Corpus size by type (live):",
     ...renderCorpusSizeByType(summary.corpusSizeByType),

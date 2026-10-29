@@ -267,10 +267,13 @@ export function formatMapDelete(result: MapDeleteResult): string {
   return appendIndexOutcome(outcome, result.index);
 }
 
+export const MAP_EMPTY_LINE = "The project map is empty.";
+export const MAP_LIST_BODIES_HINT = "Bodies are not listed; call map_list with an id to read one section in full.";
+
 // One line per section, bodies never listed (the notes_list discipline), then one warning per
 // dependency that names a section the map does not hold.
 export function formatMapList(result: MapListResult): string {
-  if (result.entries.length === 0) return "The project map is empty.";
+  if (result.entries.length === 0) return MAP_EMPTY_LINE;
   const lines = result.entries.map(
     (entry) =>
       `${entry.id} [${entry.kind}] anchors: ${entry.anchorsN}, dead: ${entry.deadN}, ` +
@@ -279,7 +282,7 @@ export function formatMapList(result: MapListResult): string {
   const warnings = result.dangling.flatMap((dangling) =>
     dangling.missing.map((missing) => `warning: depends_on of "${dangling.id}" names unknown section "${missing}"`),
   );
-  return [...lines, ...warnings, "Bodies are not listed; call map_list with an id to read one section in full."].join("\n");
+  return [...lines, ...warnings, MAP_LIST_BODIES_HINT].join("\n");
 }
 
 // The whole section under the MAP fence: every frontmatter field, then the body, retrieved DATA.

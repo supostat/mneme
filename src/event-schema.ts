@@ -101,8 +101,10 @@ import { z } from "zod";
 //       staging_resolve tool_error — the call succeeds and reports the index as not rebuilt.
 //       Other events unchanged.
 //  21 — project map: the corpus gains map/ (domain and flow sections the plugin writes) indexed in
-//       their own tables beside the notes. rebuild gains sections_n, section_links_n (section-to-
-//       note links by anchor intersection, recomputed every rebuild) and section_dead_anchors_n;
+//       their own tables beside the notes: map_links holds the section-to-note links (a note anchor
+//       equal to a section anchor or lying under it by path segments) and map_deps a section's
+//       depends_on edges, both recomputed every rebuild. rebuild gains sections_n, section_links_n
+//       (the map_links rows) and section_dead_anchors_n;
 //       bodies_n now counts section bodies too. Two new events record the map's writes:
 //       map_section_put {id, kind, body_len, anchors_n, depends_on_n, terms_n, commit} and
 //       map_section_deleted {id, kind, commit} — no human gate, the map is a synthetic layer the
