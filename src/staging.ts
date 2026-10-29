@@ -10,8 +10,9 @@ import { serializeNote, parseNote, isNoteId } from "./note";
 import type { Note, NoteFrontmatter, NoteType } from "./note";
 import { assertCleanNoteBody } from "./sanitize-body";
 import { classifyCandidate } from "./dedup";
-import { rebuild } from "./index-db";
 import type { RebuildDeps } from "./index-db";
+import { refreshIndexAfterDecision } from "./index-refresh";
+import type { IndexRefresh } from "./index-refresh";
 import { createLivenessContext, pathEverExisted, resolveAnchorLiveness } from "./anchor-liveness";
 import type { LivenessContext, StagedAnchor } from "./anchor-liveness";
 import { sidecarFor, writeSidecar, readSidecar, removeSidecar, dedupSummary } from "./dedup-sidecar";
@@ -70,15 +71,24 @@ export interface StagingEntry {
 
 export type ResolveDecision = "accept" | "reject" | { supersede: string };
 
+// Every outcome that committed carries index: whether the rebuild after the commit went through.
 export type ResolveResult =
-  | { outcome: "accepted"; noteId: string; commit: string }
+  | { outcome: "accepted"; noteId: string; commit: string; index: IndexRefresh }
   | { outcome: "rejected"; noteId: string }
-  | { outcome: "superseded"; noteId: string; supersededId: string; commit: string; suggested: boolean }
-  | { outcome: "retired"; requestId: string; noteId: string; commit: string }
+  | { outcome: "superseded"; noteId: string; supersededId: string; commit: string; suggested: boolean; index: IndexRefresh }
+  | { outcome: "retired"; requestId: string; noteId: string; commit: string; index: IndexRefresh }
   | { outcome: "retire_rejected"; requestId: string; noteId: string }
-  | { outcome: "reanchored"; requestId: string; noteId: string; oldAnchor: string; newAnchor: string; commit: string }
+  | {
+      outcome: "reanchored";
+      requestId: string;
+      noteId: string;
+      oldAnchor: string;
+      newAnchor: string;
+      commit: string;
+      index: IndexRefresh;
+    }
   | { outcome: "reanchor_rejected"; requestId: string; noteId: string }
-  | { outcome: "retagged"; requestId: string; noteId: string; anchor: string; commit: string }
+  | { outcome: "retagged"; requestId: string; noteId: string; anchor: string; commit: string; index: IndexRefresh }
   | { outcome: "retag_rejected"; requestId: string; noteId: string };
 
 const NOTE_EXTENSION = ".md";
@@ -259,8 +269,8 @@ async function resolveRetireRequest(
   );
   removeRetireRequest(deps.corpus, request.requestId);
   appendRetireResolved(deps, request.requestId, request.targetId, "accept", commit);
-  await rebuild(rebuildDeps(deps));
-  return { outcome: "retired", requestId: request.requestId, noteId: request.targetId, commit };
+  const index = await refreshIndexAfterDecision(rebuildDeps(deps), deps.corpus.corpusDir);
+  return { outcome: "retired", requestId: request.requestId, noteId: request.targetId, commit, index };
 }
 
 // The re-anchor decision resolves like a retire: accept re-checks the new path is still tracked
@@ -293,7 +303,7 @@ async function resolveReanchorRequest(
   );
   removeReanchorRequest(deps.corpus, request.requestId);
   appendReanchorResolved(deps, request.requestId, request.targetId, "accept", commit);
-  await rebuild(rebuildDeps(deps));
+  const index = await refreshIndexAfterDecision(rebuildDeps(deps), deps.corpus.corpusDir);
   return {
     outcome: "reanchored",
     requestId: request.requestId,
@@ -301,6 +311,7 @@ async function resolveReanchorRequest(
     oldAnchor: request.oldAnchor,
     newAnchor: request.newAnchor,
     commit,
+    index,
   };
 }
 
@@ -328,8 +339,15 @@ async function resolveRetagRequest(
   );
   removeRetagRequest(deps.corpus, request.requestId);
   appendRetagResolved(deps, request.requestId, request.targetId, "accept", commit);
-  await rebuild(rebuildDeps(deps));
-  return { outcome: "retagged", requestId: request.requestId, noteId: request.targetId, anchor: request.anchor, commit };
+  const index = await refreshIndexAfterDecision(rebuildDeps(deps), deps.corpus.corpusDir);
+  return {
+    outcome: "retagged",
+    requestId: request.requestId,
+    noteId: request.targetId,
+    anchor: request.anchor,
+    commit,
+    index,
+  };
 }
 
 // Retry-convergent like markNoteReanchored: a note already carrying the string in tags skips the
@@ -392,8 +410,8 @@ async function acceptNote(deps: StagingDeps, id: string, menu: MenuContext | nul
     menu,
   });
   removeSidecar(deps.corpus, id);
-  await rebuild(rebuildDeps(deps));
-  return { outcome: "accepted", noteId: id, commit };
+  const index = await refreshIndexAfterDecision(rebuildDeps(deps), deps.corpus.corpusDir);
+  return { outcome: "accepted", noteId: id, commit, index };
 }
 
 async function supersedeNote(deps: StagingDeps, id: string, target: string, menu: MenuContext | null): Promise<ResolveResult> {
@@ -409,8 +427,8 @@ async function supersedeNote(deps: StagingDeps, id: string, target: string, menu
     menu,
   });
   removeSidecar(deps.corpus, id);
-  await rebuild(rebuildDeps(deps));
-  return { outcome: "superseded", noteId: id, supersededId: target, commit, suggested };
+  const index = await refreshIndexAfterDecision(rebuildDeps(deps), deps.corpus.corpusDir);
+  return { outcome: "superseded", noteId: id, supersededId: target, commit, suggested, index };
 }
 
 // The accepted note's measures at accept time, stamped into the resolve event so the edit

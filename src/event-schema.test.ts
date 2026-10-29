@@ -112,6 +112,7 @@ const LIVE_EVENTS: Record<string, EventInput> = {
   staging_resolve_supersede: { type: "staging_resolve", note_id: "n1", decision: "supersede", staged_to_resolved_ms: 5, commit: "abc1234", superseded_id: "n0", suggested: true, accepted_body_len: 20, accepted_anchors_n: 2, menu: null },
   staging_listed: { type: "staging_listed", count: 1, liveness: [{ id: "n1", anchors: [{ path: "src/a.ts", liveness: "tracked" }] }] },
   rebuild: { type: "rebuild", duration_ms: 0, notes_n: 2, embedded_n: 2, bodies_n: 2, chunks_n: 1, chunks_ok_n: 1, dead_anchors_n: 1, staleness: [0, -1], ollama: { available: true, retries: 0 } },
+  rebuild_failed: { type: "rebuild_failed", message: "unable to open database file" },
   session_start: { type: "session_start" },
   session_end: { type: "session_end" },
   tool_error: { type: "tool_error", tool: "recall", message: "boom" },
@@ -187,8 +188,8 @@ const AGENT_VOTE_MIRROR = {
 } as const satisfies Record<Vote, true>;
 
 describe("event-schema constants", () => {
-  test("SCHEMA_VERSION is 19", () => {
-    expect(SCHEMA_VERSION).toBe(19);
+  test("SCHEMA_VERSION is 20", () => {
+    expect(SCHEMA_VERSION).toBe(20);
   });
 
   test("the unclipped-harvest boundary is fixed at 19 and never ahead of the producer", () => {
@@ -263,6 +264,10 @@ describe("eventSchema rejects malformed producer events", () => {
   test("a rebuild with a non-array staleness fails", () => {
     const event = stamp({ type: "rebuild", duration_ms: 0, notes_n: 1, embedded_n: 1, dead_anchors_n: 0, staleness: 3, ollama: { available: true, retries: 0 } });
     expect(eventSchema.safeParse(event).success).toBe(false);
+  });
+
+  test("a rebuild_failed without a message fails", () => {
+    expect(eventSchema.safeParse(stamp({ type: "rebuild_failed" })).success).toBe(false);
   });
 
   test("a workflow_step_applied with an unknown result_kind fails", () => {

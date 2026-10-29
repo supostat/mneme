@@ -179,7 +179,19 @@ function formatAnchors(anchors: StagedAnchor[]): string {
   return `anchors: ${anchors.map((anchor) => `${anchor.path} [${anchor.liveness}]`).join(", ")}`;
 }
 
+export const INDEX_NOT_REBUILT_LABEL = "Index not rebuilt:";
+export const INDEX_CATCH_UP_ADVICE =
+  "The decision is committed — do not retry it; the index catches up on the next successful rebuild.";
+
+// A committed outcome whose rebuild failed keeps its own line byte for byte and gains two more: the
+// reason, and the advice that keeps a caller from retrying a decision that already went through.
 export function formatResolve(result: ResolveResult): string {
+  const outcomeLine = formatOutcome(result);
+  if (!("index" in result) || result.index.rebuilt) return outcomeLine;
+  return [outcomeLine, `${INDEX_NOT_REBUILT_LABEL} ${result.index.reason}`, INDEX_CATCH_UP_ADVICE].join("\n");
+}
+
+function formatOutcome(result: ResolveResult): string {
   if (result.outcome === "accepted") return `Accepted note ${result.noteId}; committed ${result.commit}.`;
   if (result.outcome === "rejected") return `Rejected note ${result.noteId}; moved to the archive.`;
   if (result.outcome === "retired") {

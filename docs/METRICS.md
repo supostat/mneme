@@ -231,6 +231,15 @@ aggregated).
 cat "$EVENTS"/*.jsonl | jq -s '[.[] | select(.type=="tool_error")] | group_by(.tool) | map({tool: .[0].tool, count: length})'
 ```
 
+> From schema v20 a rebuild that fails AFTER a staging decision was committed is not a
+> `staging_resolve` tool error: the call succeeds, reports the index as not rebuilt, and the log
+> records a `rebuild_failed` event right after the decision's own event. Such failures are not part
+> of (f); list them with:
+>
+> ```sh
+> cat "$EVENTS"/*.jsonl | jq -c 'select(.type=="rebuild_failed") | {ts, message}'
+> ```
+
 ## Метрики человеческого гейта — (g) outcomes, (h) agreement, (i) coverage, (j) active latency
 
 The gate's value is not in rejection counts — a corpus with 197 accepts and 0 rejects says nothing

@@ -11,9 +11,10 @@ import type { StoredEvent } from "./events";
 import { parseNote, serializeNote, NoteValidationError } from "./note";
 import type { EmbeddingsClient } from "./embeddings";
 import { EMBEDDING_DIMENSION, EMBEDDING_MODEL } from "./embeddings";
-import { dumpIndex } from "./index-db";
-import { remember, stagingList, stagingResolve, StagingError } from "./staging";
-import type { StagingDeps } from "./staging";
+import { dumpIndex, rebuild } from "./index-db";
+import { noteReanchor, noteRetag, noteRetire } from "./curation";
+import { rebuildDeps, remember, stagingList, stagingResolve, StagingError } from "./staging";
+import type { ResolveDecision, ResolveResult, StagingDeps } from "./staging";
 import { formatStagingList } from "./mcp-rendering";
 
 // These tests spawn real git repositories and dozens of git subprocesses per case; under machine
@@ -881,4 +882,175 @@ describe("staged_to_resolved_ms", () => {
     const resolved = eventsOfType(deps.corpus, "staging_resolve");
     expect(resolved[0]!.staged_to_resolved_ms).toBeNull();
   });
+});
+
+// The rebuild runs after the decision is committed and logged. A rebuild that throws there must leave
+// a committed outcome that says so — never a bare error that invites a retry of a decision that went
+// through. index.db replaced by a directory fails the rebuild for real, at open (not the NOTADB case,
+// which the rebuild heals), and removing the directory repairs it.
+const UNOPENABLE_INDEX_REASON = "unable to open database file";
+
+interface IndexRow {
+  id: string;
+  staleness_boost: number;
+}
+
+interface DecisionScenario {
+  name: string;
+  // Prepares a corpus with a healthy index and returns the id the decision resolves.
+  stage: (deps: StagingDeps) => Promise<string>;
+  decision: ResolveDecision;
+  outcome: ResolveResult["outcome"];
+  decisionEvent: string;
+  rejectedOutcome: ResolveResult["outcome"] | null;
+  reflectedIn: (rows: IndexRow[]) => void;
+}
+
+async function acceptedNote(deps: StagingDeps, body: string, anchors: string[]): Promise<string> {
+  const staged = await remember(deps, { type: "decision", body, anchors, source: "mcp" });
+  if (staged.outcome !== "staged") throw new Error(`expected a staged note, got ${staged.outcome}`);
+  await stagingResolve(deps, staged.noteId, "accept");
+  return staged.noteId;
+}
+
+function breakIndex(corpus: Corpus): void {
+  for (const path of [corpus.indexPath, `${corpus.indexPath}-wal`, `${corpus.indexPath}-shm`]) {
+    rmSync(path, { force: true });
+  }
+  mkdirSync(corpus.indexPath);
+}
+
+function indexRows(corpus: Corpus): IndexRow[] {
+  return JSON.parse(dumpIndex(corpus.indexPath)) as IndexRow[];
+}
+
+function rowOf(rows: IndexRow[], id: string): IndexRow {
+  const row = rows.find((candidate) => candidate.id === id);
+  if (row === undefined) throw new Error(`note ${id} is not in the index`);
+  return row;
+}
+
+const DECISION_SCENARIOS: DecisionScenario[] = [
+  {
+    name: "accept",
+    stage: async (deps) => {
+      await remember(deps, { type: "bugfix", body: "flaky retry bug fixed", anchors: ["src/a.ts"], source: "mcp" });
+      return ulid(0);
+    },
+    decision: "accept",
+    outcome: "accepted",
+    decisionEvent: "staging_resolve",
+    rejectedOutcome: "rejected",
+    reflectedIn: (rows) => expect(rows.map((row) => row.id)).toContain(ulid(0)),
+  },
+  {
+    name: "supersede",
+    stage: async (deps) => {
+      await acceptedNote(deps, "original decision rationale", ["src/a.ts"]);
+      await remember(deps, { type: "decision", body: "revised decision rationale", anchors: ["src/a.ts"], source: "mcp" });
+      return ulid(1);
+    },
+    decision: { supersede: ulid(0) },
+    outcome: "superseded",
+    decisionEvent: "staging_resolve",
+    rejectedOutcome: null,
+    reflectedIn: (rows) => {
+      expect(rows.map((row) => row.id)).toContain(ulid(1));
+      expect(rows.map((row) => row.id)).not.toContain(ulid(0));
+    },
+  },
+  {
+    name: "retire request accept",
+    stage: async (deps) => {
+      const noteId = await acceptedNote(deps, "a decision that went stale", ["src/a.ts"]);
+      return noteRetire(deps, noteId, "the module it describes was removed").requestId;
+    },
+    decision: "accept",
+    outcome: "retired",
+    decisionEvent: "note_retire_resolved",
+    rejectedOutcome: "retire_rejected",
+    reflectedIn: (rows) => expect(rows.map((row) => row.id)).not.toContain(ulid(0)),
+  },
+  {
+    name: "re-anchor request accept",
+    stage: async (deps) => {
+      const noteId = await acceptedNote(deps, "a decision whose file moved", ["src/old.ts"]);
+      return (await noteReanchor(deps, noteId, "src/old.ts", "src/a.ts", null, "manual")).requestId;
+    },
+    decision: "accept",
+    outcome: "reanchored",
+    decisionEvent: "note_reanchor_resolved",
+    rejectedOutcome: "reanchor_rejected",
+    reflectedIn: (rows) => expect(rowOf(rows, ulid(0)).staleness_boost).toBe(0),
+  },
+  {
+    name: "retag request accept",
+    stage: async (deps) => {
+      const noteId = await acceptedNote(deps, "a decision about multi select", ["src/a.ts", "MultiSelect"]);
+      return (await noteRetag(deps, noteId, "MultiSelect")).requestId;
+    },
+    decision: "accept",
+    outcome: "retagged",
+    decisionEvent: "note_retag_resolved",
+    rejectedOutcome: "retag_rejected",
+    reflectedIn: (rows) => expect(rowOf(rows, ulid(0)).staleness_boost).toBe(0),
+  },
+];
+
+describe("stagingResolve when the rebuild fails after the commit", () => {
+  for (const scenario of DECISION_SCENARIOS) {
+    test(`${scenario.name}: the committed outcome carries the reason, rebuild_failed follows the decision, the index catches up`, async () => {
+      const projectRoot = await buildProjectRepo();
+      const deps = await makeDeps(projectRoot, offlineClient(), sequentialIds());
+      const id = await scenario.stage(deps);
+      breakIndex(deps.corpus);
+
+      const result = await stagingResolve(deps, id, scenario.decision);
+
+      expect(result.outcome).toBe(scenario.outcome);
+      if (!("index" in result) || result.index.rebuilt) {
+        throw new Error(`expected a committed outcome whose index was not rebuilt, got ${JSON.stringify(result)}`);
+      }
+      expect(result.index.reason).toBe(UNOPENABLE_INDEX_REASON);
+      const head = await runGit(deps.corpus.corpusDir, ["rev-parse", "HEAD"]);
+      expect(head.stdout.trim()).toBe(result.commit);
+      const events = readEvents(deps.corpus.eventsDir);
+      expect(events.slice(-2).map((event) => event.type)).toEqual([scenario.decisionEvent, "rebuild_failed"]);
+      const failure = events.at(-1)!;
+      expect(failure.message).toBe(result.index.reason);
+      expect(String(failure.message)).not.toContain(deps.corpus.corpusDir);
+
+      rmSync(deps.corpus.indexPath, { recursive: true });
+      await rebuild(rebuildDeps(deps));
+      scenario.reflectedIn(indexRows(deps.corpus));
+    });
+
+    test(`${scenario.name}: a healthy rebuild reports the index rebuilt and logs no rebuild_failed`, async () => {
+      const projectRoot = await buildProjectRepo();
+      const deps = await makeDeps(projectRoot, offlineClient(), sequentialIds());
+      const id = await scenario.stage(deps);
+
+      const result = await stagingResolve(deps, id, scenario.decision);
+
+      expect(result.outcome).toBe(scenario.outcome);
+      expect("index" in result && result.index).toEqual({ rebuilt: true });
+      expect(eventsOfType(deps.corpus, "rebuild_failed")).toEqual([]);
+      scenario.reflectedIn(indexRows(deps.corpus));
+    });
+  }
+
+  for (const scenario of DECISION_SCENARIOS.filter((candidate) => candidate.rejectedOutcome !== null)) {
+    test(`${scenario.name}: the reject outcome runs no rebuild and carries no index`, async () => {
+      const projectRoot = await buildProjectRepo();
+      const deps = await makeDeps(projectRoot, offlineClient(), sequentialIds());
+      const id = await scenario.stage(deps);
+      breakIndex(deps.corpus);
+
+      const result = await stagingResolve(deps, id, "reject");
+
+      expect(result.outcome).toBe(scenario.rejectedOutcome!);
+      expect(Object.keys(result)).not.toContain("index");
+      expect(eventsOfType(deps.corpus, "rebuild_failed")).toEqual([]);
+    });
+  }
 });

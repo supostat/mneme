@@ -79,7 +79,9 @@ const STAGING_LIST_DESCRIPTION =
   "the human so THEY choose accept, reject, or supersede.";
 const STAGING_RESOLVE_DESCRIPTION =
   "Apply the HUMAN's decision on one staged note: accept, reject, or supersede a prior note. " +
-  "Only call this after the human has explicitly decided.";
+  "Only call this after the human has explicitly decided. If the index rebuild fails after the " +
+  "decision is committed, the result says so with an \"Index not rebuilt:\" line — that is not an " +
+  "error and the decision must not be retried.";
 const STATS_DESCRIPTION =
   "Report proof metrics computed from the event log: cross-session reuse, never-retrieved fraction, " +
   "recall degradation, live corpus size by type, and NOOP confirmations; review friction (staged-to-" +

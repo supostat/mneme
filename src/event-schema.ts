@@ -95,7 +95,12 @@ import { z } from "zod";
 //       limit refuses the whole harvest — so a harvest remember with body_len = MAX_BODY_CODE_POINTS
 //       is a whole body. Under v18 and earlier the same event MAY mark a body cut at the limit
 //       (UNCLIPPED_HARVEST_SCHEMA_VERSION is that boundary). No event shape changed.
-export const SCHEMA_VERSION = 19;
+//  20 — rebuild_failed: a rebuild that threw AFTER a staging decision was committed (accept,
+//       supersede, and the accept of a retire / re-anchor / retag request). The decision's own event
+//       precedes it; message is sanitized exactly like tool_error's. Such a failure is no longer a
+//       staging_resolve tool_error — the call succeeds and reports the index as not rebuilt.
+//       Other events unchanged.
+export const SCHEMA_VERSION = 20;
 
 // The first schema version whose harvest bodies are guaranteed whole. A fixed boundary, not an alias
 // of SCHEMA_VERSION: later bumps must never move it, or old clipped bodies would read as whole.
@@ -281,6 +286,12 @@ const rebuildEvent = z.object({
   dead_anchors_n: z.number(),
   staleness: z.array(z.number()),
   ollama: z.object({ available: z.boolean(), retries: z.number() }),
+});
+
+const rebuildFailedEvent = z.object({
+  type: z.literal("rebuild_failed"),
+  ...envelope,
+  message: z.string(),
 });
 
 const noteRetireStagedEvent = z.object({
@@ -572,6 +583,7 @@ export const eventSchema = z.discriminatedUnion("type", [
   bundleNoteRejectedEvent,
   corpusAdoptedEvent,
   rebuildEvent,
+  rebuildFailedEvent,
   sessionStartEvent,
   sessionEndEvent,
   toolErrorEvent,

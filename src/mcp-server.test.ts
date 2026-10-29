@@ -12,7 +12,9 @@ import { EMBEDDING_DIMENSION, EMBEDDING_MODEL } from "./embeddings";
 import { createServer, createSessionEndHandler } from "./mcp-server";
 import type { CreateServerOptions } from "./mcp-server";
 import { eventSchema } from "./event-schema";
-import { STAGING_BODY_LABEL } from "./mcp-rendering";
+import { formatResolve, STAGING_BODY_LABEL } from "./mcp-rendering";
+import type { IndexRefresh } from "./index-refresh";
+import type { ResolveResult } from "./staging";
 import { MAX_BODY_CODE_POINTS } from "./note";
 
 const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
@@ -667,5 +669,110 @@ describe("mcp-server session lifecycle", () => {
 
     const ends = readEvents(eventsDir).filter((event) => event.type === "session_end");
     expect(ends.length).toBe(1);
+  });
+});
+
+// A committed outcome keeps its own line byte for byte; when the rebuild after the commit failed it
+// gains exactly two lines — the reason and the do-not-retry advice — and the call is not an error.
+const REBUILD_FAILURE_REASON = "unable to open database file";
+const INDEX_NOT_REBUILT_LINE = "Index not rebuilt: unable to open database file";
+const CATCH_UP_ADVICE_LINE =
+  "The decision is committed — do not retry it; the index catches up on the next successful rebuild.";
+const COMMIT = "a".repeat(40);
+
+const COMMITTED_OUTCOME_LINES: Array<{ outcome: string; resultWith: (index: IndexRefresh) => ResolveResult; line: string }> = [
+  {
+    outcome: "accepted",
+    resultWith: (index) => ({ outcome: "accepted", noteId: ulid(1), commit: COMMIT, index }),
+    line: `Accepted note ${ulid(1)}; committed ${COMMIT}.`,
+  },
+  {
+    outcome: "superseded",
+    resultWith: (index) => ({ outcome: "superseded", noteId: ulid(2), supersededId: ulid(1), commit: COMMIT, suggested: false, index }),
+    line: `Superseded ${ulid(1)} with note ${ulid(2)}; committed ${COMMIT}.`,
+  },
+  {
+    outcome: "retired",
+    resultWith: (index) => ({ outcome: "retired", requestId: ulid(3), noteId: ulid(1), commit: COMMIT, index }),
+    line: `Retired note ${ulid(1)}; the file stays in notes/ as history and left recall. Committed ${COMMIT}.`,
+  },
+  {
+    outcome: "reanchored",
+    resultWith: (index) => ({
+      outcome: "reanchored",
+      requestId: ulid(3),
+      noteId: ulid(1),
+      oldAnchor: "src/old.ts",
+      newAnchor: "src/a.ts",
+      commit: COMMIT,
+      index,
+    }),
+    line: `Re-anchored note ${ulid(1)}: src/old.ts -> src/a.ts; committed ${COMMIT}.`,
+  },
+  {
+    outcome: "retagged",
+    resultWith: (index) => ({ outcome: "retagged", requestId: ulid(3), noteId: ulid(1), anchor: "MultiSelect", commit: COMMIT, index }),
+    line: `Retagged note ${ulid(1)}: MultiSelect moved from anchors to tags; committed ${COMMIT}.`,
+  },
+];
+
+describe("staging_resolve result when the rebuild fails after the commit", () => {
+  for (const { outcome, resultWith, line } of COMMITTED_OUTCOME_LINES) {
+    test(`${outcome}: one unchanged line when rebuilt, three lines when the rebuild failed`, () => {
+      const rebuilt = resultWith({ rebuilt: true });
+      const failed = resultWith({ rebuilt: false, reason: REBUILD_FAILURE_REASON });
+
+      expect(formatResolve(rebuilt)).toBe(line);
+      expect(formatResolve(failed).split("\n")).toEqual([line, INDEX_NOT_REBUILT_LINE, CATCH_UP_ADVICE_LINE]);
+    });
+  }
+
+  test("over MCP the accept succeeds with the three lines, logs rebuild_failed and no tool_error", async () => {
+    const projectRoot = await buildProjectRepo();
+    const corpusHome = corpusHomeDir();
+    const client = await connect({
+      projectRoot,
+      corpusHome,
+      embeddings: offlineClient(),
+      idFactory: sequentialIds(),
+      clock: fixedClock,
+    });
+    const noteId = ulid(1);
+    await callText(client, "remember", { type: "pattern", body: "a note accepted while the index is broken", anchors: ["src/a.ts"] });
+    const corpus = await resolveCorpus(projectRoot, { corpusHome });
+    mkdirSync(corpus.indexPath);
+
+    const result = await client.callTool({ name: "staging_resolve", arguments: { id: noteId, decision: "accept" } });
+
+    expect(result.isError).toBeFalsy();
+    const head = (await runGit(corpus.corpusDir, ["rev-parse", "HEAD"])).stdout.trim();
+    const text = (result.content as Array<{ type: string; text: string }>).map((part) => part.text).join("\n");
+    expect(text.split("\n")).toEqual([
+      `Accepted note ${noteId}; committed ${head}.`,
+      INDEX_NOT_REBUILT_LINE,
+      CATCH_UP_ADVICE_LINE,
+    ]);
+    const events = readEvents(corpus.eventsDir);
+    expect(events.filter((event) => event.type === "tool_error")).toEqual([]);
+    expect(events.slice(-2).map((event) => event.type)).toEqual(["staging_resolve", "rebuild_failed"]);
+    expect(eventSchema.safeParse(events.at(-1)).success).toBe(true);
+  });
+
+  test("the staging_resolve description tells the caller not to retry a committed decision", async () => {
+    const client = await connect({
+      projectRoot: await buildProjectRepo(),
+      corpusHome: corpusHomeDir(),
+      embeddings: offlineClient(),
+      idFactory: sequentialIds(),
+      clock: fixedClock,
+    });
+
+    const tools = await client.listTools();
+    const description = tools.tools.find((tool) => tool.name === "staging_resolve")?.description ?? "";
+
+    expect(description).toContain(
+      'If the index rebuild fails after the decision is committed, the result says so with an "Index not rebuilt:" ' +
+        "line — that is not an error and the decision must not be retried.",
+    );
   });
 });
