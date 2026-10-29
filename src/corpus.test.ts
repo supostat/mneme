@@ -63,7 +63,7 @@ describe("resolveCorpus first initialization", () => {
 
     expect(await isRepo(corpus.corpusDir)).toBe(true);
     expect(readFileSync(join(corpus.corpusDir, ".gitignore"), "utf8")).toBe(
-      "index.db\nindex.db-wal\nindex.db-shm\nevents/\nstaging/\n*.dedup.json\n",
+      "index.db\nindex.db-wal\nindex.db-shm\nindex.db-stale*\nevents/\nstaging/\n*.dedup.json\n",
     );
 
     expect(corpus.indexPath).toBe(join(corpus.corpusDir, "index.db"));
@@ -399,7 +399,7 @@ describe("resolveCorpus keeps an existing .gitignore current", () => {
     await resolveCorpus(projectRoot, { corpusHome, clock: fixedClock });
 
     expect(readFileSync(gitignorePath, "utf8")).toBe(
-      "index.db\nevents/\nstaging/\n*.dedup.json\nscratch/\nindex.db-wal\nindex.db-shm\n",
+      "index.db\nevents/\nstaging/\n*.dedup.json\nscratch/\nindex.db-wal\nindex.db-shm\nindex.db-stale*\n",
     );
   });
 
@@ -413,7 +413,7 @@ describe("resolveCorpus keeps an existing .gitignore current", () => {
     await resolveCorpus(projectRoot, { corpusHome, clock: fixedClock });
 
     expect(readFileSync(gitignorePath, "utf8")).toBe(
-      "index.db\nindex.db-wal\nindex.db-shm\nevents/\nstaging/\n*.dedup.json\n",
+      "index.db\nindex.db-wal\nindex.db-shm\nindex.db-stale*\nevents/\nstaging/\n*.dedup.json\n",
     );
   });
 

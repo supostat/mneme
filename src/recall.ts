@@ -36,8 +36,9 @@ export interface RecalledNote {
 }
 
 // A map section the query reached: ranked by its own channel pair, cut by the same threshold as a
-// note. A domain carries the ids of the notes linked to it (the rebuild's anchor intersection); a
-// flow carries none — its context is the domains it names, not a note population.
+// note. A domain carries the ids of the notes linked to it (the rebuild's anchor containment: a
+// note anchor equal to or below a domain anchor); a flow carries none — its context is the domains
+// it names, not a note population.
 export interface RecalledSection {
   id: string;
   kind: MapSectionKind;

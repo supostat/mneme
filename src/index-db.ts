@@ -9,6 +9,7 @@ import { parseNote } from "./note";
 import type { Note } from "./note";
 import { isAnchorNeutral } from "./note";
 import { stalenessBoost, DEAD_ANCHOR_SINK } from "./staleness";
+import { clearIndexStaleMarker, isIndexMarkedStale, readIndexStaleToken } from "./index-stale-marker";
 import { createLivenessContext } from "./anchor-liveness";
 import type { LivenessContext } from "./anchor-liveness";
 import {
@@ -87,9 +88,13 @@ interface RebuildOutcome extends VectorOutcome {
   linksCount: number;
 }
 
+// The stale marker's token is read BEFORE the sources: if it is still the same once the swap
+// committed, this rebuild read every write the failed refresh behind it had committed.
 export async function rebuild(deps: RebuildDeps): Promise<void> {
   const startedAt = deps.clock().getTime();
+  const staleTokenAtStart = readIndexStaleToken(deps.indexPath);
   const outcome = await rebuildInPlace(deps);
+  clearIndexStaleMarker(deps.indexPath, staleTokenAtStart);
   deps.eventWriter.append(rebuildEvent(startedAt, deps.clock().getTime(), outcome));
 }
 
@@ -280,12 +285,14 @@ export function missingIndexTables(database: Database): string[] {
   return INDEX_TABLES.filter((table) => !present.has(table));
 }
 
-// The one predicate behind every "rebuild before reading" decision: no file, or a file whose
-// schema is incomplete, or a file that is not a database at all (the rebuild replaces that one).
-// A reader that only checked existence would meet an index from before the map and fail on the
-// first map query with a bare SQL error instead of healing it.
+// The one predicate behind every "rebuild before reading" decision: no file, an index marked stale
+// by a failed refresh, a file whose schema is incomplete, or a file that is not a database at all
+// (the rebuild replaces that one). A reader that only checked existence would meet an index from
+// before the map and fail on the first map query with a bare SQL error instead of healing it, and
+// would serve a complete index that a failed rebuild left behind the files.
 export function indexNeedsRebuild(indexPath: string): boolean {
   if (!existsSync(indexPath)) return true;
+  if (isIndexMarkedStale(indexPath)) return true;
   const database = openReadOnlyDatabase(indexPath);
   try {
     return missingIndexTables(database).length > 0;
@@ -380,23 +387,32 @@ async function sectionStalenessBoosts(context: LivenessContext, sections: MapSec
   );
 }
 
-// A note belongs to a section when the two share at least one anchor path, by exact equality —
-// the same comparison the bundle's anchor overlap makes. Every note type takes part: this is
-// MEMBERSHIP in a domain, not the ranking lift that anchor-neutral types forgo. The links are
-// recomputed on every rebuild and live only here, so a note accepted later joins its domain on
-// the next rebuild without any file being touched.
+// A note belongs to a section when one of its anchors lies under one of the section's anchors.
+// Every note type takes part: this is MEMBERSHIP in a domain, not the ranking lift that
+// anchor-neutral types forgo. The links are recomputed on every rebuild and live only here, so a
+// note accepted later joins its domain on the next rebuild without any file being touched.
 function linkSectionsToNotes(sections: MapSection[], notes: Note[]): SectionNoteLink[] {
   const links: SectionNoteLink[] = [];
   for (const section of sections) {
     if (section.frontmatter.anchors.length === 0) continue;
-    const sectionAnchors = new Set(section.frontmatter.anchors);
     for (const note of notes) {
-      if (note.frontmatter.anchors.some((anchor) => sectionAnchors.has(anchor))) {
+      const belongs = note.frontmatter.anchors.some((noteAnchor) =>
+        section.frontmatter.anchors.some((sectionAnchor) => anchorLiesUnder(noteAnchor, sectionAnchor)),
+      );
+      if (belongs) {
         links.push({ sectionId: section.frontmatter.id, noteId: note.frontmatter.id });
       }
     }
   }
   return links;
+}
+
+// Containment by path segments: the anchor itself or any path below it. A file has nothing below
+// it, so a file anchor links by exact equality alone; a directory anchor (written without a
+// trailing slash — the anchor grammar refuses one) links every note anchored inside it. No git, no
+// disk: the rule reads the two strings only, so a rebuild is deterministic.
+function anchorLiesUnder(noteAnchor: string, sectionAnchor: string): boolean {
+  return noteAnchor === sectionAnchor || noteAnchor.startsWith(`${sectionAnchor}/`);
 }
 
 interface VectorOutcome {

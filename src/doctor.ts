@@ -8,6 +8,7 @@ import { UNCLIPPED_HARVEST_SCHEMA_VERSION } from "./event-schema";
 import { readIndexJournalMode, walSidecarsPresent } from "./index-header";
 import { inspectIndex } from "./index-inspect";
 import type { IndexInspection } from "./index-inspect";
+import { isIndexMarkedStale } from "./index-stale-marker";
 import { runGit } from "./git";
 import type { GitResult } from "./git";
 import { EMBEDDING_DIMENSION } from "./embeddings";
@@ -214,6 +215,11 @@ function checkIndex(probe: IndexProbe, indexPath: string): CheckOutcome {
       status: "degraded",
       detail: `index schema is incomplete (rebuild required); tables: ${inspection.tables.join(", ")}`,
     };
+  }
+  // A complete index can still be behind the files: a refresh that failed after a committed write
+  // marked it, and its counts below describe the index as it was before that write.
+  if (isIndexMarkedStale(indexPath)) {
+    return { status: "degraded", detail: "index is marked stale after a failed rebuild (rebuilt on next recall)" };
   }
   // A rebuild embeds in chunks and keeps what it got when the embedder stops answering, so an
   // index can hold vectors for SOME notes: the count of the rest is the number the next rebuild

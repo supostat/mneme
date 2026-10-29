@@ -177,9 +177,11 @@ const MAP_PUT_DESCRIPTION =
   "path across domains). The section is written to the corpus map/ directly and committed — no " +
   "human gate: the map is a synthetic layer the plugin rebuilds. INDEX.md and glossary.md are " +
   "derived — never write them; every put rewrites both. id is a slug shared by both kinds (an id " +
-  "that exists as the other kind must be deleted first); anchors are repo-relative paths that link " +
-  "notes to a domain by anchor intersection; depends_on names the sections this one builds on (a " +
-  "flow names the domains it crosses); terms feed the glossary (domains) and full-text search. " +
+  "that exists as the other kind must be deleted first); anchors are repo-relative paths, and a note " +
+  "joins a domain when one of its anchors equals a domain anchor or lies below it (a directory " +
+  "anchor, written without a trailing slash, covers every path inside it); depends_on names the " +
+  "sections this one builds on (a flow names the domains it crosses); terms feed the glossary " +
+  "(domains) and full-text search. " +
   `${MAP_SECTION_LIMIT_RULE}. If the index rebuild fails after the commit, the result says so with ` +
   'an "Index not rebuilt:" line — the section is stored and the put must not be retried.';
 const MAP_DELETE_DESCRIPTION =

@@ -7,6 +7,7 @@ import type { EmbeddingsClient } from "./embeddings";
 import { EventWriter, readEvents } from "./events";
 import type { RebuildDeps } from "./index-db";
 import { refreshIndexAfterDecision } from "./index-refresh";
+import { isIndexMarkedStale } from "./index-stale-marker";
 
 const fixedClock = () => new Date("2026-10-29T10:00:00.000Z");
 
@@ -45,6 +46,16 @@ describe("refreshIndexAfterDecision", () => {
 
     expect(refresh).toEqual({ rebuilt: true });
     expect(readEvents(layout.eventsDir).map((event) => event.type)).toEqual(["rebuild"]);
+    expect(isIndexMarkedStale(join(layout.corpusDir, "index.db"))).toBe(false);
+  });
+
+  test("a rebuild that throws marks the index stale, so the next read rebuilds before it reads", async () => {
+    const layout = corpusLayout();
+    const missingNotesDir = join(layout.corpusDir, "notes");
+
+    await refreshIndexAfterDecision(layout.deps(missingNotesDir), layout.corpusDir);
+
+    expect(isIndexMarkedStale(join(layout.corpusDir, "index.db"))).toBe(true);
   });
 
   test("a rebuild that throws becomes a sanitized reason, logged once as rebuild_failed", async () => {

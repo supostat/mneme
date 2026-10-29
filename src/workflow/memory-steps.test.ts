@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultConfig } from "../config";
@@ -25,6 +25,7 @@ import { MemoryStepError, compileRecallBundle, formatRecallBundle, harvestPhase 
 import type { RecallBundle } from "./memory-steps";
 import { RECALL_BUNDLE_COSINE_THRESHOLD, RECALL_GAP_NOTICE } from "../recall";
 import { writeMapSection } from "../map/map-store";
+import { mapPut } from "../map/map-tools";
 import type { MapSection } from "../map/map-section";
 
 const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
@@ -1019,6 +1020,33 @@ describe("compileRecallBundle domain scope", () => {
     const recallEvents = eventsOfType(deps, "recall");
     expect(recallEvents.length).toBe(1);
     expect(recallEvents[0]!.domains).toEqual(["payments"]);
+  });
+
+  test("a domain stored by a put whose rebuild failed is in the bundle: the stale index is rebuilt before it is read", async () => {
+    const { projectRoot, commit } = await buildProjectRepo();
+    const deps = await makeDeps(projectRoot, bagClient());
+    writeNote(deps, ulid(100), "pattern", "payment refund ledger reconciliation", ["src/a.ts"], commit);
+    await compileRecallBundle(deps, { phaseDescription: "warm the index", anchorPaths: [], domains: [], budget: 2000 });
+    const brokenNotePath = join(deps.corpus.notesDir, `${ulid(101)}.md`);
+    writeFileSync(brokenNotePath, "not a note\n");
+    const put = await mapPut(deps, {
+      kind: "domain",
+      id: "payments",
+      body: "Payments domain: refunds and ledgers.",
+      anchors: ["src/a.ts"],
+    });
+    expect(put.index.rebuilt).toBe(false);
+    rmSync(brokenNotePath);
+
+    const bundle = await compileRecallBundle(deps, {
+      phaseDescription: "payment refund handling",
+      anchorPaths: [],
+      domains: ["payments"],
+      budget: 2000,
+    });
+
+    expect(bundle.sections.map((section) => [section.id, section.noteIds])).toEqual([["payments", [ulid(100)]]]);
+    expect(bundle.notes.map((note) => note.id)).toEqual([ulid(100)]);
   });
 
   test("a domain the map does not hold is a MemoryStepError, and no recall event is written", async () => {

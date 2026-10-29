@@ -2,7 +2,7 @@ import { test, expect, describe } from "bun:test";
 import { Database } from "bun:sqlite";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { runGit, initRepo } from "./git";
 import { serializeNote } from "./note";
 import type { Note, NoteFrontmatter, NoteType } from "./note";
@@ -83,7 +83,10 @@ async function buildProjectRepo(fileNames: string[]): Promise<{ projectRoot: str
   const projectRoot = mkdtempSync(join(tmpdir(), "mneme-recall-proj-"));
   await initRepo(projectRoot);
   mkdirSync(join(projectRoot, "src"), { recursive: true });
-  for (const name of fileNames) writeFileSync(join(projectRoot, name), `content of ${name}\n`);
+  for (const name of fileNames) {
+    mkdirSync(dirname(join(projectRoot, name)), { recursive: true });
+    writeFileSync(join(projectRoot, name), `content of ${name}\n`);
+  }
   await runGit(projectRoot, ["add", "."]);
   const committed = await runGit(projectRoot, [
     "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init",
@@ -879,6 +882,18 @@ describe("recall map sections", () => {
     expect(candidates[0]!.vector_rank).toBe(1);
     const logged = event.sections as Array<{ id: string }>;
     expect(logged.map((candidate) => candidate.id).sort()).toEqual(["billing", "order-to-invoice"]);
+  });
+
+  test("a domain anchored to a directory scopes recall to the notes anchored inside it", async () => {
+    const nested: NoteSpec = { id: ulid(3), body: "invoice numbering inside billing", anchor: "src/billing/invoice.rb" };
+    const sibling: NoteSpec = { id: ulid(4), body: "invoice numbering in the old file", anchor: "src/billing-old.rb" };
+    const billingDirectory = section({ id: "billing", anchors: ["src/billing"] }, "Billing issues invoices.");
+    const { indexPath, eventsDir } = await setupIndex([nested, sibling], bagOfWordsClient(), [billingDirectory]);
+
+    const result = await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "invoice", 10000, "tool-call", ["billing"]);
+
+    expect(result.returnedIds).toEqual([ulid(3)]);
+    expect(result.sections.map((candidate) => [candidate.id, candidate.noteIds])).toEqual([["billing", [ulid(3)]]]);
   });
 
   test("an unknown or malformed domain is refused before anything is ranked or logged", async () => {

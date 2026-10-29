@@ -65,8 +65,17 @@ const MIGRATABLE_FORMAT_VERSIONS = new Set([1, 2]);
 const MANIFEST_FILENAME = "manifest.json";
 const GITIGNORE_FILENAME = ".gitignore";
 // The index's WAL sidecars are listed because readers now recreate them on every open (see
-// openReadOnlyDatabase), so they appear in every corpus, not only where a writer ran.
-const GITIGNORE_ENTRIES = ["index.db", "index.db-wal", "index.db-shm", "events/", "staging/", "*.dedup.json"];
+// openReadOnlyDatabase), so they appear in every corpus, not only where a writer ran. The stale
+// marker and its transient claimed copies (index-stale-marker) are index state, never history.
+const GITIGNORE_ENTRIES = [
+  "index.db",
+  "index.db-wal",
+  "index.db-shm",
+  "index.db-stale*",
+  "events/",
+  "staging/",
+  "*.dedup.json",
+];
 const GITIGNORE_CONTENT = `${GITIGNORE_ENTRIES.join("\n")}\n`;
 const DEFAULT_CORPUS_DIRECTORY_NAME = ".mneme";
 

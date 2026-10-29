@@ -128,7 +128,7 @@ describe("index readers over a real server", () => {
       const answer = await recallText(client, "wiring diagnostic probe");
 
       expect(answer).toContain(NOTE_BODY);
-      expect(readFileSync(join(corpus.corpusDir, ".gitignore"), "utf8")).toBe(`${LEGACY_GITIGNORE}index.db-wal\nindex.db-shm\n`);
+      expect(readFileSync(join(corpus.corpusDir, ".gitignore"), "utf8")).toBe(`${LEGACY_GITIGNORE}index.db-wal\nindex.db-shm\nindex.db-stale*\n`);
       for (const suffix of SIDECAR_SUFFIXES) {
         expect(existsSync(`${corpus.indexPath}${suffix}`)).toBe(isAppleSqlite());
         expect(await isIgnored(corpus.corpusDir, `index.db${suffix}`)).toBe(true);

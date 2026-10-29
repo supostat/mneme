@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -12,7 +12,7 @@ import { EMBEDDING_DIMENSION, EMBEDDING_MODEL } from "./embeddings";
 import { createServer, createSessionEndHandler } from "./mcp-server";
 import type { CreateServerOptions } from "./mcp-server";
 import { eventSchema } from "./event-schema";
-import { formatResolve, MAP_FENCE_BEGIN_LABEL, STAGING_BODY_LABEL } from "./mcp-rendering";
+import { formatResolve, INDEX_NOT_REBUILT_LABEL, MAP_FENCE_BEGIN_LABEL, STAGING_BODY_LABEL } from "./mcp-rendering";
 import { MAP_SECTION_LIMIT_RULE } from "./map/map-section";
 import { RECALL_GAP_NOTICE } from "./recall";
 import { writeMapSection } from "./map/map-store";
@@ -110,6 +110,10 @@ async function callText(client: Client, name: string, args: Record<string, unkno
   const result = await client.callTool({ name, arguments: args });
   const content = result.content as Array<{ type: string; text: string }>;
   return content.map((part) => part.text).join("\n");
+}
+
+function textOf(result: Awaited<ReturnType<Client["callTool"]>>): string {
+  return (result.content as Array<{ type: string; text: string }>).map((part) => part.text).join("\n");
 }
 
 function corpusHomeDir(): string {
@@ -900,6 +904,9 @@ describe("mcp-server map tools", () => {
     terms: ["invoice", "ledger"],
   };
 
+  // What the rebuild reports about a file in notes/ that is not a note.
+  const BROKEN_NOTE_REASON = "note is missing an opening frontmatter fence";
+
   async function corpusHead(projectRoot: string, corpusHome: string): Promise<string> {
     const corpus = await resolveCorpus(projectRoot, { corpusHome });
     return (await runGit(corpus.corpusDir, ["rev-parse", "HEAD"])).stdout.trim();
@@ -940,6 +947,39 @@ describe("mcp-server map tools", () => {
     const deleted = await callText(client, "map_delete", { id: "billing" });
     expect(deleted).toBe(`Deleted map section domain "billing"; committed ${await corpusHead(projectRoot, corpusHome)}.`);
     expect(await callText(client, "map_list", {})).toBe("The project map is empty.");
+  });
+
+  test("a put and a delete whose rebuild fails answer with the three lines, not an error; the next recall catches the index up", async () => {
+    const projectRoot = await buildProjectRepo();
+    const corpusHome = corpusHomeDir();
+    const client = await connect({ projectRoot, corpusHome, embeddings: bagClient(), idFactory: sequentialIds(), clock: fixedClock });
+    await callText(client, "map_put", { kind: "domain", id: "orders", body: "Orders are placed by customers.", anchors: ["src/a.ts"] });
+    const corpus = await resolveCorpus(projectRoot, { corpusHome });
+    const brokenNotePath = join(corpus.notesDir, `${ulid(900)}.md`);
+    writeFileSync(brokenNotePath, "not a note\n");
+
+    const put = await client.callTool({ name: "map_put", arguments: BILLING });
+    const putHead = await corpusHead(projectRoot, corpusHome);
+    const deleted = await client.callTool({ name: "map_delete", arguments: { id: "orders" } });
+    const deleteHead = await corpusHead(projectRoot, corpusHome);
+
+    const reasonLine = `${INDEX_NOT_REBUILT_LABEL} ${BROKEN_NOTE_REASON}`;
+    expect(put.isError).toBeFalsy();
+    expect(textOf(put).split("\n")).toEqual([`Stored map section domain "billing"; committed ${putHead}.`, reasonLine, CATCH_UP_ADVICE_LINE]);
+    expect(deleted.isError).toBeFalsy();
+    expect(textOf(deleted).split("\n")).toEqual([`Deleted map section domain "orders"; committed ${deleteHead}.`, reasonLine, CATCH_UP_ADVICE_LINE]);
+    const events = readEvents(corpus.eventsDir);
+    expect(events.slice(-4).map((event) => event.type)).toEqual(["map_section_put", "rebuild_failed", "map_section_deleted", "rebuild_failed"]);
+    expect(events.filter((event) => event.type === "tool_error")).toEqual([]);
+
+    rmSync(brokenNotePath);
+    const scoped = await client.callTool({ name: "recall", arguments: { query: "invoice", domains: ["billing"] } });
+    const gone = await client.callTool({ name: "recall", arguments: { query: "invoice", domains: ["orders"] } });
+
+    expect(scoped.isError).toBeFalsy();
+    expect(textOf(scoped).split("\n")).toContain("id: billing");
+    expect(gone.isError).toBe(true);
+    expect(textOf(gone)).toContain('no map domain "orders"');
   });
 
   test("a refused put is a tool error that writes neither a file nor a map event", async () => {

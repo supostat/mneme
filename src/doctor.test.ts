@@ -17,6 +17,7 @@ import type { Corpus } from "./corpus";
 import { serializeNote } from "./note";
 import type { Note } from "./note";
 import { rebuild } from "./index-db";
+import { markIndexStale } from "./index-stale-marker";
 import { EventWriter } from "./events";
 import { EMBEDDING_DIMENSION, EMBEDDING_MODEL } from "./embeddings";
 import type { EmbeddingsClient } from "./embeddings";
@@ -246,6 +247,18 @@ describe("runDoctor broken components are named, isolated, and typed", () => {
     const index = byName(report).get("index")!;
     expect(index.status).toBe("degraded");
     expect(index.detail).toContain("absent");
+    expect(report.overall).toBe("degraded");
+  });
+
+  test("a complete index a failed refresh marked stale degrades the index component and says the next recall rebuilds it", async () => {
+    const corpus = await buildHealthyCorpus();
+    markIndexStale(corpus.indexPath);
+
+    const report = await runDoctor({ corpusDir: corpus.corpusDir, embedder: bagOfWordsClient() });
+
+    const index = byName(report).get("index")!;
+    expect(index.status).toBe("degraded");
+    expect(index.detail).toBe("index is marked stale after a failed rebuild (rebuilt on next recall)");
     expect(report.overall).toBe("degraded");
   });
 

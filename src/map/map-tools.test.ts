@@ -319,6 +319,21 @@ describe("mapList and showMapSection", () => {
     ]);
   });
 
+  test("an anchor that lives only on another local branch is parked there, not counted dead", async () => {
+    const { deps } = await makeWorkbench();
+    const gitAs = ["-c", "user.email=t@t", "-c", "user.name=t"];
+    await runGit(deps.projectRoot, ["checkout", "-q", "-b", "feature"]);
+    writeFileSync(join(deps.projectRoot, "src/feature-only.ts"), "feature\n");
+    await runGit(deps.projectRoot, ["add", "."]);
+    await runGit(deps.projectRoot, [...gitAs, "commit", "-q", "-m", "feature"]);
+    await runGit(deps.projectRoot, ["checkout", "-q", "-"]);
+    await mapPut(deps, { ...BILLING, anchors: ["src/feature-only.ts"] });
+
+    const listed = await mapList(deps);
+
+    expect(listed.entries.map((entry) => [entry.id, entry.anchorsN, entry.deadN])).toEqual([["billing", 1, 0]]);
+  });
+
   test("an empty map lists as empty", async () => {
     const { deps } = await makeWorkbench();
 

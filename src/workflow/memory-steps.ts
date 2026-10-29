@@ -65,7 +65,7 @@ export async function compileRecallBundle(
   deps: StagingDeps,
   request: RecallBundleRequest,
 ): Promise<RecallBundle> {
-  await rebuildIndexWhenMissing(deps);
+  await rebuildIndexWhenNeeded(deps);
   const query = [request.phaseDescription, ...request.anchorPaths].join("\n");
   const recalled = await runRecall(deps, query, request.budget, request.domains);
   // recall already applied this cut; re-applying it strips the cold-start floor's low-confidence
@@ -125,8 +125,10 @@ export async function harvestPhase(
   return results;
 }
 
-// "Missing" includes an index from before the map tables: indexNeedsRebuild heals both the same way.
-async function rebuildIndexWhenMissing(deps: StagingDeps): Promise<void> {
+// A missing index, one from before the map tables, and one a failed refresh marked stale are all
+// rebuilt here before the bundle reads it: a domain stored by a put whose rebuild failed is in the
+// index by the time the bundle is compiled.
+async function rebuildIndexWhenNeeded(deps: StagingDeps): Promise<void> {
   if (!indexNeedsRebuild(deps.corpus.indexPath)) return;
   await rebuild({
     indexPath: deps.corpus.indexPath,

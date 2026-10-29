@@ -643,7 +643,7 @@ describe("runEngineSteps scopes the phase's bundle by its recall domains", () =>
     });
   }
 
-  // Two domains, each linking one note by anchor intersection; both notes match the phase query.
+  // Two domains, each linking one note by a shared anchor; both notes match the phase query.
   async function twoDomainCorpus(): Promise<StagingDeps> {
     const { projectRoot, commit } = await buildProjectRepo();
     const deps = await makeDeps(projectRoot);

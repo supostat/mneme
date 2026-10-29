@@ -21,6 +21,8 @@ import {
 } from "./embeddings";
 import type { EmbedOptions, EmbeddingsClient } from "./embeddings";
 import { EventWriter, readEvents } from "./events";
+import { KNOWN_ELSEWHERE_PENALTY } from "./staleness";
+import { isIndexMarkedStale, markIndexStale, readIndexStaleToken } from "./index-stale-marker";
 import { isAppleSqlite } from "../tests/sqlite-build";
 
 const fixedClock = () => new Date("2026-07-06T10:00:00.000Z");
@@ -877,7 +879,7 @@ describe("rebuild indexes map sections beside the notes", () => {
     }
   }
 
-  test("two rebuilds give byte-identical map tables; links follow the anchor intersection across note types but never a retired note", async () => {
+  test("two rebuilds give byte-identical map tables; links follow the shared anchor across note types but never a retired note", async () => {
     const { projectRoot, commit } = await buildProjectRepo(["src/a.ts", "src/b.ts"]);
     const corpus = makeCorpus();
     writeNote(corpus.notesDir, note({ id: ulid(0), type: "pattern", anchors: ["src/a.ts"], commit }, "pattern on a"));
@@ -900,6 +902,50 @@ describe("rebuild indexes map sections beside the notes", () => {
       links: [{ section_id: "alpha", note_id: ulid(0) }],
       deps: [{ section_id: "alpha-flow", depends_on: "alpha" }],
     });
+  });
+
+  test("a directory anchor links the notes anchored to it or below it; a file anchor links by equality alone", async () => {
+    const { projectRoot, commit } = await buildProjectRepo(["src/a.ts"]);
+    const corpus = makeCorpus();
+    writeNote(corpus.notesDir, note({ id: ulid(0), anchors: ["src/billing/invoice.rb"], commit }, "invoice inside billing"));
+    writeNote(corpus.notesDir, note({ id: ulid(1), anchors: ["src/billing"], commit }, "the billing directory itself"));
+    writeNote(corpus.notesDir, note({ id: ulid(2), anchors: ["src/billing-old.rb"], commit }, "a sibling sharing the prefix"));
+    writeNote(corpus.notesDir, note({ id: ulid(3), anchors: ["src/billingx/a.rb"], commit }, "a sibling directory sharing the prefix"));
+    writeNote(corpus.notesDir, note({ id: ulid(4), anchors: ["src/orders/order.rb"], commit }, "the order file"));
+    writeNote(corpus.notesDir, note({ id: ulid(5), anchors: ["src/orders/order.rb/x"], commit }, "a path below a file anchor"));
+    writeSection(corpus.mapDir, section({ id: "billing", anchors: ["src/billing"], commit }, "Billing domain."));
+    writeSection(corpus.mapDir, section({ id: "orders", anchors: ["src/orders/order.rb"], commit }, "Orders domain."));
+
+    await rebuild(rebuildDeps({ ...corpus, projectRoot, embeddings: offlineClient() }));
+
+    const dump = JSON.parse(dumpMapIndex(corpus.indexPath)) as { links: Array<{ section_id: string; note_id: string }> };
+    expect(dump.links).toEqual([
+      { section_id: "billing", note_id: ulid(0) },
+      { section_id: "billing", note_id: ulid(1) },
+      { section_id: "orders", note_id: ulid(4) },
+      { section_id: "orders", note_id: ulid(5) },
+    ]);
+  });
+
+  test("a section anchored to a path that lives only on another local branch is parked, not dead", async () => {
+    const { projectRoot, commit } = await buildProjectRepo(["src/a.ts"]);
+    const gitAs = ["-c", "user.email=t@t", "-c", "user.name=t"];
+    await runGit(projectRoot, ["checkout", "-q", "-b", "feature"]);
+    writeFileSync(join(projectRoot, "src/feature-only.ts"), "feature\n");
+    await runGit(projectRoot, ["add", "."]);
+    await runGit(projectRoot, [...gitAs, "commit", "-q", "-m", "feature"]);
+    await runGit(projectRoot, ["checkout", "-q", "-"]);
+    const corpus = makeCorpus();
+    writeSection(corpus.mapDir, section({ id: "parked", anchors: ["src/feature-only.ts"], commit }, "Parked domain."));
+    const eventsDir = mkdtempSync(join(tmpdir(), "mneme-index-map-events-"));
+    const eventWriter = new EventWriter(eventsDir, { sessionId: "s-index-map", mnemeVersion: "0.1.0", clock: fixedClock });
+
+    await rebuild({ ...corpus, projectRoot, embeddings: offlineClient(), eventWriter, clock: fixedClock });
+
+    const dump = JSON.parse(dumpMapIndex(corpus.indexPath)) as { sections: Array<{ id: string; staleness_boost: number }> };
+    expect(dump.sections.map((row) => [row.id, row.staleness_boost])).toEqual([["parked", KNOWN_ELSEWHERE_PENALTY]]);
+    const emitted = readEvents(eventsDir).filter((event) => event.type === "rebuild")[0]!;
+    expect(emitted).toMatchObject({ sections_n: 1, section_dead_anchors_n: 0 });
   });
 
   test("a section with a dead anchor sinks and is counted; a section without anchors is pinned neutral", async () => {
@@ -950,6 +996,41 @@ describe("rebuild indexes map sections beside the notes", () => {
 
     await rebuild(rebuildDeps({ ...corpus, projectRoot, embeddings: offlineClient() }));
     expect(indexNeedsRebuild(corpus.indexPath)).toBe(false);
+  });
+
+  test("indexNeedsRebuild: a complete index marked stale by a failed refresh needs a rebuild, and the rebuild clears the mark", async () => {
+    const { projectRoot } = await buildProjectRepo(["src/a.ts"]);
+    const corpus = makeCorpus();
+    const deps = rebuildDeps({ ...corpus, projectRoot, embeddings: offlineClient() });
+    await rebuild(deps);
+    markIndexStale(corpus.indexPath);
+
+    expect(indexNeedsRebuild(corpus.indexPath)).toBe(true);
+    await rebuild(deps);
+
+    expect(isIndexMarkedStale(corpus.indexPath)).toBe(false);
+    expect(indexNeedsRebuild(corpus.indexPath)).toBe(false);
+  });
+
+  test("a mark written while a rebuild is reading the sources survives that rebuild", async () => {
+    const { projectRoot, commit } = await buildProjectRepo(["src/a.ts"]);
+    const corpus = makeCorpus();
+    writeNote(corpus.notesDir, note({ id: ulid(0), commit }, "a note the embedder is asked for"));
+    markIndexStale(corpus.indexPath);
+    let concurrentToken: string | null = null;
+    const failingElsewhere: EmbeddingsClient = {
+      model: EMBEDDING_MODEL,
+      embed: async () => {
+        markIndexStale(corpus.indexPath);
+        concurrentToken = readIndexStaleToken(corpus.indexPath);
+        return { available: false, embeddings: [], retries: 0 };
+      },
+    };
+
+    await rebuild(rebuildDeps({ ...corpus, projectRoot, embeddings: failingElsewhere }));
+
+    expect(concurrentToken).not.toBeNull();
+    expect(readIndexStaleToken(corpus.indexPath)).toBe(concurrentToken);
   });
 
   test("dedup's nearest neighbour never sees a section vector (real-dep smoke on the vec table)", async () => {
