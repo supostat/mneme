@@ -24,6 +24,7 @@ export interface StatsSummary {
   crossSessionReuse: RatioMetric;
   neverRetrieved: RatioMetric;
   degradationFrequency: RatioMetric;
+  memoryGaps: RatioMetric;
   corpusSizeByType: CorpusSizeByType;
   noopConfirmations: number;
   noopDistinctNoteCount: number;
@@ -41,6 +42,8 @@ interface RecallOccurrence {
   returnedIds: string[];
   degraded: boolean;
   origin: RecallOriginBucket;
+  // null = the event carries no gap key (pre-v21): it says nothing about the question.
+  gap: boolean | null;
 }
 
 interface NoopSummary {
@@ -65,6 +68,7 @@ export function computeStats(events: StoredEvent[]): StatsSummary {
     crossSessionReuse: crossSessionReuse(acceptedIds, stagingAnchors, recalls),
     neverRetrieved: neverRetrievedMetric.metric,
     degradationFrequency: degradation(recalls),
+    memoryGaps: memoryGaps(recalls),
     corpusSizeByType: corpusSizeByType(liveAccepted, stagedTypes),
     noopConfirmations: noop.count,
     noopDistinctNoteCount: noop.distinctNoteCount,
@@ -130,6 +134,7 @@ function collectRecallOccurrences(events: StoredEvent[]): RecallOccurrence[] {
       returnedIds: stringArray(event.returned_ids),
       degraded: event.degraded === true,
       origin: recallOriginBucket(event.origin),
+      gap: typeof event.gap === "boolean" ? event.gap : null,
     });
   }
   return occurrences;
@@ -218,6 +223,15 @@ function degradation(recalls: RecallOccurrence[]): RatioMetric {
   return ratio(degraded, recalls.length);
 }
 
+// Instrumented recalls only: a pre-v21 event carries no gap key and says nothing about the
+// question, so it leaves the denominator — reading its absence as "no gap" would understate the
+// share on exactly the oldest logs, and an uninstrumented log reports n/a rather than 0%.
+function memoryGaps(recalls: RecallOccurrence[]): RatioMetric {
+  const instrumented = recalls.filter((recall) => recall.gap !== null);
+  const gaps = instrumented.filter((recall) => recall.gap === true).length;
+  return ratio(gaps, instrumented.length);
+}
+
 function corpusSizeByType(
   liveAccepted: Set<string>,
   stagedTypes: Map<string, string>,
@@ -277,6 +291,10 @@ export function formatStats(summary: StatsSummary): string {
     `(a) Cross-session reuse: ${renderRatio(summary.crossSessionReuse, "accepted notes")}`,
     `(b) Never retrieved: ${renderRatio(summary.neverRetrieved, "accepted notes")} (of which ${summary.neverRetrievedSupersededCount} superseded)`,
     `(c) Recall degradation: ${renderRatio(summary.degradationFrequency, "recall events")}`,
+    // Lettered (n), not (d): the report numbers its lines in ONE sequence across every renderer
+    // ((d)-(f) friction, (g)-(j) gate, (k) footprint, (l)-(m) use), so the next free letter is (n);
+    // it is printed here, beside (c), because it is a recall question.
+    `(n) Memory gaps: ${renderRatio(summary.memoryGaps, "instrumented recall events")}`,
     "",
     "Corpus size by type (live):",
     ...renderCorpusSizeByType(summary.corpusSizeByType),

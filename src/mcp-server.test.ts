@@ -13,6 +13,7 @@ import { createServer, createSessionEndHandler } from "./mcp-server";
 import type { CreateServerOptions } from "./mcp-server";
 import { eventSchema } from "./event-schema";
 import { formatResolve, MAP_FENCE_BEGIN_LABEL, STAGING_BODY_LABEL } from "./mcp-rendering";
+import { RECALL_GAP_NOTICE } from "./recall";
 import { writeMapSection } from "./map/map-store";
 import type { MapSection } from "./map/map-section";
 import type { IndexRefresh } from "./index-refresh";
@@ -273,10 +274,54 @@ describe("mcp-server empty responses", () => {
     await callText(client, "staging_resolve", { id: noteId, decision: "accept" });
 
     // "%%% ---" yields no FTS terms and a zero-norm bag vector, so both channels stay empty while a
-    // stored vector keeps recall out of degraded mode: the exact non-degraded no-match string.
+    // stored vector keeps recall out of degraded mode: the exact non-degraded no-match string, and
+    // the gap notice under it — nothing matched is a gap by definition.
     const recalled = await callText(client, "recall", { query: "%%% ---", budget: 2000 });
 
-    expect(recalled).toBe("No matching notes.");
+    expect(recalled).toBe(`No matching notes.\n${RECALL_GAP_NOTICE}`);
+  });
+});
+
+describe("mcp-server memory gap notice", () => {
+  function lastLineOf(text: string): string {
+    return text.split("\n").at(-1)!;
+  }
+
+  test("a low-confidence answer ends with the notice: floor notes are shown, but they are not memory", async () => {
+    // Query [3, 4] against a body [1, 1, 3, 2, 1, 0.25]: cosine just under 0.35 and no shared term, so
+    // only the cold-start floor brings the note back.
+    const body = "zebra quokka wombat burrow";
+    const client = await connect({
+      projectRoot: await buildProjectRepo(),
+      corpusHome: corpusHomeDir(),
+      embeddings: keyedClient(new Map([[body, [1, 1, 3, 2, 1, 0.25]], ["payment refund", [3, 4]]])),
+      idFactory: sequentialIds(),
+      clock: fixedClock,
+    });
+    await callText(client, "remember", { type: "pattern", body, anchors: ["src/a.ts"] });
+    await callText(client, "staging_resolve", { id: ulid(1), decision: "accept" });
+
+    const recalled = await callText(client, "recall", { query: "payment refund", budget: 2000 });
+
+    expect(recalled).toContain(`id: ${ulid(1)}`);
+    expect(lastLineOf(recalled)).toBe(RECALL_GAP_NOTICE);
+  });
+
+  test("a hit ends with its closing fence, never the notice", async () => {
+    const client = await connect({
+      projectRoot: await buildProjectRepo(),
+      corpusHome: corpusHomeDir(),
+      embeddings: bagClient(),
+      idFactory: sequentialIds(),
+      clock: fixedClock,
+    });
+    await callText(client, "remember", { type: "pattern", body: "invoice generation lifecycle", anchors: ["src/a.ts"] });
+    await callText(client, "staging_resolve", { id: ulid(1), decision: "accept" });
+
+    const recalled = await callText(client, "recall", { query: "invoice", budget: 2000 });
+
+    expect(recalled).not.toContain(RECALL_GAP_NOTICE);
+    expect(lastLineOf(recalled)).toMatch(/^----- END MNEME NOTE [0-9a-f]{16} -----$/);
   });
 });
 

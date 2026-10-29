@@ -52,6 +52,10 @@ export interface RecallResult {
   notes: RecalledNote[];
   sections: RecalledSection[];
   degraded: boolean;
+  // True when neither a note nor a section passed the relevance threshold: the memory gap the
+  // notice reports and the stats metric counts. The cold-start floor's low-confidence notes leave
+  // it true — they are shown, but they are not memory above the threshold.
+  gap: boolean;
 }
 
 // A domain filter names a domain the map does not hold — or a string that is not even a section
@@ -132,6 +136,13 @@ export const RECALL_LOW_CONFIDENCE_FLOOR = 3;
 // crowd the notes out, and the cap keeps two sections from becoming a wall of context.
 export const RECALL_MAP_SECTIONS_MAX = 2;
 
+// The last line of an answer whose every note and section fell below the threshold. It says in so
+// many words that memory holds nothing for this question, so the honest move is to record what is
+// learned — silence must never read as "nothing to know". Owned here, beside the threshold it
+// reports on; the renderers print it, the workflow bundle included.
+export const RECALL_GAP_NOTICE =
+  "No memory above the relevance threshold for this question: record what you learn with remember.";
+
 // A note or a section survives recall iff it matched a query term (FTS, already lexically gated) or
 // cleared the absolute cosine floor. Shared with memory-steps so the live path and the workflow
 // bundle cut alike, and shared by both populations so a section is never admitted more cheaply
@@ -154,6 +165,7 @@ export async function recall(
   const fts = rankFtsChannel(deps, terms, scope.noteIds);
   const fusion = runFusion(deps, fts.ranks, embedded.embed, budget, scope.noteIds);
   const sections = rankSections(deps, terms, embedded.embed, scope.sectionIds);
+  const gap = isMemoryGap(fusion.notes, sections.returned);
   const returnedIds = fusion.notes.map((note) => note.id);
   deps.eventWriter.append({
     type: "recall",
@@ -168,8 +180,15 @@ export async function recall(
     candidates: buildCandidates(fusion.decisions, fts.ranks, fusion.cosineRanks, fusion.metaById),
     domains,
     sections: sections.candidates,
+    gap,
   });
-  return { returnedIds, notes: fusion.notes, sections: sections.returned, degraded };
+  return { returnedIds, notes: fusion.notes, sections: sections.returned, degraded, gap };
+}
+
+// Decided on what recall RETURNS, after the cut: a floor note is below the threshold by
+// construction and never closes a gap, while one section above it closes the gap alone.
+function isMemoryGap(notes: RecalledNote[], sections: RecalledSection[]): boolean {
+  return !notes.some(passesRecallThreshold) && sections.length === 0;
 }
 
 async function embedQuery(deps: RecallDeps, query: string): Promise<{ embed: EmbedResult; ms: number }> {

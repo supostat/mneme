@@ -1,5 +1,6 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { RememberResult, StagingEntry, ResolveResult } from "./staging";
+import { RECALL_GAP_NOTICE } from "./recall";
 import type { RecalledNote, RecalledSection } from "./recall";
 import type { NotesListResult, ReanchorRequest, RetagRequest, RetireRequest } from "./curation";
 import type { SweepReport, ScoredCandidate } from "./anchor-repair";
@@ -83,12 +84,14 @@ export interface RecallRendering {
   notes: RecalledNote[];
   sections: RecalledSection[];
   degraded: boolean;
+  gap: boolean;
 }
 
 // Map sections come BEFORE the notes: a section is the frame, the notes are the detail inside it.
 export function formatRecall(result: RecallRendering): string {
   if (result.notes.length === 0 && result.sections.length === 0) {
-    return result.degraded ? "No matching notes (recall ran in degraded mode)." : "No matching notes.";
+    const noMatch = result.degraded ? "No matching notes (recall ran in degraded mode)." : "No matching notes.";
+    return appendGapNotice(noMatch, result.gap);
   }
   const nonce = makeNonce();
   const fence = noteFence(nonce);
@@ -97,7 +100,14 @@ export function formatRecall(result: RecallRendering): string {
     ...result.notes.map((note) => `${fence.begin}\nid: ${note.id}\n${note.body}\n${fence.end}`),
   ];
   const header = result.degraded ? `${RETRIEVED_DATA_NOTICE} Recall ran in degraded mode.` : RETRIEVED_DATA_NOTICE;
-  return `${header}\n${blocks.join("\n")}`;
+  return appendGapNotice(`${header}\n${blocks.join("\n")}`, result.gap);
+}
+
+// The gap notice is the LAST line of an answer — after the blocks, or after the no-match line — so
+// the tail a reader scans says "gap" before any low-confidence note can pass for memory. Shared by
+// the recall tool and the workflow bundle so both answers end the same way.
+export function appendGapNotice(text: string, gap: boolean): string {
+  return gap ? `${text}\n${RECALL_GAP_NOTICE}` : text;
 }
 
 export function formatStagingList(

@@ -3,7 +3,10 @@ import { Database } from "bun:sqlite";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { mapLayoutOf } from "./corpus";
 import { runGit, initRepo } from "./git";
+import type { MapSection } from "./map/map-section";
+import { writeMapSection } from "./map/map-store";
 import { serializeNote } from "./note";
 import type { Note, NoteFrontmatter } from "./note";
 import { rebuild } from "./index-db";
@@ -94,6 +97,7 @@ async function buildProjectRepo(fileNames: string[]): Promise<{ projectRoot: str
 async function setupIndex(
   specs: NoteSpec[],
   embeddings: EmbeddingsClient,
+  sections: MapSection[] = [],
 ): Promise<{ indexPath: string; eventsDir: string }> {
   const { projectRoot, commit } = await buildProjectRepo(specs.map((spec) => spec.anchor));
   const corpusDir = mkdtempSync(join(tmpdir(), "mneme-threshold-"));
@@ -108,6 +112,13 @@ async function setupIndex(
     };
     writeFileSync(join(notesDir, `${spec.id}.md`), serializeNote(note));
   }
+  const mapDir = join(corpusDir, "map");
+  mkdirSync(join(mapDir, "domains"), { recursive: true });
+  mkdirSync(join(mapDir, "flows"));
+  // Sections take the repo's real HEAD as their commit, exactly as the notes above do.
+  for (const section of sections) {
+    writeMapSection(mapLayoutOf(mapDir), { ...section, frontmatter: { ...section.frontmatter, commit } });
+  }
   const indexPath = join(corpusDir, "index.db");
   const buildEventsDir = mkdtempSync(join(tmpdir(), "mneme-threshold-build-"));
   const eventWriter = new EventWriter(buildEventsDir, {
@@ -115,7 +126,7 @@ async function setupIndex(
     mnemeVersion: "0.1.0",
     clock: FIXED_CLOCK,
   });
-  await rebuild({ indexPath, notesDir, mapDir: join(corpusDir, "map"), projectRoot, embeddings, eventWriter, clock: FIXED_CLOCK });
+  await rebuild({ indexPath, notesDir, mapDir, projectRoot, embeddings, eventWriter, clock: FIXED_CLOCK });
   return { indexPath, eventsDir };
 }
 
@@ -235,5 +246,57 @@ describe("recall fts bypass", () => {
     expect(kept.cosine).toBe(0);
     expect(kept.cosine!).toBeLessThan(RECALL_BUNDLE_COSINE_THRESHOLD);
     expect(kept.lowConfidence).toBe(false);
+  });
+});
+
+// The gap is decided on the same float-exact boundary as the cut: exactly 0.35 is memory, a hair
+// below is the floor — shown, but a gap all the same.
+describe("recall memory gap", () => {
+  const query = "payment refund";
+  const atThreshold: NoteSpec = { id: ulid(0), body: "zebra quokka wombat burrow", anchor: "src/kept.ts", components: [1, 1, 3, 2, 1] };
+  const justBelow: NoteSpec = { id: ulid(1), body: "yak marmot lemur savanna", anchor: "src/sibling.ts", components: [1, 1, 3, 2, 1, 0.25] };
+
+  function domainSection(body: string): MapSection {
+    return { frontmatter: { id: "payments", kind: "domain", anchors: [], depends_on: [], terms: [], commit: "0000000" }, body };
+  }
+
+  test("a note exactly on the threshold closes the gap", async () => {
+    const client = keyedClient(vectorMap(query, [atThreshold]));
+    const { indexPath, eventsDir } = await setupIndex([atThreshold], client);
+
+    const result = await recall(openRecall(indexPath, eventsDir, client), query, 100000, "tool-call", []);
+
+    expect(result.notes.map((note) => [note.id, note.cosine, note.lowConfidence])).toEqual([
+      [atThreshold.id, RECALL_BUNDLE_COSINE_THRESHOLD, false],
+    ]);
+    expect(result.gap).toBe(false);
+    expect(lastRecallEvent(eventsDir).gap).toBe(false);
+  });
+
+  test("a note just below the threshold comes back low-confidence and the gap stays open", async () => {
+    const client = keyedClient(vectorMap(query, [justBelow]));
+    const { indexPath, eventsDir } = await setupIndex([justBelow], client);
+
+    const result = await recall(openRecall(indexPath, eventsDir, client), query, 100000, "tool-call", []);
+
+    expect(result.notes.map((note) => [note.id, note.lowConfidence])).toEqual([[justBelow.id, true]]);
+    expect(result.notes[0]!.cosine!).toBeLessThan(RECALL_BUNDLE_COSINE_THRESHOLD);
+    expect(result.gap).toBe(true);
+    expect(lastRecallEvent(eventsDir).gap).toBe(true);
+  });
+
+  test("a section above the threshold closes the gap while every note stays below it", async () => {
+    const sectionBody = "koala dingo emu outback";
+    const byText = vectorMap(query, [justBelow]);
+    byText.set(sectionBody, [1, 1, 3, 2, 1]);
+    const client = keyedClient(byText);
+    const { indexPath, eventsDir } = await setupIndex([justBelow], client, [domainSection(sectionBody)]);
+
+    const result = await recall(openRecall(indexPath, eventsDir, client), query, 100000, "tool-call", []);
+
+    expect(result.sections.map((section) => [section.id, section.cosine])).toEqual([["payments", RECALL_BUNDLE_COSINE_THRESHOLD]]);
+    expect(result.notes.map((note) => note.lowConfidence)).toEqual([true]);
+    expect(result.gap).toBe(false);
+    expect(lastRecallEvent(eventsDir).gap).toBe(false);
   });
 });

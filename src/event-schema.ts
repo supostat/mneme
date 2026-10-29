@@ -263,6 +263,9 @@ const recallEvent = z.object({
   // shape so a pre-21 event still validates; returned_ids and candidates stay notes only.
   domains: z.array(z.string()).optional(),
   sections: z.array(recallSectionCandidate).max(RECALL_CANDIDATE_WINDOW).optional(),
+  // v21: true when neither a note nor a section passed the threshold (the memory-gap notice was
+  // shown). Optional: a pre-21 event has no key and reads as "not instrumented", never as false.
+  gap: z.boolean().optional(),
 });
 
 const rememberEvent = z.object({

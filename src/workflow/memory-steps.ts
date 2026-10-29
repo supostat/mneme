@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { runGit } from "../git";
 import { indexNeedsRebuild, openReadOnlyDatabase, rebuild } from "../index-db";
-import { makeNonce, noteFence, renderMapSectionBlock } from "../mcp-rendering";
+import { appendGapNotice, makeNonce, noteFence, renderMapSectionBlock } from "../mcp-rendering";
 import { isAnchorNeutral, isNoteId, parseNote } from "../note";
 import type { Note, NoteType } from "../note";
 import { RecallDomainError, passesRecallThreshold, recall } from "../recall";
@@ -56,6 +56,9 @@ export interface RecallBundle {
   // curator set when the section was parsed, so no read-side re-check is needed.
   sections: RecalledSection[];
   degraded: boolean;
+  // recall's own verdict: nothing above the threshold, in either population. The bundle keeps only
+  // threshold-passing notes, so a gap is exactly a bundle with no note and no section.
+  gap: boolean;
 }
 
 export async function compileRecallBundle(
@@ -80,11 +83,18 @@ export async function compileRecallBundle(
     }
     notes.push(await buildBundleNote(deps, survivor, request.anchorPaths));
   }
-  return { query, notes: rankBundleNotes(notes), sections: recalled.sections, degraded: recalled.degraded };
+  return {
+    query,
+    notes: rankBundleNotes(notes),
+    sections: recalled.sections,
+    degraded: recalled.degraded,
+    gap: recalled.gap,
+  };
 }
 
-// Map sections first, then the notes, every block under one nonce: the same shape the recall tool
-// prints, so the plugin reads a bundle and a tool answer with one parser.
+// Map sections first, then the notes, every block under one nonce, the gap notice last when there
+// is one: the same shape the recall tool prints, so the plugin reads a bundle and a tool answer
+// with one parser.
 export function formatRecallBundle(bundle: RecallBundle): string {
   const notice = bundle.degraded
     ? `${RETRIEVED_DATA_NOTICE} Recall ran in degraded mode.`
@@ -95,7 +105,7 @@ export function formatRecallBundle(bundle: RecallBundle): string {
     ...bundle.sections.map((section) => renderMapSectionBlock(section, nonce)),
     ...bundle.notes.map((note) => `${fence.begin}\n${noteHeader(note)}\n${note.body}\n${fence.end}`),
   ];
-  return [notice, ...blocks].join("\n");
+  return appendGapNotice([notice, ...blocks].join("\n"), bundle.gap);
 }
 
 // Every artifact is checked — structure, body length, foreign markup — before the first remember, so

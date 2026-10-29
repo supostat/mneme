@@ -630,13 +630,13 @@ describe("recall candidate logging", () => {
     for (const value of Object.values(timings)) expect(value).toBeGreaterThanOrEqual(0);
   });
 
-  test("RecallResult exposes exactly returnedIds, notes, sections and degraded", async () => {
+  test("RecallResult exposes exactly returnedIds, notes, sections, degraded and gap", async () => {
     const specs: NoteSpec[] = [{ id: ulid(0), body: "payment refund ledger", anchor: "src/pay.ts" }];
     const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
 
     const result = await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "payment refund", 100000, "tool-call", []);
 
-    expect(Object.keys(result).sort()).toEqual(["degraded", "notes", "returnedIds", "sections"]);
+    expect(Object.keys(result).sort()).toEqual(["degraded", "gap", "notes", "returnedIds", "sections"]);
     expect(result.notes.length).toBeGreaterThan(0);
     for (const note of result.notes) {
       expect(Object.keys(note).sort()).toEqual(["body", "cosine", "ftsRank", "id", "lowConfidence"]);

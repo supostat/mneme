@@ -23,7 +23,7 @@ import { HARVEST_SOURCE, HarvestArtifactError } from "./harvest-artifacts";
 import type { PhaseArtifact } from "./harvest-artifacts";
 import { MemoryStepError, compileRecallBundle, formatRecallBundle, harvestPhase } from "./memory-steps";
 import type { RecallBundle } from "./memory-steps";
-import { RECALL_BUNDLE_COSINE_THRESHOLD } from "../recall";
+import { RECALL_BUNDLE_COSINE_THRESHOLD, RECALL_GAP_NOTICE } from "../recall";
 import { writeMapSection } from "../map/map-store";
 import type { MapSection } from "../map/map-section";
 
@@ -209,12 +209,15 @@ describe("compileRecallBundle happy path", () => {
 
     expect(bundle.notes.map((note) => note.id)).toEqual([ulid(100)]);
     expect(bundle.degraded).toBe(false);
+    expect(bundle.gap).toBe(false);
+    expect(formatRecallBundle(bundle)).not.toContain(RECALL_GAP_NOTICE);
     expect(bundle.query).toBe("payment refund handling\nsrc/a.ts");
     const recallEvents = eventsOfType(deps, "recall");
     expect(recallEvents.length).toBe(1);
     expect(recallEvents[0]!.query).toBe("payment refund handling\nsrc/a.ts");
     expect(recallEvents[0]!.budget).toBe(2000);
     expect(recallEvents[0]!.origin).toBe("workflow-step");
+    expect(recallEvents[0]!.gap).toBe(false);
   });
 });
 
@@ -600,6 +603,22 @@ describe("compileRecallBundle empty corpus", () => {
     expect(await harvestPhase(deps, [])).toEqual([]);
     expect(readdirSync(deps.corpus.stagingDir)).toEqual([]);
   });
+
+  test("an empty bundle ends with the memory-gap notice, exactly as the recall tool's answer does", async () => {
+    const { projectRoot } = await buildProjectRepo();
+    const deps = await makeDeps(projectRoot, offlineClient());
+
+    const bundle = await compileRecallBundle(deps, {
+      phaseDescription: "anything at all",
+      anchorPaths: [],
+      domains: [],
+      budget: 2000,
+    });
+
+    expect(bundle.gap).toBe(true);
+    expect(formatRecallBundle(bundle).split("\n").at(-1)).toBe(RECALL_GAP_NOTICE);
+    expect(eventsOfType(deps, "recall")[0]!.gap).toBe(true);
+  });
 });
 
 describe("harvestPhase green path", () => {
@@ -892,6 +911,7 @@ describe("formatRecallBundle fences", () => {
     const bundle: RecallBundle = {
       query: "q",
       degraded: false,
+      gap: false,
       sections: [],
       notes: [
         {

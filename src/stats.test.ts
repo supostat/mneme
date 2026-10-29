@@ -40,6 +40,18 @@ function recallEvent(
   });
 }
 
+// A v21 recall carries gap; an older one has no key at all — the metric must tell the two apart.
+function recallGapEvent(gap: boolean | undefined): StoredEvent {
+  return storedEvent({
+    type: "recall",
+    query: "q",
+    budget: 2000,
+    returned_ids: [],
+    degraded: false,
+    ...(gap === undefined ? {} : { gap }),
+  });
+}
+
 function stagedEvent(
   noteId: string,
   noteType: string,
@@ -236,6 +248,20 @@ describe("computeStats noop confirmations and degradation", () => {
   });
 });
 
+describe("computeStats memory gaps", () => {
+  test("counts gaps over instrumented recalls only: an event without the key leaves the denominator", () => {
+    const summary = computeStats([recallGapEvent(true), recallGapEvent(false), recallGapEvent(undefined)]);
+
+    expect(summary.memoryGaps).toEqual({ numerator: 1, denominator: 2, ratio: 0.5 });
+  });
+
+  test("a log of uninstrumented recalls renders n/a, never 0%", () => {
+    const rendered = formatStats(computeStats([recallGapEvent(undefined), recallGapEvent(undefined)]));
+
+    expect(rendered).toContain("(n) Memory gaps: n/a (0 instrumented recall events)");
+  });
+});
+
 describe("computeStats ratio is null iff the denominator is zero", () => {
   test("an empty log yields null ratios", () => {
     const summary = computeStats([]);
@@ -289,6 +315,7 @@ describe("formatStats renders degenerate ratios honestly", () => {
     expect(rendered).toContain("Cross-session reuse: n/a (0 accepted notes)");
     expect(rendered).toContain("Never retrieved: n/a (0 accepted notes)");
     expect(rendered).toContain("Recall degradation: n/a (0 recall events)");
+    expect(rendered).toContain("Memory gaps: n/a (0 instrumented recall events)");
     expect(rendered).toContain("NOOP confirmations: 0 (0 distinct notes) (write-path re-encounters of existing notes)");
   });
 

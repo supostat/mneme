@@ -1,7 +1,8 @@
 # Mneme proof metrics
 
 The `stats` MCP tool reports proof metrics about the corpus **from the event log
-alone** — no note bodies, no LLM, no index: the three proof questions below, two corpus
+alone** — no note bodies, no LLM, no index: the three proof questions below, the memory-gap
+share (n), two corpus
 signals (live corpus size by type, and NOOP write-path confirmations), review-friction signals
 (staged->resolved latency, review batch sizes, and per-tool errors), human-gate signals
 (resolution outcomes, recommendation agreement, menu coverage, active review latency), and the
@@ -519,6 +520,36 @@ measurement dies; the same neutrality rule already governs (h) agreement.
 > optional in the shape (the v4 extend-never-repurpose rule), so pre-v16 events restore unchanged —
 > a recall without the key means "the bundle composition is unknown", which is **not** an empty
 > bundle, and a harvest without the key stays outside the coverage numerator.
+
+## (n) How often does recall come back with nothing above the threshold?
+
+**Definition.** A `recall` event's `gap` is `true` when neither a note nor a map section passed the
+relevance threshold — the agent was shown the memory-gap notice (`RECALL_GAP_NOTICE`, the last line
+of that answer). The cold-start floor's low-confidence notes do **not** close a gap: they are shown,
+but they are not memory above the threshold. Numerator = recalls with `gap == true`; denominator =
+recalls that **carry the key** (schema v21 and later). A pre-v21 recall has no `gap` key and says
+nothing about the question, so it leaves the denominator — reading its absence as "no gap" would
+understate the share on exactly the oldest logs. A log with no instrumented recall reports `n/a`,
+never `0%`.
+
+Read it beside (b): a high gap share next to a low never-retrieved share means the questions asked
+lie outside what the corpus holds — the signal that something should be recorded, not that recall
+is broken. The `stats` tool prints this line right after (c), because it is a recall question; the
+letter is (n) because the report numbers its lines in one sequence across every renderer and
+(d)–(m) were already taken.
+
+```sh
+cat "$EVENTS"/*.jsonl | jq -s '
+  ([.[] | select(.type=="recall" and (.gap|type)=="boolean")]) as $instrumented
+  | {numerator: ([$instrumented[] | select(.gap == true)] | length),
+     denominator: ($instrumented | length)}'
+```
+
+> **Schema note (v21).** The `recall` event gains `domains` (the map-domain filter the call rode on,
+> `[]` for none), `sections` (the map-section channel's candidates, each with a `returned` flag) and
+> `gap`. `returned_ids` and `candidates` stay notes only, so (a), (b) and the offline replay keep
+> their meaning. Every new key is optional in the shape: a pre-v21 event reads as "not
+> instrumented" for (n), never as a recall without a gap.
 
 ## Offline replay
 
