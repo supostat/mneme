@@ -106,7 +106,7 @@ const LIVE_EVENTS: Record<string, EventInput> = {
     timings: { embed_ms: 1, fts_ms: 0, fusion_ms: 2 },
     candidates: [FULL_CANDIDATE],
   },
-  remember: { type: "remember", note_id: "n1", note_type: "pattern", body_len: 12, anchors_n: 1, tags_n: 0, source: "mcp", dedup: DEDUP_ADD },
+  remember: { type: "remember", note_id: "n1", note_type: "pattern", body_len: 12, anchors_n: 1, tags_n: 0, tags: [], source: "mcp", dedup: DEDUP_ADD },
   staging_resolve_accept: { type: "staging_resolve", note_id: "n1", decision: "accept", staged_to_resolved_ms: 0, commit: "abc1234", superseded_id: null, suggested: null, accepted_body_len: 12, accepted_anchors_n: 1, menu: MENU_CURATION },
   staging_resolve_reject: { type: "staging_resolve", note_id: "n1", decision: "reject", staged_to_resolved_ms: null, commit: null, superseded_id: null, suggested: null, accepted_body_len: null, accepted_anchors_n: null },
   staging_resolve_supersede: { type: "staging_resolve", note_id: "n1", decision: "supersede", staged_to_resolved_ms: 5, commit: "abc1234", superseded_id: "n0", suggested: true, accepted_body_len: 20, accepted_anchors_n: 2, menu: null },
@@ -115,7 +115,7 @@ const LIVE_EVENTS: Record<string, EventInput> = {
   rebuild_failed: { type: "rebuild_failed", message: "unable to open database file" },
   map_section_put: { type: "map_section_put", id: "billing", kind: "domain", body_len: 24, anchors_n: 1, depends_on_n: 0, terms_n: 2, commit: "abc1234" },
   map_section_deleted: { type: "map_section_deleted", id: "billing", kind: "domain", commit: "abc1234" },
-  session_start: { type: "session_start" },
+  session_start: { type: "session_start", pid: 4242 },
   session_end: { type: "session_end" },
   tool_error: { type: "tool_error", tool: "recall", message: "boom" },
   workflow_run_started: {
@@ -190,8 +190,8 @@ const AGENT_VOTE_MIRROR = {
 } as const satisfies Record<Vote, true>;
 
 describe("event-schema constants", () => {
-  test("SCHEMA_VERSION is 21", () => {
-    expect(SCHEMA_VERSION).toBe(21);
+  test("SCHEMA_VERSION is 22", () => {
+    expect(SCHEMA_VERSION).toBe(22);
   });
 
   test("the unclipped-harvest boundary is fixed at 19 and never ahead of the producer", () => {
@@ -420,5 +420,63 @@ describe("workflow_step_applied usefulness keys (v16)", () => {
 
     expect(eventSchema.safeParse(badBundle).success).toBe(false);
     expect(eventSchema.safeParse(badUsed).success).toBe(false);
+  });
+});
+
+describe("diary facts keys (v22)", () => {
+  const STAGED_NOTE = { id: "01ARZ3NDEKTSV4RRFFQ69G5FB0", type: "decision" };
+
+  test("a remember carrying its tags validates, and one whose tags is not an array fails", () => {
+    const tagged = stamp({ ...LIVE_EVENTS["remember"]!, tags_n: 2, tags: ["diary", "run:r1"] });
+    const scalar = stamp({ ...LIVE_EVENTS["remember"]!, tags: "diary" });
+
+    expect(eventSchema.safeParse(tagged).success).toBe(true);
+    expect(eventSchema.safeParse(scalar).success).toBe(false);
+  });
+
+  test("a producer remember without tags fails: the v22 writer always stamps them", () => {
+    const { tags: _omitted, ...withoutTags } = LIVE_EVENTS["remember"]!;
+    expect(eventSchema.safeParse(stamp(withoutTags)).success).toBe(false);
+  });
+
+  test("a session_start must name a positive integer pid", () => {
+    expect(eventSchema.safeParse(stamp({ type: "session_start" })).success).toBe(false);
+    expect(eventSchema.safeParse(stamp({ type: "session_start", pid: 12.5 })).success).toBe(false);
+    expect(eventSchema.safeParse(stamp({ type: "session_start", pid: 0 })).success).toBe(false);
+  });
+
+  test("a recall application validates with its gap verdict", () => {
+    const stamped = stamp({ ...LIVE_EVENTS["workflow_step_applied_recall"]!, bundle_notes: [], gap: true });
+
+    expect(eventSchema.safeParse(stamped).success).toBe(true);
+    expect(workflowStepAppliedRestore.safeParse(stamped).success).toBe(true);
+  });
+
+  test("a harvest application validates with the notes it staged and with an explicitly empty list", () => {
+    const harvest = { ...LIVE_EVENTS["workflow_step_applied_recall"]!, result_kind: "harvest", harvested_n: 1 };
+    const staged = stamp({ ...harvest, staged_notes: [STAGED_NOTE], gap: null });
+    const nothingStaged = stamp({ ...harvest, harvested_n: 0, staged_notes: [], gap: null });
+
+    expect(eventSchema.safeParse(staged).success).toBe(true);
+    expect(eventSchema.safeParse(nothingStaged).success).toBe(true);
+    expect(workflowStepAppliedRestore.safeParse(staged).success).toBe(true);
+  });
+
+  // The v4 extend rule in force: an application stamped before v22 carries neither key, still
+  // restores, and the absence survives rather than being defaulted.
+  test("a pre-v22 application carries neither gap nor staged_notes and still restores", () => {
+    const stamped = { ...stamp(LIVE_EVENTS["workflow_step_applied_recall"]!), schema_version: 21 };
+
+    expect("gap" in stamped).toBe(false);
+    expect("staged_notes" in stamped).toBe(false);
+    expect(workflowStepAppliedRestore.safeParse(stamped).success).toBe(true);
+  });
+
+  test("a staged note without a type and a non-boolean gap are refused", () => {
+    const badStaged = stamp({ ...LIVE_EVENTS["workflow_step_applied_recall"]!, staged_notes: [{ id: STAGED_NOTE.id }] });
+    const badGap = stamp({ ...LIVE_EVENTS["workflow_step_applied_recall"]!, gap: "yes" });
+
+    expect(eventSchema.safeParse(badStaged).success).toBe(false);
+    expect(eventSchema.safeParse(badGap).success).toBe(false);
   });
 });

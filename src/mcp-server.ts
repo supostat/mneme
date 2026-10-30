@@ -22,7 +22,7 @@ import { mapDelete, mapList, mapPut, showMapSection } from "./map/map-tools";
 import { recall } from "./recall";
 import { NOTE_TYPES } from "./note";
 import type { NoteType } from "./note";
-import { remember, stagingList, stagingResolve } from "./staging";
+import { remember, REMEMBER_TOOL_SOURCE, stagingList, stagingResolve } from "./staging";
 import { adoptCorpus } from "./corpus-adopt";
 import { listReanchorRequests, listRetagRequests, listRetireRequests, noteReanchor, noteRetire, notesList, showNote } from "./curation";
 import { computeStats, formatStats } from "./stats";
@@ -66,7 +66,6 @@ import {
 } from "./workflow/mcp-tools";
 
 const MNEME_VERSION = packageJson.version;
-const REMEMBER_SOURCE = "mcp";
 
 const REMEMBER_DESCRIPTION =
   "Stage a note for HUMAN review. This does NOT save or publish the note; it only queues it. " +
@@ -272,6 +271,12 @@ export function createServer(options: CreateServerOptions): McpServer {
   return buildServer(options).server;
 }
 
+// The session's opening event names the server process, so a reader of the log can tell this
+// session — still running, never closed — from one cut off before it could write its session_end.
+export function appendSessionStart(eventWriter: EventWriter): void {
+  eventWriter.append({ type: "session_start", pid: process.pid });
+}
+
 // A once-guarded session_end appender. session_end is best-effort: stdio can die on pipe close, and
 // SIGINT/SIGTERM/stdin-end can all fire, so the returned function must be idempotent.
 export function createSessionEndHandler(eventWriter: EventWriter): () => void {
@@ -388,7 +393,7 @@ async function rememberTool(
     body: args.body,
     anchors: args.anchors,
     tags: args.tags,
-    source: REMEMBER_SOURCE,
+    source: REMEMBER_TOOL_SOURCE,
     menu: args.menu,
   });
   return textResult(formatRemember(result));
@@ -525,7 +530,7 @@ function resolveDecision(args: {
 async function main(): Promise<void> {
   const { server, context } = buildServer({ projectRoot: process.cwd() });
   const { eventWriter } = await context();
-  eventWriter.append({ type: "session_start" });
+  appendSessionStart(eventWriter);
   const endSession = createSessionEndHandler(eventWriter);
   const shutdown = (): void => {
     endSession();

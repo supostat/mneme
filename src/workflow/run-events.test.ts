@@ -89,6 +89,8 @@ function application(result: StepResult, attempt: number | null = null): StepApp
     dedupRejected: null,
     bundleNotes: null,
     usedNotes: null,
+    gap: null,
+    stagedNotes: null,
   };
 }
 

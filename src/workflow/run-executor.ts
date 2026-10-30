@@ -48,6 +48,8 @@ export async function runEngineSteps(deps: StagingDeps, active: ReadableRun): Pr
       dedupRejected: null,
       bundleNotes,
       usedNotes: null,
+      gap: bundle.gap,
+      stagedNotes: null,
     });
     sections.push(`Recall bundle for phase "${directive.phaseId}":\n${formatRecallBundle(bundle)}`);
     directive = pendingDirectiveOf(active);
@@ -77,6 +79,8 @@ export async function applyGatedFinalStep(
     dedupRejected: null,
     bundleNotes: null,
     usedNotes: null,
+    gap: null,
+    stagedNotes: null,
   });
   const gateLabel = `${pending.phaseId}/${pending.stepId} (attempt ${pending.attempt})`;
   const verdictLines = [
@@ -189,7 +193,9 @@ export async function applyHarvest(
   // Crash window between harvestPhase and the append is accepted: with live embeddings a replayed
   // harvest dedups to a noop; in degraded mode the duplicate staged note is caught by human review.
   const results = await harvestPhase(deps, artifacts);
-  const stagedCount = results.filter((outcome) => outcome.outcome === "staged").length;
+  const stagedNotes = results.flatMap((outcome) =>
+    outcome.outcome === "staged" ? [{ id: outcome.noteId, type: String(outcome.type) }] : [],
+  );
   const rejected = results.flatMap((outcome) =>
     outcome.outcome === "noop" ? [{ nearestId: outcome.existingId, similarity: outcome.similarity }] : [],
   );
@@ -199,17 +205,19 @@ export async function applyHarvest(
     result,
     attempt: null,
     gates: null,
-    harvestedCount: stagedCount,
+    harvestedCount: stagedNotes.length,
     dedupRejected: rejected,
     bundleNotes: null,
     // Absence and emptiness are recorded differently: no field means the caller was not
     // instrumented, [] means it looked and found nothing useful.
     usedNotes: usedNotes ?? null,
+    gap: null,
+    stagedNotes,
   });
   const rejectionNotice =
     rejected.length === 0 ? "" : ` ${rejected.length} artifact(s) were dropped as duplicates of existing notes;`;
   return [
-    `Harvested ${stagedCount} artifact(s) for phase "${pending.phaseId}";${rejectionNotice} the phase is closed.`,
+    `Harvested ${stagedNotes.length} artifact(s) for phase "${pending.phaseId}";${rejectionNotice} the phase is closed.`,
   ];
 }
 

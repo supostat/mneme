@@ -428,6 +428,20 @@ describe("gate-metrics menu and accepted measures (v14)", () => {
     expect(remembered[0]!.menu).toEqual(fanMenu);
     expect(remembered[1]!.menu).toBeNull();
   });
+
+  test("remember carries the note's tags verbatim on its event, and [] for a note without tags", async () => {
+    const projectRoot = await buildProjectRepo();
+    const deps = await makeDeps(projectRoot, offlineClient(), sequentialIds());
+
+    await remember(deps, { type: "decision", body: "run retro", anchors: [], tags: ["diary", "run:01ARZ3NDEKTSV4RRFFQ69G5FAV"], source: "mcp" });
+    await remember(deps, { type: "decision", body: "anchored only", anchors: ["src/a.ts"], source: "mcp" });
+
+    const remembered = eventsOfType(deps.corpus, "remember");
+    expect(remembered[0]!.tags).toEqual(["diary", "run:01ARZ3NDEKTSV4RRFFQ69G5FAV"]);
+    expect(remembered[0]!.tags_n).toBe(2);
+    expect(remembered[1]!.tags).toEqual([]);
+    expect(remembered[1]!.tags_n).toBe(0);
+  });
 });
 
 describe("stagingResolve supersede", () => {

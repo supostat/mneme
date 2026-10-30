@@ -25,6 +25,10 @@ import { isTracked } from "./staleness";
 
 export class StagingError extends Error {}
 
+// The source a remember carries when the agent calls the tool by hand — the harvest stamps its own
+// (HARVEST_SOURCE). Exported so the readers that tell the two apart never import the server.
+export const REMEMBER_TOOL_SOURCE = "mcp";
+
 export interface StagingDeps {
   corpus: Corpus;
   projectRoot: string;

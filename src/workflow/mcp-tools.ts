@@ -437,6 +437,8 @@ async function applyIncomingStepResult(
     dedupRejected: null,
     bundleNotes: null,
     usedNotes: null,
+    gap: null,
+    stagedNotes: null,
   });
   return [`Applied ${submitted.outcome} for ${pending.phaseId}/${pending.stepId} (attempt ${pending.attempt}); gates were not run.`];
 }

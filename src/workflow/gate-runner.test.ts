@@ -730,6 +730,8 @@ describe("the gate payload carries numbers, never the output", () => {
       dedupRejected: null,
       bundleNotes: null,
       usedNotes: null,
+      gap: null,
+      stagedNotes: null,
     });
     const [criterion] = (payload["gates"] as { criteria: Array<Record<string, unknown>> }).criteria;
 

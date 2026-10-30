@@ -42,6 +42,7 @@ export function emitRemember(
     body_len: [...input.body].length,
     anchors_n: input.anchors.length,
     tags_n: (input.tags ?? []).length,
+    tags: input.tags ?? [],
     source: input.source,
     dedup,
     menu: input.menu ?? null,

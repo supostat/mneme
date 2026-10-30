@@ -701,3 +701,90 @@ describe("runEngineSteps scopes the phase's bundle by its recall domains", () =>
     expect(active.bundleNotesByPhase).toEqual({});
   });
 });
+
+describe("the run's own events name its bundle gap and its staged notes (v22)", () => {
+  function appliedOfKind(deps: StagingDeps, kind: string): StoredEvent[] {
+    return readEvents(deps.corpus.eventsDir).filter(
+      (event: StoredEvent) => event.type === "workflow_step_applied" && event.result_kind === kind,
+    );
+  }
+
+  test("a recall on an empty corpus records gap true, and no other application carries a gap or staged notes", async () => {
+    const { projectRoot } = await buildProjectRepo();
+    const deps = await makeDeps(projectRoot);
+    const active = activeRunFrom(twoPhaseDefinition());
+
+    await closePhaseOne(deps, active);
+
+    const [recall] = appliedOfKind(deps, "recall");
+    const [gated] = appliedOfKind(deps, "execute_step");
+    const [harvest] = appliedOfKind(deps, "harvest");
+    expect(recall!.gap).toBe(true);
+    expect(recall!.staged_notes).toBeNull();
+    expect(gated!.gap).toBeNull();
+    expect(gated!.staged_notes).toBeNull();
+    expect(harvest!.gap).toBeNull();
+  });
+
+  test("a recall whose bundle carries a note above the threshold records gap false", async () => {
+    const { projectRoot, commit } = await buildProjectRepo();
+    const deps = await makeDeps(projectRoot);
+    writeAcceptedNote(deps, "01ARZ3NDEKTSV4RRFFQ69G5FB7", "phase one module ranking probe closure evidence", commit);
+    await rebuild({
+      indexPath: deps.corpus.indexPath,
+      notesDir: deps.corpus.notesDir, mapDir: deps.corpus.mapDir,
+      projectRoot,
+      embeddings: deps.embeddings,
+      eventWriter: deps.eventWriter,
+      clock: fixedClock,
+    });
+    const active = activeRunFrom(twoPhaseDefinition());
+
+    const sections = await runEngineSteps(deps, active);
+
+    expect(sections.join("\n")).not.toContain("No memory above the relevance threshold");
+    expect(appliedOfKind(deps, "recall")[0]!.gap).toBe(false);
+  });
+
+  test("a harvest names exactly the notes it staged with their types — a dedup noop is not among them", async () => {
+    const { projectRoot, commit } = await buildProjectRepo();
+    const deps = await makeDeps(projectRoot);
+    writeAcceptedNote(deps, ulid(200), "Decision: use sqlite for the index\nRationale: single-file disposable cache", commit);
+    await rebuild({
+      indexPath: deps.corpus.indexPath,
+      notesDir: deps.corpus.notesDir, mapDir: deps.corpus.mapDir,
+      projectRoot,
+      embeddings: deps.embeddings,
+      eventWriter: deps.eventWriter,
+      clock: fixedClock,
+    });
+    const active = activeRunFrom(twoPhaseDefinition());
+    await runEngineSteps(deps, active);
+    await applyGatedFinalStep(deps, active, pendingDirectiveOf(active) as ExecuteStepDirective, []);
+
+    await applyHarvest(deps, active, pendingDirectiveOf(active) as HarvestDirective, [
+      { kind: "decision", decision: "use sqlite for the index", rationale: "single-file disposable cache", anchors: ["src/a.ts"] },
+      { kind: "decision", decision: "keep flat files as the corpus truth", rationale: "the index is a disposable cache", anchors: ["src/a.ts"] },
+      { kind: "fixed_test", test: "restore keeps the gate history", failure: "history dropped on pass", fix: "clear only on pass", anchors: ["src/a.ts"] },
+    ]);
+
+    const stagedByRemember = readEvents(deps.corpus.eventsDir)
+      .filter((event: StoredEvent) => event.type === "remember" && (event.dedup as { outcome: string }).outcome !== "noop")
+      .map((event: StoredEvent) => ({ id: event.note_id, type: event.note_type }));
+    const [harvest] = appliedOfKind(deps, "harvest");
+    expect(stagedByRemember.map((note) => note.type)).toEqual(["decision", "bugfix"]);
+    expect(harvest!.staged_notes).toEqual(stagedByRemember);
+    expect(harvest!.harvested_n).toBe(2);
+    expect((harvest!.dedup_rejected as unknown[]).length).toBe(1);
+  });
+
+  test("a harvest that stages nothing records an empty list, not silence", async () => {
+    const { projectRoot } = await buildProjectRepo();
+    const deps = await makeDeps(projectRoot);
+    const active = activeRunFrom(twoPhaseDefinition());
+
+    await closePhaseOne(deps, active);
+
+    expect(appliedOfKind(deps, "harvest")[0]!.staged_notes).toEqual([]);
+  });
+});

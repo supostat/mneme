@@ -31,9 +31,18 @@ export interface UsedNoteRef {
   evidence: string;
 }
 
-// bundleNotes and usedNotes are three-valued on purpose: null means "this application says nothing
-// about it" (a non-recall / non-harvest kind, or an uninstrumented caller), while an empty array is
-// a positive statement — an empty bundle, or "nothing was useful".
+// One note a harvest actually staged (dedup noops never reach the queue, so they are not here). The
+// run's own event names its notes, so a reader joins their curation by id instead of guessing which
+// remember lines in the shared log belonged to this run.
+export interface StagedNoteRef {
+  id: string;
+  type: string;
+}
+
+// bundleNotes, usedNotes and stagedNotes are three-valued on purpose: null means "this application
+// says nothing about it" (a non-recall / non-harvest kind, or an uninstrumented caller), while an
+// empty array is a positive statement — an empty bundle, "nothing was useful", or "nothing staged".
+// gap is null for every application but a recall one.
 export interface StepApplication {
   result: StepResult;
   attempt: number | null;
@@ -42,6 +51,8 @@ export interface StepApplication {
   dedupRejected: DedupRejection[] | null;
   bundleNotes: BundleNoteRef[] | null;
   usedNotes: UsedNoteRef[] | null;
+  gap: boolean | null;
+  stagedNotes: StagedNoteRef[] | null;
 }
 
 export function runStartedPayload(
@@ -84,6 +95,11 @@ export function stepAppliedPayload(
       application.usedNotes === null
         ? null
         : application.usedNotes.map((note) => ({ id: note.id, evidence: note.evidence })),
+    gap: application.gap,
+    staged_notes:
+      application.stagedNotes === null
+        ? null
+        : application.stagedNotes.map((note) => ({ id: note.id, type: note.type })),
   };
 }
 

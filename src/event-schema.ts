@@ -116,7 +116,17 @@ import { z } from "zod";
 //       workflow_run_started.definition gains recall_domains {phaseId: [domain id]} beside
 //       recall_anchors. Every new key is optional in the shape (the v4 extend-never-repurpose rule):
 //       a pre-21 event restores unchanged, and a reader treats a missing gap as "not instrumented".
-export const SCHEMA_VERSION = 21;
+//  22 — diary facts: remember gains tags (the note's tags verbatim, [] for none — tags_n stays) so a
+//       reader can tell a diary entry from any other note; session_start gains pid (the server
+//       process) so a reader can tell a live session from one cut off without a session_end;
+//       workflow_step_applied gains gap on a recall application (the phase bundle's memory-gap
+//       verdict, null otherwise) and staged_notes [{id, type}] on a harvest application (the notes
+//       it actually staged — dedup noops excluded — null otherwise), so a run's notes and its
+//       bundles' gaps are read off the run's own events instead of inferred from neighbouring lines.
+//       Every new key is optional to a reader (the v4 extend-never-repurpose rule): an older event
+//       reads tags as [], a pid-less session as not live, and a missing gap / staged_notes as
+//       "not instrumented".
+export const SCHEMA_VERSION = 22;
 
 // The first schema version whose harvest bodies are guaranteed whole. A fixed boundary, not an alias
 // of SCHEMA_VERSION: later bumps must never move it, or old clipped bodies would read as whole.
@@ -278,6 +288,7 @@ const rememberEvent = z.object({
   body_len: z.number(),
   anchors_n: z.number(),
   tags_n: z.number(),
+  tags: z.array(z.string()),
   source: z.string(),
   dedup: dedupOutcome,
   menu: menuPayload.nullable().optional(),
@@ -450,10 +461,11 @@ const mapSectionDeletedEvent = z.object({
   commit: z.string(),
 });
 
-// session_start / session_end carry only the envelope. An ABSENT session_end means the session was
-// cut off (SIGKILL, kernel panic, killed terminal) — that is normal, NOT a data error; Phase-6
-// duration analysis pairs each session_start with its session_end and treats a missing end as open.
-const sessionStartEvent = z.object({ type: z.literal("session_start"), ...envelope });
+// session_end carries only the envelope; session_start adds the server's pid (v22). An ABSENT
+// session_end means the session was cut off (SIGKILL, kernel panic, killed terminal) — that is
+// normal, NOT a data error; Phase-6 duration analysis pairs each session_start with its session_end
+// and treats a missing end as open, and the pid is what tells such a session from a live one.
+const sessionStartEvent = z.object({ type: z.literal("session_start"), ...envelope, pid: z.number().int().positive() });
 const sessionEndEvent = z.object({ type: z.literal("session_end"), ...envelope });
 
 const toolErrorEvent = z.object({
@@ -567,6 +579,15 @@ const workflowStepAppliedPayload = {
   // [] and absence mean DIFFERENT things (see the v16 changelog).
   used_notes: z
     .array(z.object({ id: z.string(), evidence: z.string() }))
+    .nullable()
+    .optional(),
+  // v22: the recall application's memory-gap verdict — non-null only for result_kind "recall".
+  // Optional in the shape: a pre-v22 recall application has no key, read as "not instrumented".
+  gap: z.boolean().nullable().optional(),
+  // v22: the notes a harvest application actually staged — non-null only for result_kind
+  // "harvest"; [] means it staged none. Optional in the shape for the same pre-v22 reason.
+  staged_notes: z
+    .array(z.object({ id: z.string(), type: z.string() }))
     .nullable()
     .optional(),
 };
