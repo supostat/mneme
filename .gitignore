@@ -44,6 +44,8 @@ docs/*
 !docs/HANDOFF-RESOLVE-INDEX.md
 # Same reason: tests/handoff-map.test.ts pins the map storage, tools, recall and memory-gap contract.
 !docs/HANDOFF-MAP.md
+# Same reason: tests/handoff-diary.test.ts pins the diary tag, tool, brief-line and CLI contract.
+!docs/HANDOFF-DIARY.md
 
 # analytics package (generated, local-only)
 mneme-analytics/
