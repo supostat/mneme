@@ -8,7 +8,7 @@ silently: you accept, reject, or supersede staged notes yourself, so the corpus 
 memory you approved. Recall fuses full-text and vector search under a token budget and logs its
 candidates so retrieval decisions can be replayed and audited offline.
 
-The binary exposes eighteen MCP tools over stdio. Five are the memory surface: `remember` (stage a
+The binary exposes nineteen MCP tools over stdio. Five are the memory surface: `remember` (stage a
 note), `recall` (token-budgeted fused retrieval; `domains` narrows it to the notes linked to the
 named map domains and the sections around them, and an answer with nothing above the relevance
 threshold ends with a memory-gap notice), `staging_list` and `staging_resolve` (review and
@@ -37,7 +37,11 @@ is the read-only orientation — the current branch's run, its pending directive
 staged-note count, and runs elsewhere, as a map or (with `brief: true`) a single line — writing
 nothing: no event, no file, no stale mark. The same binary answers `mneme survey --brief` from a
 shell: the brief line when the current branch has an unfinished run, nothing otherwise, exit 0
-either way and writing nothing — the orientation line a SessionStart hook prints.
+either way and writing nothing — the orientation line a SessionStart hook prints. One feeds the
+agent's diary: `diary_facts` is read-only like the survey — given a `run_id` it returns the facts a
+retro of that finished run stands on (attempts, gate failures, harvest by kind, curation of the
+run's notes, whether a diary entry exists); without one it returns this session's memory gaps and
+the current branch's last finished run, or (with `brief: true`) the one line a prompt hook prints.
 
 The server ships as a single self-contained compiled binary, distributed through the separate
 `mneme-plugin` repository. This repository is the source; the binary is built from it by the bridge

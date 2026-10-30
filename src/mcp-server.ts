@@ -6,6 +6,7 @@ import { z } from "zod";
 import { homedir } from "node:os";
 import packageJson from "../package.json";
 import { runSurveyCli } from "./cli/survey";
+import { DIARY_FACTS_DESCRIPTION, DIARY_FACTS_INPUT, diaryFactsTool } from "./diary/diary-tool";
 import { resolveCorpus } from "./corpus";
 import type { Corpus } from "./corpus";
 import { EventWriter, readEvents } from "./events";
@@ -263,7 +264,7 @@ export function buildServer(options: CreateServerOptions): BuiltServer {
   }
 
   const server = new McpServer({ name: "mneme", version: MNEME_VERSION });
-  registerTools(server, context, buildStagingDeps, options.projectRoot, config, embeddings, clock);
+  registerTools(server, context, buildStagingDeps, options.projectRoot, config, embeddings, clock, sessionId);
   return { server, context };
 }
 
@@ -296,6 +297,7 @@ function registerTools(
   config: MnemeConfig,
   embeddings: EmbeddingsClient,
   clock: () => Date,
+  sessionId: string,
 ): void {
   server.registerTool("remember", { description: REMEMBER_DESCRIPTION, inputSchema: REMEMBER_INPUT }, (args) =>
     dispatch(context, "remember", (current) => rememberTool(buildStagingDeps(current), args)),
@@ -350,6 +352,9 @@ function registerTools(
   );
   server.registerTool("workflow_survey", { description: WORKFLOW_SURVEY_DESCRIPTION, inputSchema: WORKFLOW_SURVEY_INPUT }, (args) =>
     dispatch(context, "workflow_survey", (current) => workflowSurveyTool(buildStagingDeps(current), args)),
+  );
+  server.registerTool("diary_facts", { description: DIARY_FACTS_DESCRIPTION, inputSchema: DIARY_FACTS_INPUT }, (args) =>
+    dispatch(context, "diary_facts", (current) => diaryFactsTool({ corpus: current.corpus, projectRoot, sessionId }, args)),
   );
 }
 

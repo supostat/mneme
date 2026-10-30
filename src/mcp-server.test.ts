@@ -133,7 +133,7 @@ function expectNonceFences(text: string): void {
 // createServer draws the session id from idFactory first, so the first staged note is ulid(1).
 
 describe("mcp-server tool surface", () => {
-  test("exposes exactly the eighteen mneme tools", async () => {
+  test("exposes exactly the nineteen mneme tools", async () => {
     const client = await connect({
       projectRoot: await buildProjectRepo(),
       corpusHome: corpusHomeDir(),
@@ -148,6 +148,7 @@ describe("mcp-server tool surface", () => {
       "anchor_repair",
       "anchor_sweep",
       "corpus_adopt",
+      "diary_facts",
       "map_delete",
       "map_list",
       "map_put",
