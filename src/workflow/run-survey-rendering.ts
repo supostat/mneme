@@ -8,7 +8,7 @@ import type { RunSurvey } from "./run-survey";
 // print). Both derive from one inspectRuns result and reuse the survey sections the run-driving
 // tools already render, so the survey never describes state differently from the next step call.
 
-const READ_ONLY_NOTICE = "Nothing was written: no event, no file, no stale mark.";
+export const READ_ONLY_NOTICE = "Nothing was written: no event, no file, no stale mark.";
 
 export function renderSurveyMap(survey: RunSurvey, stagedNoteCount: number): string {
   return joinSections([
