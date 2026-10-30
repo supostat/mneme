@@ -42,6 +42,9 @@ agent's diary: `diary_facts` is read-only like the survey — given a `run_id` i
 retro of that finished run stands on (attempts, gate failures, harvest by kind, curation of the
 run's notes, whether a diary entry exists); without one it returns this session's memory gaps and
 the current branch's last finished run, or (with `brief: true`) the one line a prompt hook prints.
+The same binary answers `mneme diary --brief` from a shell with that line for the one live server
+session on this corpus (a degradation note when two are live), nothing when there is nothing to say,
+exit 0 either way and writing nothing — the line a UserPromptSubmit hook prints.
 
 The server ships as a single self-contained compiled binary, distributed through the separate
 `mneme-plugin` repository. This repository is the source; the binary is built from it by the bridge

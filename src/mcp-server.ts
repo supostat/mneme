@@ -5,7 +5,8 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { homedir } from "node:os";
 import packageJson from "../package.json";
-import { runSurveyCli } from "./cli/survey";
+import { runCli } from "./cli/dispatch";
+import { defaultIsProcessAlive } from "./diary/diary-session-facts";
 import { DIARY_FACTS_DESCRIPTION, DIARY_FACTS_INPUT, diaryFactsTool } from "./diary/diary-tool";
 import { resolveCorpus } from "./corpus";
 import type { Corpus } from "./corpus";
@@ -548,8 +549,9 @@ async function main(): Promise<void> {
 }
 
 // The binary has two entries. No argv is the MCP server: main() provisions the corpus and logs the
-// session before any tool call, exactly as before. Anything else is the survey CLI, branched HERE —
-// before main() — because the hook's survey must write nothing and main() writes by construction.
+// session before any tool call, exactly as before. Anything else is a hook subcommand (survey,
+// diary), branched HERE — before main() — because a hook must write nothing and main() writes by
+// construction.
 if (import.meta.main) {
   const argv = process.argv.slice(2);
   if (argv.length === 0) {
@@ -558,8 +560,9 @@ if (import.meta.main) {
       process.exit(1);
     });
   } else {
-    runSurveyCli(argv, {
+    runCli(argv, {
       projectRoot: process.cwd(),
+      isProcessAlive: defaultIsProcessAlive,
       stdout: (text) => {
         process.stdout.write(text);
       },
