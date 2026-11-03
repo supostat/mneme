@@ -1040,6 +1040,32 @@ describe("compileRecallBundle domain scope", () => {
     expect(recallEvents[0]!.domains).toEqual(["payments"]);
   });
 
+  test("the bundle opens with the named domain's map block although a flow that depends on it outranks it", async () => {
+    const { projectRoot, commit } = await buildProjectRepo();
+    const deps = await makeDeps(projectRoot, bagClient());
+    writeNote(deps, ulid(100), "pattern", "payment refund ledger reconciliation", ["src/a.ts"], commit);
+    writeMapSection(deps.corpus, {
+      frontmatter: { id: "payments", kind: "domain", anchors: ["src/a.ts"], depends_on: [], terms: [], commit },
+      body: "Money moves through this area.",
+    });
+    writeMapSection(deps.corpus, {
+      frontmatter: { id: "refund-path", kind: "flow", anchors: [], depends_on: ["payments"], terms: [], commit },
+      body: "A payment refund handling path.",
+    });
+
+    const bundle = await compileRecallBundle(deps, {
+      phaseDescription: "payment refund handling",
+      anchorPaths: [],
+      domains: ["payments"],
+      budget: 2000,
+    });
+
+    expect(bundle.sections.map((section) => section.id)).toEqual(["payments", "refund-path"]);
+    const lines = formatRecallBundle(bundle).split("\n");
+    expect(lines[1]).toMatch(/^----- BEGIN MNEME MAP [0-9a-f]{16} -----$/);
+    expect(lines[2]).toBe("id: payments");
+  });
+
   test("a domain stored by a put whose rebuild failed is in the bundle: the stale index is rebuilt before it is read", async () => {
     const { projectRoot, commit } = await buildProjectRepo();
     const deps = await makeDeps(projectRoot, bagClient());

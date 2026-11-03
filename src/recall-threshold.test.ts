@@ -347,7 +347,9 @@ describe("recall memory gap", () => {
       [ulid(0), true],
       [ulid(1), true],
     ]);
-    expect(result.sections).toEqual([]);
+    // The named domain rides as the frame although the query missed it; below the threshold, like
+    // the floor notes, it leaves the gap open.
+    expect(result.sections.map((section) => [section.id, section.ftsRank, section.cosine])).toEqual([["payments", null, 0]]);
     expect(result.gap).toBe(true);
     expect(lastRecallEvent(eventsDir).gap).toBe(true);
   });

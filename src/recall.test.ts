@@ -940,4 +940,107 @@ describe("recall map sections", () => {
     expect(readEvents(mapped.eventsDir)[0]!.candidates).toEqual(readEvents(bare.eventsDir)[0]!.candidates);
     expect(withoutSections.sections).toEqual([]);
   });
+
+  // billing's anchor is a live file but its commit is not in the project repository, so its
+  // staleness boost is the dead-anchor sink: in fused order it falls below everything relevant.
+  test("a named domain takes the first slot although a flow that depends on it outranks it", async () => {
+    const { indexPath, eventsDir } = await setupIndex([billingNote, ordersNote], bagOfWordsClient(), [billing, orders, orderToInvoice]);
+
+    const result = await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "invoice", 10000, "tool-call", ["billing"]);
+
+    expect(result.sections.map((candidate) => candidate.id)).toEqual(["billing", "order-to-invoice"]);
+    const logged = readEvents(eventsDir)[0]!.sections as Array<{ id: string; returned: boolean }>;
+    expect(logged.map((candidate) => [candidate.id, candidate.returned])).toEqual([
+      ["billing", true],
+      ["order-to-invoice", true],
+    ]);
+  });
+
+  test("without a domain filter the same corpus keeps fused order: the flow comes first", async () => {
+    const { indexPath, eventsDir } = await setupIndex([billingNote, ordersNote], bagOfWordsClient(), [billing, orders, orderToInvoice]);
+
+    const result = await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "invoice", 10000, "tool-call", []);
+
+    expect(result.sections.map((candidate) => candidate.id)).toEqual(["order-to-invoice", "billing"]);
+  });
+
+  test("a named domain below the threshold still takes a slot, the flow below it does not, and the gap stays", async () => {
+    const client = keyedClient(
+      new Map([
+        ["zzqq", [1, 0]],
+        ["Billing issues invoices.", [0, 1]],
+        ["Orders are placed by customers.", [0, 1]],
+        ["An order becomes an invoice.", [0, 1]],
+        ["invoice generation path", [0, 1]],
+      ]),
+    );
+    const { indexPath, eventsDir } = await setupIndex([billingNote], client, [billing, orders, orderToInvoice]);
+
+    const result = await recall(openRecall(indexPath, eventsDir, client), "zzqq", 10000, "tool-call", ["billing"]);
+
+    expect(result.sections.map((candidate) => [candidate.id, candidate.ftsRank, candidate.cosine])).toEqual([["billing", null, 0]]);
+    expect(result.gap).toBe(true);
+    const event = readEvents(eventsDir)[0]!;
+    expect(event.gap).toBe(true);
+    const logged = event.sections as Array<{ id: string; returned: boolean }>;
+    expect(logged.map((candidate) => [candidate.id, candidate.returned])).toEqual([
+      ["billing", true],
+      ["order-to-invoice", false],
+    ]);
+  });
+
+  test("a named domain neither channel reached rides in degraded mode, logged with no ranks", async () => {
+    const { indexPath, eventsDir } = await setupIndex([billingNote], offlineClient(), [billing, orders, orderToInvoice]);
+
+    const result = await recall(openRecall(indexPath, eventsDir, offlineClient()), "zzqq", 10000, "tool-call", ["billing"]);
+
+    expect(result.degraded).toBe(true);
+    expect(result.sections.map((candidate) => candidate.id)).toEqual(["billing"]);
+    expect(result.gap).toBe(true);
+    expect(readEvents(eventsDir)[0]!.sections).toEqual([
+      { id: "billing", kind: "domain", fts_rank: null, vector_rank: null, cosine: null, returned: true },
+    ]);
+  });
+
+  test("two named domains take both slots ahead of a flow that outranks them", async () => {
+    const { indexPath, eventsDir } = await setupIndex([billingNote, ordersNote], bagOfWordsClient(), [billing, orders, orderToInvoice]);
+
+    const result = await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "invoice", 10000, "tool-call", ["orders", "billing"]);
+
+    expect(result.sections.map((candidate) => candidate.id)).toEqual(["billing", "orders"]);
+    const logged = readEvents(eventsDir)[0]!.sections as Array<{ id: string; returned: boolean }>;
+    expect(logged.map((candidate) => [candidate.id, candidate.returned])).toEqual([
+      ["billing", true],
+      ["orders", true],
+      ["order-to-invoice", false],
+    ]);
+  });
+
+  // shipping has no anchors and so no staleness penalty, which puts it first among the named
+  // domains; orders and billing both sink, and billing's lexical hit keeps it above orders.
+  test("of three named domains the first two in fused order take the slots and the third is logged unreturned", async () => {
+    const shipping = section({ id: "shipping" }, "Parcels leave the warehouse.");
+    const { indexPath, eventsDir } = await setupIndex(
+      [billingNote, ordersNote],
+      bagOfWordsClient(),
+      [billing, orders, shipping, orderToInvoice],
+    );
+
+    const result = await recall(
+      openRecall(indexPath, eventsDir, bagOfWordsClient()),
+      "invoice",
+      10000,
+      "tool-call",
+      ["orders", "billing", "shipping"],
+    );
+
+    expect(result.sections.map((candidate) => candidate.id)).toEqual(["shipping", "billing"]);
+    const logged = readEvents(eventsDir)[0]!.sections as Array<{ id: string; returned: boolean }>;
+    expect(logged.map((candidate) => [candidate.id, candidate.returned])).toEqual([
+      ["shipping", true],
+      ["billing", true],
+      ["orders", false],
+      ["order-to-invoice", false],
+    ]);
+  });
 });

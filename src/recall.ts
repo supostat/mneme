@@ -36,9 +36,10 @@ export interface RecalledNote {
 }
 
 // A map section the query reached: ranked by its own channel pair, cut by the same threshold as a
-// note. A domain carries the ids of the notes linked to it (the rebuild's anchor containment: a
-// note anchor equal to or below a domain anchor); a flow carries none — its context is the domains
-// it names, not a note population.
+// note — or a domain the filter named, which rides as the frame whatever its relevance. A domain
+// carries the ids of the notes linked to it (the rebuild's anchor containment: a note anchor equal
+// to or below a domain anchor); a flow carries none — its context is the domains it names, not a
+// note population.
 export interface RecalledSection {
   id: string;
   kind: MapSectionKind;
@@ -82,10 +83,12 @@ interface SectionMetaRow {
 
 // The populations a domain filter leaves in play; null means the whole population. The filter is
 // applied BEFORE ranking in both channels, so ranks are dense over the survivors and the logged
-// candidates already reflect it — replay reproduces a filtered recall as it was.
+// candidates already reflect it — replay reproduces a filtered recall as it was. The named domains
+// themselves are kept apart from the flows they pull in: they take the section slots first.
 interface RecallScope {
   noteIds: Set<string> | null;
   sectionIds: Set<string> | null;
+  namedDomainIds: Set<string>;
 }
 
 interface RecallCandidate {
@@ -167,7 +170,7 @@ export async function recall(
   const degraded = !(embedded.embed.available && hasStoredVectors(deps.db));
   const fts = rankFtsChannel(deps, terms, scope.noteIds);
   const fusion = runFusion(deps, fts.ranks, embedded.embed, budget, scope.noteIds);
-  const sections = rankSections(deps, terms, embedded.embed, scope.sectionIds);
+  const sections = rankSections(deps, terms, embedded.embed, scope.sectionIds, scope.namedDomainIds);
   const gap = isMemoryGap(fusion.decisions, fts.ranks, fusion.cosineRanks, sections.returned);
   const returnedIds = fusion.notes.map((note) => note.id);
   deps.eventWriter.append({
@@ -191,7 +194,8 @@ export async function recall(
 // Decided on every fused note candidate BEFORE the budget cut, never on what the answer could fit:
 // a budget too small for the best note leaves the answer short of room, not the corpus short of
 // knowledge. A floor note is below the threshold by construction and never closes a gap, while one
-// section above it closes the gap alone.
+// section above it closes the gap alone. A named domain below the threshold rides as the frame but,
+// like a floor note, is not memory above the threshold.
 function isMemoryGap(
   decisions: FusionDecision[],
   ftsRanks: Map<string, number>,
@@ -204,7 +208,7 @@ function isMemoryGap(
       cosine: cosineRanks.get(decision.id)?.cosine ?? null,
     }),
   );
-  return !noteAboveThreshold && sections.length === 0;
+  return !noteAboveThreshold && !sections.some(passesRecallThreshold);
 }
 
 async function embedQuery(deps: RecallDeps, query: string): Promise<{ embed: EmbedResult; ms: number }> {
@@ -219,7 +223,7 @@ async function embedQuery(deps: RecallDeps, query: string): Promise<{ embed: Emb
 // Every listed domain must exist as a domain; the note universe is the union of their links and
 // the section universe is the domains themselves plus the flows that name one of them.
 function resolveScope(db: Database, domains: string[]): RecallScope {
-  if (domains.length === 0) return { noteIds: null, sectionIds: null };
+  if (domains.length === 0) return { noteIds: null, sectionIds: null, namedDomainIds: new Set() };
   const domainIds = [...new Set(domains)];
   for (const id of domainIds) requireDomain(db, id);
   const noteIds = new Set<string>();
@@ -233,7 +237,7 @@ function resolveScope(db: Database, domains: string[]): RecallScope {
     for (const row of linkedNotes.all(id) as Array<{ note_id: string }>) noteIds.add(row.note_id);
     for (const row of dependentFlows.all(id) as Array<{ id: string }>) sectionIds.add(requireSectionId(row.id));
   }
-  return { noteIds, sectionIds };
+  return { noteIds, sectionIds, namedDomainIds: new Set(domainIds) };
 }
 
 function requireDomain(db: Database, id: string): void {
@@ -272,7 +276,7 @@ function runFusion(
   const metaById = readMeta(deps.db);
   const bodyById = readBodies(deps.db, "fts");
   const decisions = fuseAndFill(
-    assembleInputs(ftsRanks, cosineRanks, metaById, bodyById),
+    assembleInputs(new Set([...ftsRanks.keys(), ...cosineRanks.keys()]), ftsRanks, cosineRanks, metaById, bodyById),
     DEFAULT_FUSION_PARAMS,
     budget,
   );
@@ -281,12 +285,12 @@ function runFusion(
 }
 
 function assembleInputs(
+  candidateIds: Set<string>,
   ftsRanks: Map<string, number>,
   cosineRanks: Map<string, CosineRank>,
   metaById: Map<string, { stalenessBoost: number }>,
   bodyById: Map<string, string>,
 ): FusionInput[] {
-  const candidateIds = new Set([...ftsRanks.keys(), ...cosineRanks.keys()]);
   return [...candidateIds].map((id) => {
     const body = bodyById.get(id);
     return {
@@ -330,14 +334,18 @@ function applyRecallThreshold(budgetFilled: RecalledNote[]): RecalledNote[] {
 }
 
 // The section channel: the same two rankings over the map tables, the same RRF, no token budget (the
-// fill runs unbounded) and the same threshold; the first RECALL_MAP_SECTIONS_MAX survivors in fused
-// order return. Every id read from the map tables is re-validated against the section-id grammar
+// fill runs unbounded) and the same threshold. The named domains are candidates whether or not either
+// channel reached them, and they take the slots first, in fused order and past the threshold — the
+// filter's caller chose them as the frame, the query did not find them; the remaining slots go to
+// the other survivors in fused order, up to RECALL_MAP_SECTIONS_MAX in all. The log follows the same
+// slot order. Every id read from the map tables is re-validated against the section-id grammar
 // before it names anything — the index is a writable cache, not an authenticated source.
 function rankSections(
   deps: RecallDeps,
   terms: string[],
   embed: EmbedResult,
   scope: Set<string> | null,
+  namedDomainIds: Set<string>,
 ): SectionOutcome {
   const startedAt = deps.clock().getTime();
   const metaById = readSectionMeta(deps.db);
@@ -345,16 +353,18 @@ function rankSections(
   const queryVector = signalVector(embed);
   const cosineRanks = queryVector === undefined ? new Map<string, CosineRank>() : rankCosine(deps.db, "map_vec", queryVector, scope);
   const bodyById = readBodies(deps.db, "map_fts");
-  const decisions = fuseAndFill(
-    assembleInputs(ftsRanks, cosineRanks, metaById, bodyById),
+  const candidateIds = new Set([...ftsRanks.keys(), ...cosineRanks.keys(), ...namedDomainIds]);
+  const fused = fuseAndFill(
+    assembleInputs(candidateIds, ftsRanks, cosineRanks, metaById, bodyById),
     DEFAULT_FUSION_PARAMS,
     Number.POSITIVE_INFINITY,
   );
+  const decisions = slotOrder(fused, namedDomainIds);
   const returned: RecalledSection[] = [];
   for (const decision of decisions) {
     if (returned.length >= RECALL_MAP_SECTIONS_MAX) break;
     const candidate = { ftsRank: ftsRanks.get(decision.id) ?? null, cosine: cosineRanks.get(decision.id)?.cosine ?? null };
-    if (!passesRecallThreshold(candidate)) continue;
+    if (!namedDomainIds.has(decision.id) && !passesRecallThreshold(candidate)) continue;
     const kind = metaById.get(decision.id)!.kind;
     returned.push({
       id: decision.id,
@@ -375,6 +385,15 @@ function rankSections(
     returned: returnedIds.has(decision.id),
   }));
   return { returned, candidates, ms: deps.clock().getTime() - startedAt };
+}
+
+// The named domains first, then every other section, each group keeping its fused order. Without a
+// domain filter the set is empty and the fused order stands as it is.
+function slotOrder(decisions: FusionDecision[], namedDomainIds: Set<string>): FusionDecision[] {
+  return [
+    ...decisions.filter((decision) => namedDomainIds.has(decision.id)),
+    ...decisions.filter((decision) => !namedDomainIds.has(decision.id)),
+  ];
 }
 
 function buildCandidates(
