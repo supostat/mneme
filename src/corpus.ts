@@ -12,6 +12,10 @@ import { isRepo, initRepo } from "./git";
 
 export class CorpusError extends Error {}
 
+// Committed with the notes: one file per project commit, named by its full sha, holding the
+// commit's rebase-surviving identity (commit-identity-store.ts reads and writes it).
+export const COMMIT_IDENTITIES_DIRECTORY = "commit-identities";
+
 export interface CorpusManifest {
   path: string;
   created: string;
@@ -39,6 +43,7 @@ export interface CorpusPaths extends MapLayout {
   archiveDir: string;
   eventsDir: string;
   indexPath: string;
+  commitIdentitiesDir: string;
 }
 
 export interface Corpus extends CorpusPaths {
@@ -58,7 +63,16 @@ export interface ResolveCorpusOptions {
 }
 
 // Parents precede children so each directory gets the secure mode in turn.
-const SUBDIRECTORIES = ["notes", "staging", "archive", "events", "map", "map/domains", "map/flows"] as const;
+const SUBDIRECTORIES = [
+  "notes",
+  "staging",
+  "archive",
+  "events",
+  "map",
+  "map/domains",
+  "map/flows",
+  COMMIT_IDENTITIES_DIRECTORY,
+] as const;
 const DIRECTORY_MODE = 0o700;
 const CURRENT_FORMAT_VERSION = 3;
 const MIGRATABLE_FORMAT_VERSIONS = new Set([1, 2]);
@@ -126,6 +140,7 @@ export function corpusPaths(corpusDir: string): CorpusPaths {
     archiveDir: join(corpusDir, "archive"),
     eventsDir: join(corpusDir, "events"),
     indexPath: join(corpusDir, "index.db"),
+    commitIdentitiesDir: join(corpusDir, COMMIT_IDENTITIES_DIRECTORY),
     ...mapLayoutOf(join(corpusDir, "map")),
   };
 }

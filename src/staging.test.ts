@@ -3,8 +3,10 @@ import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, existsSync, read
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runGit, initRepo } from "./git";
+import { CommitIdentityReadError } from "./commit-identity";
 import { defaultConfig } from "./config";
 import { resolveCorpus } from "./corpus";
+import { CorpusBusyError } from "./corpus-git";
 import type { Corpus } from "./corpus";
 import { EventWriter, readEvents } from "./events";
 import type { StoredEvent } from "./events";
@@ -1067,4 +1069,141 @@ describe("stagingResolve when the rebuild fails after the commit", () => {
       expect(eventsOfType(deps.corpus, "rebuild_failed")).toEqual([]);
     });
   }
+});
+
+describe("commit identity capture on the accepting writes", () => {
+  async function corpusHeadPaths(deps: StagingDeps): Promise<string[]> {
+    const shown = await runGit(deps.corpus.corpusDir, ["show", "--name-only", "--format=", "HEAD"]);
+    return shown.stdout.split("\n").filter((line) => line !== "").sort();
+  }
+
+  async function projectHead(projectRoot: string): Promise<string> {
+    return (await runGit(projectRoot, ["rev-parse", "HEAD"])).stdout.trim();
+  }
+
+  async function advanceProject(projectRoot: string, content: string): Promise<string> {
+    writeFileSync(join(projectRoot, "src/a.ts"), `${content}\n`);
+    await runGit(projectRoot, ["add", "src/a.ts"]);
+    const committed = await runGit(projectRoot, ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", content]);
+    if (committed.exitCode !== 0) throw new Error(committed.stderr);
+    return projectHead(projectRoot);
+  }
+
+  // An accepted note from before the store existed: in notes/ and committed, with no identity.
+  async function seedLegacyNote(deps: StagingDeps, n: number, commit: string): Promise<void> {
+    const id = ulid(100 + n);
+    writeFileSync(
+      join(deps.corpus.notesDir, `${id}.md`),
+      serializeNote({
+        frontmatter: { id, type: "decision", anchors: ["src/a.ts"], commit, created: CLOCK_START },
+        body: `legacy decision number ${n}`,
+      }),
+    );
+    await runGit(deps.corpus.corpusDir, ["add", `notes/${id}.md`]);
+    await runGit(deps.corpus.corpusDir, ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "legacy"]);
+  }
+
+  function storedCommits(deps: StagingDeps): string[] {
+    return readdirSync(deps.corpus.commitIdentitiesDir).sort();
+  }
+
+  test("accept writes the identity of the note's commit into the same corpus commit as the note", async () => {
+    const projectRoot = await buildProjectRepo();
+    const deps = await makeDeps(projectRoot, offlineClient(), sequentialIds());
+    await remember(deps, { type: "decision", body: "ledger split decision", anchors: ["src/a.ts"], source: "mcp" });
+    const head = await projectHead(projectRoot);
+
+    await stagingResolve(deps, ulid(0), "accept");
+
+    expect(await corpusHeadPaths(deps)).toEqual([`commit-identities/${head}`, `notes/${ulid(0)}.md`]);
+  });
+
+  test("the first accept after the upgrade records every live commit the corpus pins", async () => {
+    const projectRoot = await buildProjectRepo();
+    const deps = await makeDeps(projectRoot, offlineClient(), sequentialIds());
+    const first = await projectHead(projectRoot);
+    const second = await advanceProject(projectRoot, "second");
+    await seedLegacyNote(deps, 1, first);
+    await seedLegacyNote(deps, 2, second);
+    await seedLegacyNote(deps, 3, second);
+    const third = await advanceProject(projectRoot, "third");
+    await remember(deps, { type: "decision", body: "fourth decision after upgrade", anchors: ["src/a.ts"], source: "mcp" });
+
+    await stagingResolve(deps, ulid(0), "accept");
+
+    expect(storedCommits(deps)).toEqual([first, second, third].sort());
+    expect(await corpusHeadPaths(deps)).toEqual(
+      [...[first, second, third].map((commit) => `commit-identities/${commit}`), `notes/${ulid(0)}.md`].sort(),
+    );
+  });
+
+  test("a note on a gone object does not block the accept and gets no identity", async () => {
+    const projectRoot = await buildProjectRepo();
+    const deps = await makeDeps(projectRoot, offlineClient(), sequentialIds());
+    await seedLegacyNote(deps, 1, "deadbeef".repeat(5));
+    await remember(deps, { type: "decision", body: "decision beside a gone commit", anchors: ["src/a.ts"], source: "mcp" });
+
+    const result = await stagingResolve(deps, ulid(0), "accept");
+
+    expect(result.outcome).toBe("accepted");
+    expect(storedCommits(deps)).toEqual([await projectHead(projectRoot)]);
+  });
+
+  test("a second accept on the same project HEAD commits no identity path", async () => {
+    const projectRoot = await buildProjectRepo();
+    const deps = await makeDeps(projectRoot, offlineClient(), sequentialIds());
+    await remember(deps, { type: "decision", body: "first decision same head", anchors: ["src/a.ts"], source: "mcp" });
+    await remember(deps, { type: "bugfix", body: "second fix same head", anchors: ["src/a.ts"], source: "mcp" });
+    await stagingResolve(deps, ulid(0), "accept");
+    const storedAfterFirst = readFileSync(join(deps.corpus.commitIdentitiesDir, await projectHead(projectRoot)), "utf8");
+
+    await stagingResolve(deps, ulid(1), "accept");
+
+    expect(await corpusHeadPaths(deps)).toEqual([`notes/${ulid(1)}.md`]);
+    expect(readFileSync(join(deps.corpus.commitIdentitiesDir, await projectHead(projectRoot)), "utf8")).toBe(storedAfterFirst);
+  });
+
+  test("the identity of an accept whose commit failed reaches history with its retry", async () => {
+    const projectRoot = await buildProjectRepo();
+    const deps = await makeDeps(projectRoot, offlineClient(), sequentialIds());
+    await remember(deps, { type: "decision", body: "decision interrupted by a lock", anchors: ["src/a.ts"], source: "mcp" });
+    const head = await projectHead(projectRoot);
+    const lockPath = join(deps.corpus.corpusDir, ".git", "index.lock");
+    writeFileSync(lockPath, "");
+
+    await expect(stagingResolve(deps, ulid(0), "accept")).rejects.toThrow(CorpusBusyError);
+    expect(storedCommits(deps)).toEqual([head]);
+    rmSync(lockPath);
+    const retried = await stagingResolve(deps, ulid(0), "accept");
+
+    expect(retried.outcome).toBe("accepted");
+    expect(await corpusHeadPaths(deps)).toEqual([`commit-identities/${head}`, `notes/${ulid(0)}.md`]);
+    const status = await runGit(deps.corpus.corpusDir, ["status", "--porcelain"], ["commit-identities", "notes"]);
+    expect(status.stdout).toBe("");
+  });
+
+  test("a git failure refuses the accept before anything is written", async () => {
+    const projectRoot = await buildProjectRepo();
+    const deps = await makeDeps(projectRoot, offlineClient(), sequentialIds());
+    await remember(deps, { type: "decision", body: "decision of a vanished repository", anchors: ["src/a.ts"], source: "mcp" });
+    const vanished = { ...deps, projectRoot: mkdtempSync(join(tmpdir(), "mneme-staging-not-a-repo-")) };
+
+    await expect(stagingResolve(vanished, ulid(0), "accept")).rejects.toThrow(CommitIdentityReadError);
+    expect(existsSync(join(deps.corpus.stagingDir, `${ulid(0)}.md`))).toBe(true);
+    expect(existsSync(join(deps.corpus.notesDir, `${ulid(0)}.md`))).toBe(false);
+    expect(storedCommits(deps)).toEqual([]);
+  });
+
+  test("supersede writes the identity of the new note's commit into its corpus commit", async () => {
+    const projectRoot = await buildProjectRepo();
+    const deps = await makeDeps(projectRoot, offlineClient(), sequentialIds());
+    await remember(deps, { type: "decision", body: "the old ledger decision", anchors: ["src/a.ts"], source: "mcp" });
+    await stagingResolve(deps, ulid(0), "accept");
+    const moved = await advanceProject(projectRoot, "moved");
+    await remember(deps, { type: "decision", body: "the new ledger decision", anchors: ["src/a.ts"], source: "mcp" });
+
+    await stagingResolve(deps, ulid(1), { supersede: ulid(0) });
+
+    expect(await corpusHeadPaths(deps)).toEqual([`commit-identities/${moved}`, `notes/${ulid(1)}.md`]);
+  });
 });

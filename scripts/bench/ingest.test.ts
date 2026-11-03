@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EMBEDDING_DIMENSION, EMBEDDING_MODEL } from "../../src/embeddings";
 import type { EmbeddingsClient } from "../../src/embeddings";
-import { readActiveNotes } from "../../src/index-db";
+import { readActiveNotes } from "../../src/active-notes";
 import { MAX_BODY_CODE_POINTS } from "../../src/note";
 import { IngestError, chunkSessionText, defangForbiddenMarkup, ingestCase } from "./ingest";
 import type { IngestedCase } from "./ingest";

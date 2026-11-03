@@ -1,5 +1,11 @@
 import { copyFileSync, existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import {
+  borrowCommitIdentities,
+  planCommitIdentityCapture,
+  readStoredCommitIdentities,
+  writeCommitIdentityCapture,
+} from "./commit-identity-store";
 import { canonicalize, corpusPaths, readManifest } from "./corpus";
 import { commitPaths } from "./corpus-git";
 import { classifyCandidate } from "./dedup";
@@ -47,20 +53,32 @@ export interface AdoptOutcome {
 export async function adoptCorpus(deps: StagingDeps, sourceCorpusDir: string): Promise<AdoptOutcome> {
   const source = validateSource(deps, sourceCorpusDir);
   await requireEmbedder(deps);
+  const sourceIdentities = readStoredCommitIdentities(source.commitIdentitiesDir);
 
-  const notes: AdoptedNote[] = [];
-  const sourceIds: string[] = [];
+  const verdicts: SourceNoteVerdict[] = [];
   for (const id of sourceNoteIds(source.notesDir)) {
-    sourceIds.push(id);
-    notes.push(await adoptOne(deps, source.notesDir, id));
+    verdicts.push(await classifySourceNote(deps, source.notesDir, id));
   }
+  const adopting = verdicts.filter((verdict) => verdict.note.reason === "adopted");
+  const adoptedCommits = adopting.map((verdict) => verdict.commit);
+  const capture = borrowCommitIdentities(
+    await planCommitIdentityCapture(deps, adoptedCommits),
+    sourceIdentities,
+    adoptedCommits,
+    deps.corpus.commitIdentitiesDir,
+  );
+  for (const verdict of adopting) {
+    copyFileSync(notePath(source.notesDir, verdict.note.id), notePath(deps.corpus.notesDir, verdict.note.id));
+  }
+  const notes = verdicts.map((verdict) => verdict.note);
 
-  const present = sourceIds.filter((id) => existsSync(notePath(deps.corpus.notesDir, id)));
+  const present = verdicts
+    .map((verdict) => verdict.note.id)
+    .filter((id) => existsSync(notePath(deps.corpus.notesDir, id)));
+  const committing = [...present.map(notesRelativePath), ...(await writeCommitIdentityCapture(deps.corpus, capture))];
   await rebuild(rebuildDeps(deps));
   const commit =
-    present.length === 0
-      ? null
-      : await commitPaths(deps.corpus, present.map(notesRelativePath), `Adopt notes from ${source.path}`);
+    committing.length === 0 ? null : await commitPaths(deps.corpus, committing, `Adopt notes from ${source.path}`);
   const adoptedCount = notes.filter((note) => note.reason === "adopted").length;
   deps.eventWriter.append({
     type: "corpus_adopted",
@@ -81,7 +99,10 @@ export async function adoptCorpus(deps: StagingDeps, sourceCorpusDir: string): P
 // a directory that merely looks like one is refused before anything is copied. An older manifest is
 // refused with the cure named: opening that copy once with this engine migrates it in place, which
 // keeps adoption itself free of any write to the source.
-function validateSource(deps: StagingDeps, sourceCorpusDir: string): { path: string; notesDir: string } {
+function validateSource(
+  deps: StagingDeps,
+  sourceCorpusDir: string,
+): { path: string; notesDir: string; commitIdentitiesDir: string } {
   if (!existsSync(sourceCorpusDir)) {
     throw new CorpusAdoptError(`source corpus does not exist: ${sourceCorpusDir}`);
   }
@@ -101,7 +122,7 @@ function validateSource(deps: StagingDeps, sourceCorpusDir: string): { path: str
   if (!existsSync(paths.notesDir)) {
     throw new CorpusAdoptError(`source corpus has no notes directory: ${paths.notesDir}`);
   }
-  return { path, notesDir: paths.notesDir };
+  return { path, notesDir: paths.notesDir, commitIdentitiesDir: paths.commitIdentitiesDir };
 }
 
 // The dedup check is the whole reason this is a tool rather than a documented `cp`, so an
@@ -130,13 +151,19 @@ function sourceNoteIds(notesDir: string): string[] {
   return ids;
 }
 
-async function adoptOne(deps: StagingDeps, sourceNotesDir: string, id: string): Promise<AdoptedNote> {
-  const target = notePath(deps.corpus.notesDir, id);
-  if (existsSync(target)) {
-    return { id, reason: "already-present" };
+interface SourceNoteVerdict {
+  note: AdoptedNote;
+  commit: string;
+}
+
+// Decides without writing: the dedup neighborhood is the receiving index, which no copy of this pass
+// changes, so every verdict can be taken before the first note crosses.
+async function classifySourceNote(deps: StagingDeps, sourceNotesDir: string, id: string): Promise<SourceNoteVerdict> {
+  const note = parseNote(readFileSync(notePath(sourceNotesDir, id), "utf8"));
+  const commit = note.frontmatter.commit;
+  if (existsSync(notePath(deps.corpus.notesDir, id))) {
+    return { note: { id, reason: "already-present" }, commit };
   }
-  const sourcePath = notePath(sourceNotesDir, id);
-  const note = parseNote(readFileSync(sourcePath, "utf8"));
   const classification = await classifyCandidate(
     deps.corpus.indexPath,
     deps.embeddings,
@@ -145,14 +172,11 @@ async function adoptOne(deps: StagingDeps, sourceNotesDir: string, id: string): 
   );
   if (classification.kind === "noop") {
     return {
-      id,
-      reason: "duplicate",
-      nearestId: classification.neighborId,
-      similarity: classification.similarity,
+      note: { id, reason: "duplicate", nearestId: classification.neighborId, similarity: classification.similarity },
+      commit,
     };
   }
-  copyFileSync(sourcePath, target);
-  return { id, reason: "adopted" };
+  return { note: { id, reason: "adopted" }, commit };
 }
 
 function notePath(directory: string, id: string): string {

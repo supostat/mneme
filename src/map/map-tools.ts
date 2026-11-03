@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { relative } from "node:path";
 import { createLivenessContext, resolveAnchorLiveness } from "../anchor-liveness";
+import { planCommitIdentityCapture, writeCommitIdentityCapture } from "../commit-identity-store";
 import type { Corpus } from "../corpus";
 import { commitPaths, trackedPaths } from "../corpus-git";
 import { refreshIndexAfterDecision } from "../index-refresh";
@@ -93,11 +94,13 @@ export async function mapPut(deps: StagingDeps, input: MapPutInput): Promise<Map
   const { id, kind } = section.frontmatter;
   const existing = readMapSections(deps.corpus);
   requireNoKindConflict(existing, section);
+  const capture = await planCommitIdentityCapture(deps, [commit]);
   writeMapSection(deps.corpus, section);
   writeDerivedFiles(deps.corpus, [...existing.filter((stored) => stored.frontmatter.id !== id), section]);
+  const identityPaths = await writeCommitIdentityCapture(deps.corpus, capture);
   const corpusCommit = await commitPaths(
     deps.corpus,
-    [sectionRelativePath(deps.corpus, kind, id), ...derivedRelativePaths(deps.corpus)],
+    [sectionRelativePath(deps.corpus, kind, id), ...derivedRelativePaths(deps.corpus), ...identityPaths],
     `Put map ${kind} "${id}"`,
   );
   deps.eventWriter.append({

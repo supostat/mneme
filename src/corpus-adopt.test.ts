@@ -11,7 +11,7 @@ import { EventWriter, readEvents } from "./events";
 import type { StoredEvent } from "./events";
 import { initRepo, runGit } from "./git";
 import { rebuild } from "./index-db";
-import { serializeNote } from "./note";
+import { parseNote, serializeNote } from "./note";
 import type { StagingDeps } from "./staging";
 import { adoptCorpus, CorpusAdoptError } from "./corpus-adopt";
 
@@ -159,6 +159,12 @@ function adoptionEvents(corpus: Corpus): StoredEvent[] {
   return readEvents(corpus.eventsDir).filter((event) => event.type === "corpus_adopted");
 }
 
+function repinNote(corpus: Corpus, id: string, commit: string): void {
+  const path = join(corpus.notesDir, `${id}.md`);
+  const note = parseNote(readFileSync(path, "utf8"));
+  writeFileSync(path, serializeNote({ frontmatter: { ...note.frontmatter, commit }, body: note.body }));
+}
+
 async function headOf(corpus: Corpus): Promise<string> {
   return (await runGit(corpus.corpusDir, ["rev-parse", "HEAD"])).stdout.trim();
 }
@@ -233,6 +239,38 @@ describe("adopting a corpus that drifted apart", () => {
     expect(noteIds(source.corpus.notesDir)).toEqual(idsBefore);
     expect(readFileSync(join(source.corpus.notesDir, `${ulid(8)}.md`), "utf8")).toBe(bodyBefore);
     expect(await headOf(source.corpus)).toBe(headBefore);
+  }, ADOPT_TEST_TIMEOUT_MS);
+});
+
+describe("adoption carries commit identities", () => {
+  test("an adopted note whose commit this project cannot read takes the identity its source recorded", async () => {
+    const deps = await receivingDeps([{ id: ulid(21), body: "receiving side" }]);
+    const source = await buildCorpus([{ id: ulid(22), body: "source note from another clone" }]);
+    // Both fixture projects mint the same init commit when built within one second, so the source
+    // note is pinned to a commit no repository of this test holds.
+    const sourceCommit = "feedface".repeat(5);
+    repinNote(source.corpus, ulid(22), sourceCommit);
+    const lentIdentity = `sha256:${"c".repeat(64)}\n`;
+    writeFileSync(join(source.corpus.commitIdentitiesDir, sourceCommit), lentIdentity);
+
+    await adoptCorpus(deps, source.corpus.corpusDir);
+
+    expect(readFileSync(join(deps.corpus.commitIdentitiesDir, sourceCommit), "utf8")).toBe(lentIdentity);
+    const shown = await runGit(deps.corpus.corpusDir, ["show", "--name-only", "--format=", "HEAD"]);
+    expect(shown.stdout.split("\n")).toContain(`commit-identities/${sourceCommit}`);
+  }, ADOPT_TEST_TIMEOUT_MS);
+
+  test("a duplicate's commit borrows no identity", async () => {
+    const body = "dedup recognizes this exact knowledge already held here";
+    const deps = await receivingDeps([{ id: ulid(23), body }], true);
+    const source = await buildCorpus([{ id: ulid(24), body }]);
+    const sourceCommit = "feedface".repeat(5);
+    repinNote(source.corpus, ulid(24), sourceCommit);
+    writeFileSync(join(source.corpus.commitIdentitiesDir, sourceCommit), `sha256:${"c".repeat(64)}\n`);
+
+    await adoptCorpus(deps, source.corpus.corpusDir);
+
+    expect(existsSync(join(deps.corpus.commitIdentitiesDir, sourceCommit))).toBe(false);
   }, ADOPT_TEST_TIMEOUT_MS);
 });
 

@@ -48,16 +48,22 @@ export function runGit(
   if (pathArgs.length > 0) {
     command.push("--", ...pathArgs);
   }
-  return gitProcessLimit.run(() => spawnGit(command));
+  return gitProcessLimit.run(() => spawnGit(command, "ignore"));
 }
 
-async function spawnGit(command: string[]): Promise<GitResult> {
+// For revision lists too long for argv: `git log --stdin` reads them from the input instead.
+export function runGitWithInput(repoDir: string, args: string[], input: string): Promise<GitResult> {
+  const command = [GIT_EXECUTABLE, "-C", repoDir, ...args];
+  return gitProcessLimit.run(() => spawnGit(command, new Blob([input])));
+}
+
+async function spawnGit(command: string[], stdin: "ignore" | Blob): Promise<GitResult> {
   const subprocess = Bun.spawn({
     cmd: command,
     env: sanitizedGitEnv(),
     stdout: "pipe",
     stderr: "pipe",
-    stdin: "ignore",
+    stdin,
   });
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(subprocess.stdout).text(),

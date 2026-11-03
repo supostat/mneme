@@ -1,7 +1,7 @@
 import { createLivenessContext, pathEverExisted, resolveAnchorLiveness } from "./anchor-liveness";
 import { listReanchorRequests, listRetagRequests, noteReanchor, noteRetag } from "./curation";
 import { runGit } from "./git";
-import { readActiveNotes } from "./index-db";
+import { readActiveNotes } from "./active-notes";
 import { NOTE_TYPES, isAnchorNeutral } from "./note";
 import type { NoteType } from "./note";
 import { isTracked } from "./staleness";

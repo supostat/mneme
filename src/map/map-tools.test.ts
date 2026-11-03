@@ -189,6 +189,20 @@ describe("mapPut", () => {
     expect(lastEventTypes(deps, 2)).toEqual(["map_section_put", "rebuild"]);
   });
 
+  test("the put writes the identity of the project HEAD into the same corpus commit as the section", async () => {
+    const { deps, projectHead } = await makeWorkbench();
+
+    await mapPut(deps, BILLING);
+
+    const shown = await runGit(deps.corpus.corpusDir, ["show", "--name-only", "--format=", "HEAD"]);
+    expect(shown.stdout.split("\n").filter((line) => line !== "").sort()).toEqual([
+      `commit-identities/${projectHead}`,
+      "map/INDEX.md",
+      "map/domains/billing.md",
+      "map/glossary.md",
+    ]);
+  });
+
   test("a repeated put with the same text mints no commit and still logs the write", async () => {
     const { deps } = await makeWorkbench();
     const first = await mapPut(deps, BILLING);

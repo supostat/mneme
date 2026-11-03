@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { MnemeConfig } from "./config";
 import type { Corpus } from "./corpus";
 import { commitPaths } from "./corpus-git";
+import { planCommitIdentityCapture, writeCommitIdentityCapture } from "./commit-identity-store";
 import { runGit } from "./git";
 import type { EmbeddingsClient } from "./embeddings";
 import type { EventWriter } from "./events";
@@ -406,8 +407,11 @@ function markNoteRetired(corpus: Corpus, targetId: string): void {
 }
 
 async function acceptNote(deps: StagingDeps, id: string, menu: MenuContext | null): Promise<ResolveResult> {
-  const accepted = moveStagedToNotes(deps.corpus, id, (frontmatter) => frontmatter);
-  const commit = await commitPaths(deps.corpus, [notesRelPath(id)], `Add note ${shortId(id)}`);
+  const pending = readPendingNote(deps.corpus, id);
+  const capture = await planCommitIdentityCapture(deps, [pending.note.frontmatter.commit]);
+  const accepted = settlePendingNote(deps.corpus, id, pending, (frontmatter) => frontmatter);
+  const identityPaths = await writeCommitIdentityCapture(deps.corpus, capture);
+  const commit = await commitPaths(deps.corpus, [notesRelPath(id), ...identityPaths], `Add note ${shortId(id)}`);
   appendStagingResolve(deps, id, "accept", {
     commit,
     superseded_id: null,
@@ -423,8 +427,15 @@ async function acceptNote(deps: StagingDeps, id: string, menu: MenuContext | nul
 async function supersedeNote(deps: StagingDeps, id: string, target: string, menu: MenuContext | null): Promise<ResolveResult> {
   validateSupersedeTarget(deps.corpus, id, target);
   const suggested = readSidecar(deps.corpus, id)?.nearest_id === target;
-  const accepted = moveStagedToNotes(deps.corpus, id, (frontmatter) => ({ ...frontmatter, supersedes: target }));
-  const commit = await commitPaths(deps.corpus, [notesRelPath(id)], `Supersede ${shortId(target)} with ${shortId(id)}`);
+  const pending = readPendingNote(deps.corpus, id);
+  const capture = await planCommitIdentityCapture(deps, [pending.note.frontmatter.commit]);
+  const accepted = settlePendingNote(deps.corpus, id, pending, (frontmatter) => ({ ...frontmatter, supersedes: target }));
+  const identityPaths = await writeCommitIdentityCapture(deps.corpus, capture);
+  const commit = await commitPaths(
+    deps.corpus,
+    [notesRelPath(id), ...identityPaths],
+    `Supersede ${shortId(target)} with ${shortId(id)}`,
+  );
   appendStagingResolve(deps, id, "supersede", {
     commit,
     superseded_id: target,
@@ -480,19 +491,33 @@ function rejectNote(deps: StagingDeps, id: string, menu: MenuContext | null): Re
   return { outcome: "rejected", noteId: id };
 }
 
-// Returns the note as written to notes/ (the retry-convergent re-run reads it back from notes/),
-// so the caller can stamp the accepted measures without a second read of its own.
-function moveStagedToNotes(corpus: Corpus, id: string, transform: (frontmatter: NoteFrontmatter) => NoteFrontmatter): Note {
+interface PendingNote {
+  note: Note;
+  settled: boolean;
+}
+
+// The note a resolve acts on: the staged file, or the one already in notes/ when a crash moved it
+// before the commit — the retry-convergent re-run.
+function readPendingNote(corpus: Corpus, id: string): PendingNote {
   const stagingPath = notePath(corpus.stagingDir, id);
-  if (!existsSync(stagingPath)) {
-    const settledPath = notePath(corpus.notesDir, id);
-    if (existsSync(settledPath)) return parseNote(readFileSync(settledPath, "utf8"));
-    throw new StagingError(`no staged note to resolve: ${id}`);
-  }
-  const note = parseNote(readFileSync(stagingPath, "utf8"));
-  const resolved: Note = { frontmatter: transform(note.frontmatter), body: note.body };
+  if (existsSync(stagingPath)) return { note: parseNote(readFileSync(stagingPath, "utf8")), settled: false };
+  const settledPath = notePath(corpus.notesDir, id);
+  if (existsSync(settledPath)) return { note: parseNote(readFileSync(settledPath, "utf8")), settled: true };
+  throw new StagingError(`no staged note to resolve: ${id}`);
+}
+
+// Returns the note as written to notes/, so the caller can stamp the accepted measures without a
+// second read of its own.
+function settlePendingNote(
+  corpus: Corpus,
+  id: string,
+  pending: PendingNote,
+  transform: (frontmatter: NoteFrontmatter) => NoteFrontmatter,
+): Note {
+  if (pending.settled) return pending.note;
+  const resolved: Note = { frontmatter: transform(pending.note.frontmatter), body: pending.note.body };
   writeFileSync(notePath(corpus.notesDir, id), serializeNote(resolved));
-  rmSync(stagingPath, { force: true });
+  rmSync(notePath(corpus.stagingDir, id), { force: true });
   return resolved;
 }
 

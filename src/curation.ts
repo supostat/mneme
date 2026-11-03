@@ -4,7 +4,7 @@ import { createLivenessContext, pathEverExisted, resolveAnchorLiveness } from ".
 import type { Corpus } from "./corpus";
 import { REANCHOR_SOURCES } from "./event-schema";
 import type { ReanchorSource } from "./event-schema";
-import { readActiveNotes } from "./index-db";
+import { readActiveNotes } from "./active-notes";
 import { isNoteId, parseNote, validateAnchor } from "./note";
 import type { Note, NoteType } from "./note";
 import { isTracked } from "./staleness";

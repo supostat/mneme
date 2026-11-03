@@ -13,7 +13,7 @@ import { runGit } from "./git";
 import type { GitResult } from "./git";
 import { EMBEDDING_DIMENSION } from "./embeddings";
 import type { EmbeddingsClient } from "./embeddings";
-import { readActiveNotes } from "./index-db";
+import { readActiveNotes } from "./active-notes";
 import { findDanglingDependencies, readMapSections } from "./map/map-store";
 import type { MapSection } from "./map/map-section";
 import { MAX_BODY_CODE_POINTS } from "./note";

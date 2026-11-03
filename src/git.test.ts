@@ -2,7 +2,7 @@ import { test, expect, describe } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runGit, isRepo, initRepo, GIT_PROCESS_LIMIT, gitProcessLimit } from "./git";
+import { runGit, runGitWithInput, isRepo, initRepo, GIT_PROCESS_LIMIT, gitProcessLimit } from "./git";
 
 // Long enough for `git --version` to finish many times over had runGit spawned it anyway.
 const UNSPAWNED_WAIT_MS = 250;
@@ -73,6 +73,15 @@ describe("git adapter hardening", () => {
 
     const staged = await runGit(repoDir, ["diff", "--cached", "--name-only"]);
     expect(staged.stdout.trim()).toBe("-x");
+  });
+
+  test("runGitWithInput feeds the input to git's standard input", async () => {
+    const repoDir = await makeTempRepo();
+
+    const result = await runGitWithInput(repoDir, ["hash-object", "--stdin"], "hello\n");
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("ce013625030ba8dba906f756967f9e9ca394464a");
   });
 
   test("isRepo is false for a non-repository directory", async () => {

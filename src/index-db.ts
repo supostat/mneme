@@ -1,11 +1,10 @@
 import { Database } from "bun:sqlite";
-import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, rmSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { readActiveNotes } from "./active-notes";
 import { mapLayoutOf } from "./corpus";
 import { readMapSections } from "./map/map-store";
 import type { MapSection } from "./map/map-section";
-import { parseNote } from "./note";
 import type { Note } from "./note";
 import { isAnchorNeutral } from "./note";
 import { stalenessBoost, DEAD_ANCHOR_SINK } from "./staleness";
@@ -323,22 +322,6 @@ function readEmbeddingCache(database: Database, model: string): Map<string, Uint
     for (const row of rows) cache.set(row.content_hash, row.embedding);
   }
   return cache;
-}
-
-// The single definition of "active": not superseded and not retired. Rebuild indexes exactly this
-// population, so retired notes leave recall AND dedup neighborhoods by never being indexed; the
-// curation listing imports the same function so the two populations cannot drift.
-export function readActiveNotes(notesDir: string): Note[] {
-  const files = readdirSync(notesDir)
-    .filter((name) => name.endsWith(".md"))
-    .sort();
-  const notes = files.map((file) => parseNote(readFileSync(join(notesDir, file), "utf8")));
-  const superseded = new Set(
-    notes
-      .map((note) => note.frontmatter.supersedes)
-      .filter((id): id is string => id !== undefined),
-  );
-  return notes.filter((note) => !superseded.has(note.frontmatter.id) && note.frontmatter.retired !== true);
 }
 
 // An anchor-neutral note (pattern, antipattern) is pinned to the neutral 0 boost — the same value a
