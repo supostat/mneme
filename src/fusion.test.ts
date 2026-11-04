@@ -3,14 +3,21 @@ import {
   fuseAndFill,
   estimateTokens,
   compareIds,
+  DEAD_ANCHOR_SINK,
   DEFAULT_FUSION_PARAMS,
   RRF_K,
   TOKEN_BYTES,
 } from "./fusion";
 import type { FusionInput, FusionParams } from "./fusion";
+import {
+  DEAD_ANCHOR_SINK as STALENESS_DEAD_ANCHOR_SINK,
+  DRIFT_PENALTY_CAP,
+  KNOWN_ELSEWHERE_PENALTY,
+  UNRESOLVED_BASE_PENALTY,
+} from "./staleness";
 
 // Every expected value below is written as the arithmetic definition (never by calling fuseAndFill),
-// so the assertions independently pin the RRF + budget contract rather than echoing the code.
+// so the assertions independently pin the ranking + budget contract rather than echoing the code.
 
 function input(overrides: Partial<FusionInput> & { id: string }): FusionInput {
   return { ftsRank: null, vectorRank: null, stalenessBoost: 0, tokenEst: null, ...overrides };
@@ -20,19 +27,28 @@ function withParams(overrides: Partial<FusionParams>): FusionParams {
   return { ...DEFAULT_FUSION_PARAMS, ...overrides };
 }
 
+function idsOf(decisions: ReturnType<typeof fuseAndFill>): string[] {
+  return decisions.map((decision) => decision.id);
+}
+
 describe("fusion constants", () => {
   test("RRF_K is 60 and TOKEN_BYTES is 4", () => {
     expect(RRF_K).toBe(60);
     expect(TOKEN_BYTES).toBe(4);
   });
 
-  test("the default params are the byte-identity weights", () => {
-    expect(DEFAULT_FUSION_PARAMS).toEqual({ rrfK: 60, ftsWeight: 1, vectorWeight: 1, stalenessWeight: 1 });
+  test("the default params carry the channel weights only — staleness is a key, not a weight", () => {
+    expect(DEFAULT_FUSION_PARAMS).toEqual({ rrfK: 60, ftsWeight: 1, vectorWeight: 1 });
+  });
+
+  test("the dead-anchor sink is -1 and staleness re-exports the very same value", () => {
+    expect(DEAD_ANCHOR_SINK).toBe(-1);
+    expect(STALENESS_DEAD_ANCHOR_SINK).toBe(DEAD_ANCHOR_SINK);
   });
 });
 
-describe("fuseAndFill scoring and budget", () => {
-  test("ranks by descending score, exposes rrf and score, and fills greedily", () => {
+describe("fuseAndFill ranking and budget", () => {
+  test("ranks by descending rrf, exposes rrf without a score, and fills greedily", () => {
     const decisions = fuseAndFill(
       [
         input({ id: "a", ftsRank: 1, vectorRank: 1, tokenEst: 10 }),
@@ -43,34 +59,98 @@ describe("fuseAndFill scoring and budget", () => {
       25,
     );
 
-    expect(decisions.map((decision) => decision.id)).toEqual(["a", "b", "c"]);
+    expect(idsOf(decisions)).toEqual(["a", "b", "c"]);
     expect(decisions[0]!.rrf).toBe(1 / 61 + 1 / 61);
-    expect(decisions[0]!.score).toBe(1 / 61 + 1 / 61);
     expect(decisions[1]!.rrf).toBe(1 / 62);
     expect(decisions[2]!.rrf).toBe(1 / 63);
+    expect("score" in decisions[0]!).toBe(false);
     expect(decisions.map((decision) => decision.inBudget)).toEqual([true, true, false]);
   });
 
-  test("a staleness boost is added after the RRF sum, preserving addition order", () => {
+  test("drift never outranks relevance: a capped-drift note stays above a fresh, less relevant one", () => {
     const decisions = fuseAndFill(
-      [input({ id: "a", ftsRank: 1, vectorRank: 2, stalenessBoost: -0.5, tokenEst: 1 })],
+      [
+        input({ id: "b", ftsRank: 2, stalenessBoost: 0, tokenEst: 1 }),
+        input({ id: "a", ftsRank: 1, stalenessBoost: DRIFT_PENALTY_CAP, tokenEst: 1 }),
+      ],
       DEFAULT_FUSION_PARAMS,
       100,
     );
 
-    expect(decisions[0]!.rrf).toBe(1 / 61 + 1 / 62);
-    expect(decisions[0]!.score).toBe(1 / 61 + 1 / 62 + -0.5);
+    // 1/61 > 1/62 decides; the -0.01 cap would have flipped them under an additive score.
+    expect(idsOf(decisions)).toEqual(["a", "b"]);
+    expect(decisions[0]!.rrf).toBe(1 / 61);
+    expect(decisions[1]!.rrf).toBe(1 / 62);
   });
 
-  test("breaks score ties by ascending id regardless of input order", () => {
+  test("an exact rrf tie is broken by less drift first: symmetric rank pairs tie exactly", () => {
     const decisions = fuseAndFill(
-      [input({ id: "c", ftsRank: 2, tokenEst: 5 }), input({ id: "b", ftsRank: 2, tokenEst: 5 })],
+      [
+        input({ id: "a", ftsRank: 1, vectorRank: 4, stalenessBoost: -0.01, tokenEst: 1 }),
+        input({ id: "b", ftsRank: 4, vectorRank: 1, stalenessBoost: -0.007, tokenEst: 1 }),
+      ],
       DEFAULT_FUSION_PARAMS,
       100,
     );
 
-    expect(decisions.map((decision) => decision.id)).toEqual(["b", "c"]);
-    expect(decisions[0]!.score).toBe(decisions[1]!.score);
+    // IEEE addition is commutative, so 1/61 + 1/64 and 1/64 + 1/61 are the same float.
+    expect(decisions[0]!.rrf).toBe(1 / 61 + 1 / 64);
+    expect(decisions[1]!.rrf).toBe(decisions[0]!.rrf);
+    expect(idsOf(decisions)).toEqual(["b", "a"]);
+  });
+
+  test("a tie on rrf and on drift falls back to ascending id regardless of input order", () => {
+    const decisions = fuseAndFill(
+      [
+        input({ id: "c", ftsRank: 2, stalenessBoost: -0.003, tokenEst: 5 }),
+        input({ id: "b", ftsRank: 2, stalenessBoost: -0.003, tokenEst: 5 }),
+      ],
+      DEFAULT_FUSION_PARAMS,
+      100,
+    );
+
+    expect(idsOf(decisions)).toEqual(["b", "c"]);
+    expect(decisions[0]!.rrf).toBe(decisions[1]!.rrf);
+  });
+
+  test("a dead anchor sinks below every live candidate whatever its relevance; dead ones rank by rrf among themselves", () => {
+    const decisions = fuseAndFill(
+      [
+        input({ id: "x", ftsRank: 1, vectorRank: 1, stalenessBoost: DEAD_ANCHOR_SINK, tokenEst: 5 }),
+        input({ id: "w", ftsRank: 2, stalenessBoost: DEAD_ANCHOR_SINK, tokenEst: 5 }),
+        input({ id: "y", ftsRank: 3, vectorRank: 3, stalenessBoost: 0, tokenEst: 5 }),
+        input({ id: "z", ftsRank: 4, stalenessBoost: DRIFT_PENALTY_CAP, tokenEst: 5 }),
+      ],
+      DEFAULT_FUSION_PARAMS,
+      100,
+    );
+
+    // Live y and z first (2/63 above 1/64), then the dead x (2/61) above the dead w (1/62).
+    expect(idsOf(decisions)).toEqual(["y", "z", "x", "w"]);
+  });
+
+  test("the parked and the base-less penalties are live-class values: relevance still ranks them", () => {
+    const parked = fuseAndFill(
+      [
+        input({ id: "b", ftsRank: 2, stalenessBoost: 0, tokenEst: 1 }),
+        input({ id: "a", ftsRank: 1, stalenessBoost: KNOWN_ELSEWHERE_PENALTY, tokenEst: 1 }),
+      ],
+      DEFAULT_FUSION_PARAMS,
+      100,
+    );
+    const baseless = fuseAndFill(
+      [
+        input({ id: "b", ftsRank: 2, stalenessBoost: 0, tokenEst: 1 }),
+        input({ id: "a", ftsRank: 1, stalenessBoost: UNRESOLVED_BASE_PENALTY, tokenEst: 1 }),
+      ],
+      DEFAULT_FUSION_PARAMS,
+      100,
+    );
+
+    expect(KNOWN_ELSEWHERE_PENALTY).toBeGreaterThan(DEAD_ANCHOR_SINK);
+    expect(UNRESOLVED_BASE_PENALTY).toBeGreaterThan(DEAD_ANCHOR_SINK);
+    expect(idsOf(parked)).toEqual(["a", "b"]);
+    expect(idsOf(baseless)).toEqual(["a", "b"]);
   });
 
   test("the ranked result is independent of input order", () => {
@@ -93,8 +173,8 @@ describe("fuseAndFill scoring and budget", () => {
       100,
     );
 
-    expect(scrambled.map((decision) => decision.id)).toEqual(["a", "b", "c"]);
-    expect(scrambled.map((decision) => decision.id)).toEqual(forward.map((decision) => decision.id));
+    expect(idsOf(scrambled)).toEqual(["a", "b", "c"]);
+    expect(idsOf(scrambled)).toEqual(idsOf(forward));
   });
 
   test("a note that exactly fills the remaining budget is in and the next is out", () => {
@@ -143,9 +223,9 @@ describe("fuseAndFill alternative parameters", () => {
     ];
 
     // Default k=60: q (1/63 + 1/63) outscores p (1/61).
-    expect(fuseAndFill(inputs, DEFAULT_FUSION_PARAMS, 100).map((decision) => decision.id)).toEqual(["q", "p"]);
+    expect(idsOf(fuseAndFill(inputs, DEFAULT_FUSION_PARAMS, 100))).toEqual(["q", "p"]);
     // k=0: p (1/1) outscores q (1/3 + 1/3).
-    expect(fuseAndFill(inputs, withParams({ rrfK: 0 }), 100).map((decision) => decision.id)).toEqual(["p", "q"]);
+    expect(idsOf(fuseAndFill(inputs, withParams({ rrfK: 0 }), 100))).toEqual(["p", "q"]);
   });
 
   test("a zero fts weight collapses to a pure vector ranking", () => {
@@ -155,21 +235,9 @@ describe("fuseAndFill alternative parameters", () => {
     ];
 
     // Default: both score 1/61, tie broken by id.
-    expect(fuseAndFill(inputs, DEFAULT_FUSION_PARAMS, 100).map((decision) => decision.id)).toEqual(["m", "n"]);
+    expect(idsOf(fuseAndFill(inputs, DEFAULT_FUSION_PARAMS, 100))).toEqual(["m", "n"]);
     // ftsWeight 0: m scores 0, n scores 1/61.
-    expect(fuseAndFill(inputs, withParams({ ftsWeight: 0 }), 100).map((decision) => decision.id)).toEqual(["n", "m"]);
-  });
-
-  test("a zero staleness weight neutralizes a dead-anchor sink", () => {
-    const inputs = [
-      input({ id: "x", ftsRank: 1, vectorRank: 1, stalenessBoost: -0.5, tokenEst: 5 }),
-      input({ id: "y", ftsRank: 2, vectorRank: 2, stalenessBoost: 0, tokenEst: 5 }),
-    ];
-
-    // Default: x is sunk to (2/61 - 0.5), below y (2/62).
-    expect(fuseAndFill(inputs, DEFAULT_FUSION_PARAMS, 100).map((decision) => decision.id)).toEqual(["y", "x"]);
-    // stalenessWeight 0: x (2/61) rises above y (2/62).
-    expect(fuseAndFill(inputs, withParams({ stalenessWeight: 0 }), 100).map((decision) => decision.id)).toEqual(["x", "y"]);
+    expect(idsOf(fuseAndFill(inputs, withParams({ ftsWeight: 0 }), 100))).toEqual(["n", "m"]);
   });
 
   test("a smaller budget shrinks the admitted set", () => {

@@ -166,10 +166,26 @@ describe("replayLog verification", () => {
 });
 
 describe("replayLog alternatives", () => {
-  // A: fts_rank 1, staleness -0.5, token_est 5. B: fts_rank 2, staleness 0, token_est 5. Budget 5.
-  // Default fusion sinks A below B, so the logged decision is [B in, A out].
+  // A: fts_rank 1, staleness -0.5 (drifted, still live), token_est 5. B: fts_rank 2, staleness 0,
+  // token_est 5. Budget 5. Relevance ranks A first whatever its drift, so the logged decision is
+  // [A in, B out] — the order an additive score reversed.
   function abEvent(): StoredEvent {
     return recallEventFixture({
+      candidates: [
+        candidate({ id: "A", fts_rank: 1, staleness_boost: -0.5, token_est: 5, in_budget: true }),
+        candidate({ id: "B", fts_rank: 2, staleness_boost: 0, token_est: 5, in_budget: false }),
+      ],
+      budget: 5,
+      corpus_size: 2,
+    });
+  }
+
+  test("the AB fixture reproduces under default params: drift never reorders relevance", () => {
+    expect(replayLog([abEvent()], {}).replays[0]!.identical).toBe(true);
+  });
+
+  test("a log that ranked the drifted note below the fresher one no longer reproduces", () => {
+    const additive = recallEventFixture({
       candidates: [
         candidate({ id: "B", fts_rank: 2, staleness_boost: 0, token_est: 5, in_budget: true }),
         candidate({ id: "A", fts_rank: 1, staleness_boost: -0.5, token_est: 5, in_budget: false }),
@@ -177,25 +193,20 @@ describe("replayLog alternatives", () => {
       budget: 5,
       corpus_size: 2,
     });
-  }
 
-  test("the AB fixture reproduces under default params", () => {
-    expect(replayLog([abEvent()], {}).replays[0]!.identical).toBe(true);
-  });
+    const replay = replayLog([additive], {}).replays[0]!;
 
-  test("zeroing the staleness weight lifts A in and drops B out", () => {
-    const replay = replayLog([abEvent()], { stalenessWeight: 0 }).replays[0]!;
-
+    expect(replay.identical).toBe(false);
+    expect(replay.orderChanged).toBe(true);
     expect(replay.entered).toEqual(["A"]);
     expect(replay.left).toEqual(["B"]);
-    expect(replay.orderChanged).toBe(true);
   });
 
   test("a smaller budget drops the logged in-budget note", () => {
     const replay = replayLog([abEvent()], { budget: 4 }).replays[0]!;
 
     expect(replay.entered).toEqual([]);
-    expect(replay.left).toEqual(["B"]);
+    expect(replay.left).toEqual(["A"]);
   });
 });
 
@@ -264,10 +275,10 @@ describe("canonicalDecisionVector", () => {
 
 describe("parseReplayArgs", () => {
   test("parses the events dir and numeric flags including an explicit zero", () => {
-    const args = parseReplayArgs(["/events", "--budget", "500", "--staleness-weight", "0"]);
+    const args = parseReplayArgs(["/events", "--budget", "500", "--fts-weight", "0"]);
 
     expect(args.eventsDir).toBe("/events");
-    expect(args.overrides).toEqual({ budget: 500, stalenessWeight: 0 });
+    expect(args.overrides).toEqual({ budget: 500, ftsWeight: 0 });
     expect(hasOverrides(args.overrides)).toBe(true);
   });
 
@@ -278,7 +289,6 @@ describe("parseReplayArgs", () => {
       "--rrf-k", "60",
       "--fts-weight", "1.5",
       "--vector-weight", "2.5",
-      "--staleness-weight", "3.5",
     ]);
 
     expect(args.overrides).toEqual({
@@ -286,8 +296,11 @@ describe("parseReplayArgs", () => {
       rrfK: 60,
       ftsWeight: 1.5,
       vectorWeight: 2.5,
-      stalenessWeight: 3.5,
     });
+  });
+
+  test("--staleness-weight is gone: staleness is a sort key, not a weight, so the flag is unknown", () => {
+    expect(() => parseReplayArgs(["/events", "--staleness-weight", "0"])).toThrow("unknown flag: --staleness-weight");
   });
 
   test("no flags selects verification mode", () => {
@@ -315,11 +328,11 @@ describe("parseReplayArgs", () => {
 });
 
 describe("hasOverrides distinguishes presence from truthiness", () => {
-  test("an explicit staleness weight of zero selects alternative mode", () => {
-    expect(hasOverrides({ stalenessWeight: 0 })).toBe(true);
+  test("an explicit vector weight of zero selects alternative mode", () => {
+    expect(hasOverrides({ vectorWeight: 0 })).toBe(true);
 
-    const args = parseReplayArgs(["/events", "--staleness-weight", "0"]);
-    expect(args.overrides).toEqual({ stalenessWeight: 0 });
+    const args = parseReplayArgs(["/events", "--vector-weight", "0"]);
+    expect(args.overrides).toEqual({ vectorWeight: 0 });
     expect(hasOverrides(args.overrides)).toBe(true);
   });
 
@@ -383,7 +396,7 @@ describe("main exit codes", () => {
     const eventsDir = writeEventsDir([
       recallEventFixture({ candidates: orderedCandidates(), budget: 100, corpus_size: 3 }),
     ]);
-    expect(runMainSilently([eventsDir, "--staleness-weight", "0"])).toBe(0);
+    expect(runMainSilently([eventsDir, "--rrf-k", "0"])).toBe(0);
   });
 
   test("a usage error exits 2", () => {

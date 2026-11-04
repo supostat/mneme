@@ -17,6 +17,7 @@ import type { EmbeddingsClient } from "./embeddings";
 import { EventWriter, readEvents } from "./events";
 import type { StoredEvent } from "./events";
 import { estimateTokens } from "./fusion";
+import { DEAD_ANCHOR_SINK, DRIFT_PENALTY_CAP, DRIFT_PENALTY_PER_COMMIT } from "./staleness";
 
 const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
@@ -385,6 +386,141 @@ describe("recall dead-anchor sink", () => {
     expect(result.returnedIds).toContain(ulid(0));
     expect(result.returnedIds).toContain(ulid(1));
     expect(result.returnedIds.indexOf(ulid(0))).toBeLessThan(result.returnedIds.indexOf(ulid(1)));
+  });
+});
+
+// Bodies whose vectors the test chooses outright: a known text maps to its components, anything
+// else (the embedder sees every note and section body) to a zero vector with no signal.
+function keyedClient(byText: Map<string, number[]>): EmbeddingsClient {
+  return {
+    model: EMBEDDING_MODEL,
+    embed: async (inputs) => ({
+      available: true,
+      retries: 0,
+      embeddings: inputs.map((text) => {
+        const vector = new Float32Array(EMBEDDING_DIMENSION);
+        (byText.get(text) ?? []).forEach((value, index) => {
+          vector[index] = value;
+        });
+        return vector;
+      }),
+    }),
+  };
+}
+
+// The index is a disposable cache and the rule under test is fusion's, not git's: the boost is
+// pinned straight into the row the rebuild wrote — the same door the malformed-vector case uses.
+function pinStalenessBoost(indexPath: string, table: "meta" | "map_meta", id: string, boost: number): void {
+  const writable = new Database(indexPath);
+  writable.run(`UPDATE ${table} SET staleness_boost = ? WHERE id = ?`, [boost, id]);
+  writable.close();
+}
+
+// Unrelated notes that match no query term: they lift the FTS corpus size so every query term keeps
+// a positive idf, and they fall below the cosine threshold, so they never enter the returned ids.
+function fillerNotes(count: number): NoteSpec[] {
+  return FILLER_BODIES.slice(0, count).map((body, index) => ({
+    id: ulid(20 + index),
+    body,
+    anchor: `src/filler-${index}.ts`,
+  }));
+}
+
+function neutralDomain(id: string, body: string): MapSection {
+  return { frontmatter: { id, kind: "domain", anchors: [], depends_on: [], terms: [], commit: "abc1234" }, body };
+}
+
+describe("recall relevance before drift", () => {
+  const query = "payment refund ledger reconciliation";
+
+  test("a note at the drift cap stays above a fresh note that matches the query worse", async () => {
+    const specs: NoteSpec[] = [
+      { id: ulid(0), body: "payment refund ledger reconciliation", anchor: "src/pay.ts", type: "decision" },
+      { id: ulid(1), body: "payment refund notes", anchor: "src/notes.ts", type: "decision" },
+      ...fillerNotes(4),
+    ];
+    const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
+    pinStalenessBoost(indexPath, "meta", ulid(0), DRIFT_PENALTY_CAP);
+
+    const result = await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), query, 100000, "tool-call", []);
+
+    // ulid(0) leads both channels; an additive score (2/61 - 0.01 against 2/62) put it second.
+    expect(result.returnedIds).toEqual([ulid(0), ulid(1)]);
+    const logged = candidatesOf(lastRecallEvent(eventsDir)).slice(0, 2);
+    expect(logged.map((candidate) => [candidate.id, candidate.fts_rank, candidate.vector_rank, candidate.staleness_boost])).toEqual([
+      [ulid(0), 1, 1, DRIFT_PENALTY_CAP],
+      [ulid(1), 2, 2, 0],
+    ]);
+  });
+
+  test("a domain at the drift cap keeps its slot above fresher, weaker sections, in the answer and in the log", async () => {
+    const sections = [
+      neutralDomain("ledger", "payment refund ledger reconciliation"),
+      neutralDomain("refunds", "refund ledger"),
+      neutralDomain("payments", "payment"),
+      neutralDomain("alpha", "alpha"),
+      neutralDomain("beta", "beta"),
+      neutralDomain("gamma", "gamma"),
+      neutralDomain("delta", "delta"),
+    ];
+    const { indexPath, eventsDir } = await setupIndex(fillerNotes(1), bagOfWordsClient(), sections);
+    pinStalenessBoost(indexPath, "map_meta", "ledger", DRIFT_PENALTY_CAP);
+
+    const result = await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), query, 100000, "tool-call", []);
+
+    expect(result.sections.map((section) => section.id)).toEqual(["ledger", "refunds"]);
+    const logged = lastRecallEvent(eventsDir).sections as Array<{ id: string; returned: boolean }>;
+    expect(logged.slice(0, 3).map((section) => [section.id, section.returned])).toEqual([
+      ["ledger", true],
+      ["refunds", true],
+      ["payments", false],
+    ]);
+  });
+
+  test("an exact relevance tie goes to the less drifted note, overriding the id tie-break", async () => {
+    // FTS prefers the shorter body (ulid(1) first), the keyed vectors prefer ulid(0): a symmetric
+    // rank pair, so both fuse to exactly 1/61 + 1/62 and only drift can separate them.
+    const specs: NoteSpec[] = [
+      { id: ulid(0), body: "tie word word", anchor: "src/one.ts", type: "decision" },
+      { id: ulid(1), body: "tie", anchor: "src/two.ts", type: "decision" },
+    ];
+    const client = keyedClient(
+      new Map([
+        ["tie please", [1, 0]],
+        ["tie word word", [1, 0]],
+        ["tie", [0.6, 0.8]],
+      ]),
+    );
+    const { indexPath, eventsDir } = await setupIndex(specs, client);
+    pinStalenessBoost(indexPath, "meta", ulid(0), DRIFT_PENALTY_PER_COMMIT);
+
+    const result = await recall(openRecall(indexPath, eventsDir, client), "tie please", 100000, "tool-call", []);
+
+    expect(result.returnedIds).toEqual([ulid(1), ulid(0)]);
+    const logged = candidatesOf(lastRecallEvent(eventsDir));
+    expect(logged.map((candidate) => [candidate.id, candidate.fts_rank, candidate.vector_rank])).toEqual([
+      [ulid(1), 1, 2],
+      [ulid(0), 2, 1],
+    ]);
+    expect(logged[0]!.rrf).toBe(logged[1]!.rrf);
+  });
+
+  test("a dead-anchored note that matches the query better still sinks below a live one", async () => {
+    const specs: NoteSpec[] = [
+      { id: ulid(0), body: "singleton pattern usage guide reference", anchor: "src/ghost.ts", dead: true, type: "decision" },
+      { id: ulid(1), body: "singleton pattern usage", anchor: "src/live.ts", type: "decision" },
+      ...fillerNotes(4),
+    ];
+    const { indexPath, eventsDir } = await setupIndex(specs, bagOfWordsClient());
+
+    const result = await recall(openRecall(indexPath, eventsDir, bagOfWordsClient()), "singleton pattern usage guide reference", 100000, "tool-call", []);
+
+    expect(result.returnedIds).toEqual([ulid(1), ulid(0)]);
+    const logged = candidatesOf(lastRecallEvent(eventsDir));
+    expect([logged[0]!.id, logged[0]!.fts_rank, logged[0]!.staleness_boost]).toEqual([ulid(1), 2, 0]);
+    // The dead note ranks under every live candidate — the fillers that match nothing included.
+    const last = logged[logged.length - 1]!;
+    expect([last.id, last.fts_rank, last.staleness_boost]).toEqual([ulid(0), 1, DEAD_ANCHOR_SINK]);
   });
 });
 
@@ -788,25 +924,6 @@ describe("recall map sections", () => {
     return { frontmatter: { ...sectionBase, ...overrides }, body };
   }
 
-  // Bodies whose vectors the test chooses outright: a known text maps to its components, anything
-  // else (the embedder sees every note and section body) to a zero vector with no signal.
-  function keyedClient(byText: Map<string, number[]>): EmbeddingsClient {
-    return {
-      model: EMBEDDING_MODEL,
-      embed: async (inputs) => ({
-        available: true,
-        retries: 0,
-        embeddings: inputs.map((text) => {
-          const vector = new Float32Array(EMBEDDING_DIMENSION);
-          (byText.get(text) ?? []).forEach((value, index) => {
-            vector[index] = value;
-          });
-          return vector;
-        }),
-      }),
-    };
-  }
-
   const billingNote: NoteSpec = { id: ulid(0), body: "invoice generation path", anchor: "src/invoice.ts" };
   const ordersNote: NoteSpec = { id: ulid(1), body: "cart checkout invoice flow", anchor: "src/order.ts" };
   const strayNote: NoteSpec = { id: ulid(2), body: "invoice gamma elsewhere", anchor: "src/c.ts" };
@@ -1017,9 +1134,11 @@ describe("recall map sections", () => {
     ]);
   });
 
-  // orders and billing both carry the lost-base penalty (live anchors, a commit the project does not
-  // hold) and shipping, without anchors, none; the penalty is smaller than billing's lexical hit, so
-  // billing leads, shipping follows, and orders — no hit and the penalty — is third.
+  // billing is the only one the query reaches, so it leads. orders and shipping both miss it (no
+  // lexical hit, cosine 0); the cosine channel breaks that tie by id, so orders ranks second and
+  // shipping third. orders carries the lost-base penalty (a live anchor, a commit the project does
+  // not hold) and shipping, without anchors, none — but drift orders only an exact relevance tie,
+  // and dense channel ranks never produce one here, so the penalty does not demote orders.
   test("of three named domains the first two in fused order take the slots and the third is logged unreturned", async () => {
     const shipping = section({ id: "shipping" }, "Parcels leave the warehouse.");
     const { indexPath, eventsDir } = await setupIndex(
@@ -1036,12 +1155,12 @@ describe("recall map sections", () => {
       ["orders", "billing", "shipping"],
     );
 
-    expect(result.sections.map((candidate) => candidate.id)).toEqual(["billing", "shipping"]);
+    expect(result.sections.map((candidate) => candidate.id)).toEqual(["billing", "orders"]);
     const logged = readEvents(eventsDir)[0]!.sections as Array<{ id: string; returned: boolean }>;
     expect(logged.map((candidate) => [candidate.id, candidate.returned])).toEqual([
       ["billing", true],
-      ["shipping", true],
-      ["orders", false],
+      ["orders", true],
+      ["shipping", false],
       ["order-to-invoice", false],
     ]);
   });

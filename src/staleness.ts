@@ -1,11 +1,14 @@
+import { DEAD_ANCHOR_SINK } from "./fusion";
 import { runGit } from "./git";
 import { livenessOf } from "./anchor-liveness";
 import type { LivenessContext } from "./anchor-liveness";
 import type { CommitBase } from "./commit-base";
 
 export { isTracked } from "./anchor-liveness";
+// The dead-anchor value is the fusion comparator's class boundary, so it is declared beside the
+// comparator and only re-exported here for the liveness code and its callers.
+export { DEAD_ANCHOR_SINK } from "./fusion";
 
-export const DEAD_ANCHOR_SINK = -1;
 export const DRIFT_PENALTY_PER_COMMIT = -0.001;
 export const DRIFT_PENALTY_CAP = -0.01;
 // "Alive, just not here": a path parked on another branch's tip ranks like a maximally drifted

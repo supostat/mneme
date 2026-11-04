@@ -14,14 +14,13 @@ import { renderAlternative, renderVerification } from "./replay-render";
 
 // Candidates first appear at schema v3; an older recall event carries none and is skipped, not failed.
 const CANDIDATES_MIN_SCHEMA_VERSION = 3;
-const USAGE = "usage: bun scripts/replay.ts <events-dir> [--budget N] [--rrf-k N] [--fts-weight W] [--vector-weight W] [--staleness-weight W]";
+const USAGE = "usage: bun scripts/replay.ts <events-dir> [--budget N] [--rrf-k N] [--fts-weight W] [--vector-weight W]";
 
 export interface ReplayOverrides {
   budget?: number;
   rrfK?: number;
   ftsWeight?: number;
   vectorWeight?: number;
-  stalenessWeight?: number;
 }
 
 export interface DecisionPair {
@@ -135,7 +134,6 @@ function fusionParams(overrides: ReplayOverrides): FusionParams {
     rrfK: overrides.rrfK ?? DEFAULT_FUSION_PARAMS.rrfK,
     ftsWeight: overrides.ftsWeight ?? DEFAULT_FUSION_PARAMS.ftsWeight,
     vectorWeight: overrides.vectorWeight ?? DEFAULT_FUSION_PARAMS.vectorWeight,
-    stalenessWeight: overrides.stalenessWeight ?? DEFAULT_FUSION_PARAMS.stalenessWeight,
   };
 }
 
@@ -218,7 +216,6 @@ const FLAG_KEYS: Record<string, keyof ReplayOverrides> = {
   "--rrf-k": "rrfK",
   "--fts-weight": "ftsWeight",
   "--vector-weight": "vectorWeight",
-  "--staleness-weight": "stalenessWeight",
 };
 
 export function parseReplayArgs(argv: string[]): ReplayArgs {
@@ -252,14 +249,13 @@ function consumeFlag(argv: string[], index: number, overrides: ReplayOverrides):
   return index + 2;
 }
 
-// Presence via !== undefined, not truthiness, so `--staleness-weight 0` still selects alternative mode.
+// Presence via !== undefined, not truthiness, so `--fts-weight 0` still selects alternative mode.
 export function hasOverrides(overrides: ReplayOverrides): boolean {
   return (
     overrides.budget !== undefined ||
     overrides.rrfK !== undefined ||
     overrides.ftsWeight !== undefined ||
-    overrides.vectorWeight !== undefined ||
-    overrides.stalenessWeight !== undefined
+    overrides.vectorWeight !== undefined
   );
 }
 

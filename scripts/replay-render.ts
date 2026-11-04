@@ -50,6 +50,5 @@ function describeOverrides(overrides: ReplayOverrides): string {
   if (overrides.rrfK !== undefined) parts.push(`rrfK=${overrides.rrfK}`);
   if (overrides.ftsWeight !== undefined) parts.push(`ftsWeight=${overrides.ftsWeight}`);
   if (overrides.vectorWeight !== undefined) parts.push(`vectorWeight=${overrides.vectorWeight}`);
-  if (overrides.stalenessWeight !== undefined) parts.push(`stalenessWeight=${overrides.stalenessWeight}`);
   return parts.join(" ");
 }
