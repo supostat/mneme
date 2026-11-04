@@ -126,11 +126,24 @@ import { z } from "zod";
 //       Every new key is optional to a reader (the v4 extend-never-repurpose rule): an older event
 //       reads tags as [], a pid-less session as not live, and a missing gap / staged_notes as
 //       "not instrumented".
-export const SCHEMA_VERSION = 22;
+//  23 — relevance-first fusion: the second entry that stamps a producer GUARANTEE rather than a
+//       payload change (the v19 precedent). From v23 on the recall candidates are ordered
+//       lexicographically — live anchor class before dead, rrf descending, staleness_boost
+//       descending, id — so a drifted note never ranks below a less relevant fresh one and the
+//       boost orders exact relevance ties only. Under v22 and earlier the same candidates were
+//       ordered by rrf + staleness_boost, a formula that no longer exists, so replay skips those
+//       recall events instead of verifying them (RELEVANCE_FIRST_SCHEMA_VERSION is that boundary).
+//       No event shape changed: candidates still carry rrf and staleness_boost, the two keys.
+export const SCHEMA_VERSION = 23;
 
 // The first schema version whose harvest bodies are guaranteed whole. A fixed boundary, not an alias
 // of SCHEMA_VERSION: later bumps must never move it, or old clipped bodies would read as whole.
 export const UNCLIPPED_HARVEST_SCHEMA_VERSION = 19;
+
+// The first schema version whose recall candidates are ordered relevance-first (rrf, then the
+// staleness boost as a tie-break). A fixed boundary, not an alias of SCHEMA_VERSION: later bumps must
+// never move it, or replay would skip events it can reproduce, or verify events of the old formula.
+export const RELEVANCE_FIRST_SCHEMA_VERSION = 23;
 
 export const DEDUP_OUTCOMES = ["add", "supersede_suggest", "noop"] as const;
 // The closed v1 registry of digit-menu decision classes: curation rides staging_resolve, plan-fan

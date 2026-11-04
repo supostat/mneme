@@ -17,9 +17,12 @@ export function renderVerification(report: ReplayReport): string {
 
 function verificationSummary(report: ReplayReport): string {
   const verified = report.replays.filter((replay) => replay.identical).length;
-  const skipped =
-    report.skippedPreCandidates > 0 ? ` (${report.skippedPreCandidates} pre-candidate events skipped)` : "";
-  return `${verified}/${report.replays.length} recall events reproduced${skipped}`;
+  const skipped = [
+    report.skippedPreCandidates > 0 ? `${report.skippedPreCandidates} pre-candidate events skipped` : "",
+    report.skippedPreRule > 0 ? `${report.skippedPreRule} pre-rule events skipped` : "",
+  ].filter((part) => part !== "");
+  const suffix = skipped.length > 0 ? ` (${skipped.join(", ")})` : "";
+  return `${verified}/${report.replays.length} recall events reproduced${suffix}`;
 }
 
 export function renderAlternative(report: ReplayReport, overrides: ReplayOverrides): string {

@@ -1,16 +1,18 @@
 #!/usr/bin/env bun
 import { readEvents } from "../src/events";
 import type { StoredEvent } from "../src/events";
-import { RECALL_CANDIDATE_WINDOW, SCHEMA_VERSION } from "../src/event-schema";
+import { RECALL_CANDIDATE_WINDOW, RELEVANCE_FIRST_SCHEMA_VERSION, SCHEMA_VERSION } from "../src/event-schema";
 import { DEFAULT_FUSION_PARAMS, fuseAndFill } from "../src/fusion";
 import type { FusionDecision, FusionInput, FusionParams } from "../src/fusion";
 import { renderAlternative, renderVerification } from "./replay-render";
 
-// Offline "what-if" replay of the recall log. Each schema-v3 recall event carries its pre-budget
-// candidate list with the exact fusion inputs and in_budget decision; this tool recomputes the
-// decision vector from those LOGGED components alone — never re-running FTS or embeddings and never
-// reading the query, so it stays safe against a redacted log. No flags verifies the recorded
-// decisions reproduce; any flag reports how alternative parameters would reshape them.
+// Offline "what-if" replay of the recall log. A recall event carries its pre-budget candidate list
+// with the exact fusion inputs and in_budget decision; this tool recomputes the decision vector from
+// those LOGGED components alone — never re-running FTS or embeddings and never reading the query, so
+// it stays safe against a redacted log. No flags verifies the recorded decisions reproduce; any flag
+// reports how alternative parameters would reshape them. Only events decided by the current
+// relevance-first comparator are replayed: the additive formula of schema 3 to 22 is gone, and it is
+// not kept as a second scorer.
 
 // Candidates first appear at schema v3; an older recall event carries none and is skipped, not failed.
 const CANDIDATES_MIN_SCHEMA_VERSION = 3;
@@ -42,6 +44,7 @@ export interface EventReplay {
 export interface ReplayReport {
   replays: EventReplay[];
   skippedPreCandidates: number;
+  skippedPreRule: number;
 }
 
 export interface ReplayArgs {
@@ -68,6 +71,7 @@ export function replayLog(events: StoredEvent[], overrides: ReplayOverrides): Re
   refuseIfAheadOfSchema(events);
   const replays: EventReplay[] = [];
   let skippedPreCandidates = 0;
+  let skippedPreRule = 0;
   for (const event of events) {
     if (event.type !== "recall") continue;
     const candidates = loggedCandidates(event);
@@ -75,9 +79,20 @@ export function replayLog(events: StoredEvent[], overrides: ReplayOverrides): Re
       skippedPreCandidates += 1;
       continue;
     }
+    if (isPreRule(event)) {
+      skippedPreRule += 1;
+      continue;
+    }
     replays.push(replayRecall(event, candidates, overrides));
   }
-  return { replays, skippedPreCandidates };
+  return { replays, skippedPreCandidates, skippedPreRule };
+}
+
+// A recall decided under the additive formula (schema 3 to 22) cannot be reproduced by the
+// relevance-first comparator, and that formula is not kept around as a second scorer: the event is
+// skipped and counted, never reported as a mismatch.
+function isPreRule(event: StoredEvent): boolean {
+  return event.schema_version < RELEVANCE_FIRST_SCHEMA_VERSION;
 }
 
 // A newer mneme could encode decisions this tool cannot reproduce; refuse the whole log up front

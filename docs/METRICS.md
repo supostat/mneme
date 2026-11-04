@@ -556,6 +556,14 @@ cat "$EVENTS"/*.jsonl | jq -s '
 > their meaning. Every new key is optional in the shape: a pre-v21 event reads as "not
 > instrumented" for (n), never as a recall without a gap.
 
+> **Schema note (v23).** A producer guarantee, not a payload change (the v19 precedent): from v23 on
+> the `recall` candidates are ordered **relevance first** — live anchor class before dead, `rrf`
+> descending, `staleness_boost` descending, `id` — so a drifted note never ranks below a less
+> relevant fresh one and the boost orders exact relevance ties only. Under v22 and earlier the same
+> candidates were ordered by `rrf + staleness_boost`, a formula that no longer exists; the replay
+> tool counts those events as pre-rule skips (below). `rrf` and `staleness_boost` keep their meaning
+> and remain the two keys; no event shape changed.
+
 ## Offline replay
 
 The candidate list makes each recall decision **reproducible offline**. `scripts/replay.ts` rebuilds
@@ -570,13 +578,16 @@ exits 2.
 # Verify the recorded decisions reproduce.
 bun scripts/replay.ts "$EVENTS"
 
-# Ask what a different budget or fusion weighting would have done.
-bun scripts/replay.ts "$EVENTS" --budget 4000 --staleness-weight 0
+# Ask what a different budget or RRF constant would have done.
+bun scripts/replay.ts "$EVENTS" --budget 4000 --rrf-k 30
 ```
 
 Replay refuses any log containing an event whose `schema_version` exceeds the tool's own (it names
 both versions), and counts pre-v3 recall events — which carry no candidates — as skipped rather than
-failed. Because only the logged **top-20 prefix** is available, a recall whose candidate window is
+failed. Recall events of schema 3 to 22 were decided by the additive formula (`rrf +
+staleness_boost`) that v23 replaced; they are counted as **pre-rule** skips — never verified by a
+resurrected scorer, never reported as mismatches — and the summary names both skip counts side by
+side. Because only the logged **top-20 prefix** is available, a recall whose candidate window is
 full while the corpus is larger is marked window-limited: *the corpus exceeds the 20-candidate window
 (analysis may be truncated)*. The OK / MISMATCH verdict over that logged prefix is still exact; only
 analysis beyond the window is out of reach.

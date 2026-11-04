@@ -5,13 +5,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EMBEDDING_DIMENSION, EMBEDDING_MODEL } from "../src/embeddings";
 import type { EmbeddingsClient } from "../src/embeddings";
-import { SCHEMA_VERSION } from "../src/event-schema";
+import { RELEVANCE_FIRST_SCHEMA_VERSION, SCHEMA_VERSION } from "../src/event-schema";
 import { INDEX_SCHEMA_STATEMENTS } from "../src/index-db";
 import { EVENT_FILE_EXTENSION, EventWriter, readEvents } from "../src/events";
 import type { StoredEvent } from "../src/events";
 import { recall } from "../src/recall";
 import type { RecallDeps } from "../src/recall";
 import { replayLog, canonicalDecisionVector, parseReplayArgs, hasOverrides, main } from "./replay";
+import { renderVerification } from "./replay-render";
 
 // The index schema is copied verbatim from index-db.ts so the integration test can build a real,
 // queryable index without git or a full rebuild.
@@ -87,7 +88,7 @@ function recallEventFixture(overrides: Record<string, unknown>): StoredEvent {
     session_id: "s",
     ts: "2026-07-07T10:00:00.000Z",
     mneme_version: "0.1.0",
-    schema_version: 3,
+    schema_version: SCHEMA_VERSION,
     query: "q",
     budget: 2000,
     returned_ids: [],
@@ -130,6 +131,7 @@ describe("replayLog integration with the real recall path", () => {
 
     expect(report.replays.length).toBe(1);
     expect(report.skippedPreCandidates).toBe(0);
+    expect(report.skippedPreRule).toBe(0);
     expect(report.replays.every((replay) => replay.identical)).toBe(true);
 
     // The fixture must stay genuinely mixed: at least one admitted and one skipped note, or the
@@ -249,7 +251,37 @@ describe("replayLog schema handling", () => {
     const report = replayLog([v2], {});
 
     expect(report.skippedPreCandidates).toBe(1);
+    expect(report.skippedPreRule).toBe(0);
     expect(report.replays.length).toBe(0);
+  });
+
+  test("a recall decided by the additive formula (schema 3 to 22) is skipped as pre-rule, never verified", () => {
+    const firstWithCandidates = recallEventFixture({ schema_version: 3, candidates: orderedCandidates(), budget: 100, corpus_size: 3 });
+    const lastAdditive = recallEventFixture({
+      schema_version: RELEVANCE_FIRST_SCHEMA_VERSION - 1,
+      candidates: orderedCandidates(),
+      budget: 100,
+      corpus_size: 3,
+    });
+
+    const report = replayLog([firstWithCandidates, lastAdditive], {});
+
+    expect(report.skippedPreRule).toBe(2);
+    expect(report.skippedPreCandidates).toBe(0);
+    expect(report.replays.length).toBe(0);
+  });
+
+  test("the three populations of one log are told apart: pre-candidate, pre-rule and replayed", () => {
+    const v2 = bareEvent({ type: "recall", schema_version: 2, query: "q", budget: 2000, returned_ids: ["n1"], degraded: false });
+    const additive = recallEventFixture({ schema_version: RELEVANCE_FIRST_SCHEMA_VERSION - 1, candidates: orderedCandidates(), budget: 100, corpus_size: 3 });
+    const current = recallEventFixture({ candidates: orderedCandidates(), budget: 100, corpus_size: 3 });
+
+    const report = replayLog([v2, additive, current], {});
+
+    expect(report.skippedPreCandidates).toBe(1);
+    expect(report.skippedPreRule).toBe(1);
+    expect(report.replays.length).toBe(1);
+    expect(report.replays[0]!.identical).toBe(true);
   });
 
   test("a malformed candidate field type throws with the event timestamp", () => {
@@ -259,6 +291,20 @@ describe("replayLog schema handling", () => {
 
     expect(() => replayLog([event], {})).toThrow("fts_rank must be a number");
     expect(() => replayLog([event], {})).toThrow("2026-07-07T12:34:56.000Z");
+  });
+});
+
+describe("renderVerification", () => {
+  test("the summary names the pre-candidate and the pre-rule skips side by side", () => {
+    const rendered = renderVerification({ replays: [], skippedPreCandidates: 1, skippedPreRule: 2 });
+
+    expect(rendered).toContain("0/0 recall events reproduced (1 pre-candidate events skipped, 2 pre-rule events skipped)");
+  });
+
+  test("the summary of a log with nothing skipped carries no parenthesis", () => {
+    const rendered = renderVerification({ replays: [], skippedPreCandidates: 0, skippedPreRule: 0 });
+
+    expect(rendered).toContain("0/0 recall events reproduced\n");
   });
 });
 
@@ -408,7 +454,6 @@ describe("replayLog with the map channel in the log", () => {
   test("a domain-filtered recall replays identical: candidates are already scoped, sections and domains are ignored", () => {
     const events = [
       recallEventFixture({
-        schema_version: 21,
         candidates: orderedCandidates(),
         domains: ["billing"],
         sections: [{ id: "billing", kind: "domain", fts_rank: 1, vector_rank: null, cosine: null, returned: true }],
