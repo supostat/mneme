@@ -168,6 +168,26 @@ describe("planCommitIdentityCapture", () => {
     expect([...capture.identities.keys()]).toEqual([bench.commits[1]!]);
   });
 
+  test("a corpus document that does not read leaves the backfill for a later write and still plans the incoming commit", async () => {
+    const bench = await makeBench(2);
+    writeNote(bench, 1, bench.commits[0]!);
+    writeFileSync(join(bench.deps.corpus.notesDir, `${ulid(2)}.md`), "not a note\n");
+
+    const capture = await planCommitIdentityCapture(bench.deps, [bench.commits[1]!]);
+
+    expect([...capture.identities.keys()]).toEqual([bench.commits[1]!]);
+  });
+
+  test("a map section that does not read leaves the backfill for a later write as well", async () => {
+    const bench = await makeBench(2);
+    writeNote(bench, 1, bench.commits[0]!);
+    writeFileSync(join(bench.deps.corpus.mapDomainsDir, "broken.md"), "not a section\n");
+
+    const capture = await planCommitIdentityCapture(bench.deps, [bench.commits[1]!]);
+
+    expect([...capture.identities.keys()]).toEqual([bench.commits[1]!]);
+  });
+
   test("planning writes nothing", async () => {
     const bench = await makeBench(1);
 

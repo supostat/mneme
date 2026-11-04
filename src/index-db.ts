@@ -2,6 +2,9 @@ import { Database } from "bun:sqlite";
 import { existsSync, rmSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { readActiveNotes } from "./active-notes";
+import { resolveCommitBases } from "./commit-base";
+import type { CommitBase } from "./commit-base";
+import { readStoredCommitIdentities } from "./commit-identity-store";
 import { mapLayoutOf } from "./corpus";
 import { readMapSections } from "./map/map-store";
 import type { MapSection } from "./map/map-section";
@@ -60,6 +63,7 @@ export interface RebuildDeps {
   indexPath: string;
   notesDir: string;
   mapDir: string;
+  commitIdentitiesDir: string;
   projectRoot: string;
   embeddings: EmbeddingsClient;
   eventWriter: EventWriter;
@@ -113,8 +117,16 @@ async function rebuildInPlace(deps: RebuildDeps): Promise<RebuildOutcome> {
     const notes = readActiveNotes(deps.notesDir);
     const sections = readMapSections(mapLayoutOf(deps.mapDir));
     const context = await createLivenessContext(deps.projectRoot);
-    const boosts = await noteStalenessBoosts(context, notes);
-    const sectionBoosts = await sectionStalenessBoosts(context, sections);
+    const bases = await resolveCommitBases(
+      deps.projectRoot,
+      [
+        ...notes.filter(rankedByStaleness).map((note) => note.frontmatter.commit),
+        ...sections.filter(sectionRankedByStaleness).map((section) => section.frontmatter.commit),
+      ],
+      readStoredCommitIdentities(deps.commitIdentitiesDir),
+    );
+    const boosts = await noteStalenessBoosts(context, bases, notes);
+    const sectionBoosts = await sectionStalenessBoosts(context, bases, sections);
     const links = linkSectionsToNotes(sections, notes);
     const vectors = await embedBodies(
       [...notes.map((note) => note.body), ...sections.map((section) => section.body)],
@@ -347,25 +359,41 @@ function mapFtsDocument(section: MapSection): string {
   return terms.length === 0 ? section.body : `${section.body}\n${terms.join("\n")}`;
 }
 
+function rankedByStaleness(note: Note): boolean {
+  return !isAnchorNeutral(note.frontmatter.type) && note.frontmatter.anchors.length > 0;
+}
+
+function sectionRankedByStaleness(section: MapSection): boolean {
+  return section.frontmatter.anchors.length > 0;
+}
+
 // The git anchor scan, done once per rebuild and entirely outside the write transaction. The
-// branch-tips map is built ONCE by the caller and shared by both populations; per-note scoring
-// only does lookups.
-async function noteStalenessBoosts(context: LivenessContext, notes: Note[]): Promise<number[]> {
+// branch-tips map and the commit bases are built ONCE by the caller and shared by both
+// populations; per-note scoring only does lookups.
+async function noteStalenessBoosts(
+  context: LivenessContext,
+  bases: ReadonlyMap<string, CommitBase>,
+  notes: Note[],
+): Promise<number[]> {
   return Promise.all(
     notes.map((note) =>
-      isAnchorNeutral(note.frontmatter.type) || note.frontmatter.anchors.length === 0
-        ? ANCHOR_NEUTRAL_STALENESS_BOOST
-        : stalenessBoost(context, note.frontmatter.anchors, note.frontmatter.commit),
+      rankedByStaleness(note)
+        ? stalenessBoost(context, note.frontmatter.anchors, bases.get(note.frontmatter.commit)!)
+        : ANCHOR_NEUTRAL_STALENESS_BOOST,
     ),
   );
 }
 
-async function sectionStalenessBoosts(context: LivenessContext, sections: MapSection[]): Promise<number[]> {
+async function sectionStalenessBoosts(
+  context: LivenessContext,
+  bases: ReadonlyMap<string, CommitBase>,
+  sections: MapSection[],
+): Promise<number[]> {
   return Promise.all(
     sections.map((section) =>
-      section.frontmatter.anchors.length === 0
-        ? ANCHOR_NEUTRAL_STALENESS_BOOST
-        : stalenessBoost(context, section.frontmatter.anchors, section.frontmatter.commit),
+      sectionRankedByStaleness(section)
+        ? stalenessBoost(context, section.frontmatter.anchors, bases.get(section.frontmatter.commit)!)
+        : ANCHOR_NEUTRAL_STALENESS_BOOST,
     ),
   );
 }

@@ -137,7 +137,7 @@ async function buildHealthyCorpus(
     mnemeVersion: "0.1.0",
     clock: CLOCK,
   });
-  await rebuild({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, mapDir: corpus.mapDir, projectRoot, embeddings, eventWriter, clock: CLOCK });
+  await rebuild({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, mapDir: corpus.mapDir, commitIdentitiesDir: corpus.commitIdentitiesDir, projectRoot, embeddings, eventWriter, clock: CLOCK });
   return corpus;
 }
 
@@ -274,7 +274,7 @@ describe("runDoctor broken components are named, isolated, and typed", () => {
     };
     writeFileSync(join(corpus.notesDir, `${second.frontmatter.id}.md`), serializeNote(second));
     const eventWriter = new EventWriter(corpus.eventsDir, { sessionId: "s-doctor", mnemeVersion: "0.1.0", clock: CLOCK });
-    await rebuild({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, mapDir: corpus.mapDir, projectRoot, embeddings: offlineClient(), eventWriter, clock: CLOCK });
+    await rebuild({ indexPath: corpus.indexPath, notesDir: corpus.notesDir, mapDir: corpus.mapDir, commitIdentitiesDir: corpus.commitIdentitiesDir, projectRoot, embeddings: offlineClient(), eventWriter, clock: CLOCK });
     return corpus;
   }
 
@@ -613,7 +613,7 @@ describe("runDoctor map sections", () => {
     await rebuild({
       indexPath: corpus.indexPath,
       notesDir: corpus.notesDir,
-      mapDir: corpus.mapDir,
+      mapDir: corpus.mapDir, commitIdentitiesDir: corpus.commitIdentitiesDir,
       projectRoot,
       embeddings: bagOfWordsClient(),
       eventWriter,

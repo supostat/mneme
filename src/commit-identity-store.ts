@@ -5,7 +5,9 @@ import { readLiveCommitIdentities } from "./commit-identity";
 import { COMMIT_IDENTITIES_DIRECTORY } from "./corpus";
 import type { Corpus } from "./corpus";
 import { trackedPaths } from "./corpus-git";
+import { MapSectionValidationError } from "./map/map-section";
 import { readMapSections } from "./map/map-store";
+import { NoteValidationError } from "./note";
 
 // The corpus-side record of commit identities: one file per project commit, named by its full sha,
 // holding one `sha256:<hex>` line. It is written by every corpus write that pins a commit and is
@@ -92,11 +94,20 @@ export async function writeCommitIdentityCapture(corpus: Corpus, capture: Commit
   return onDisk.filter((path) => !tracked.has(path));
 }
 
+// A note or section that does not read leaves nothing to backfill this time: the write still
+// records its own commits, the rebuild that follows the same write fails on that document and
+// reports it, and the first write after the corpus reads again backfills the rest — a corpus fault
+// never refuses a write here, exactly as it never does through the rebuild.
 function pinnedCommits(corpus: Corpus): string[] {
-  return [
-    ...readActiveNotes(corpus.notesDir).map((note) => note.frontmatter.commit),
-    ...readMapSections(corpus).map((section) => section.frontmatter.commit),
-  ];
+  try {
+    return [
+      ...readActiveNotes(corpus.notesDir).map((note) => note.frontmatter.commit),
+      ...readMapSections(corpus).map((section) => section.frontmatter.commit),
+    ];
+  } catch (error) {
+    if (error instanceof NoteValidationError || error instanceof MapSectionValidationError) return [];
+    throw error;
+  }
 }
 
 // Hidden files (an editor's or the OS's, such as .DS_Store) are never store entries.

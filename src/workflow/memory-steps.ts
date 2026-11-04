@@ -1,5 +1,8 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { resolveCommitBases } from "../commit-base";
+import type { CommitBase } from "../commit-base";
+import { readStoredCommitIdentities } from "../commit-identity-store";
 import { runGit } from "../git";
 import { indexNeedsRebuild, openReadOnlyDatabase, rebuild } from "../index-db";
 import { appendGapNotice, makeNonce, noteFence, renderMapSectionBlock } from "../mcp-rendering";
@@ -71,7 +74,7 @@ export async function compileRecallBundle(
   // recall already applied this cut; re-applying it strips the cold-start floor's low-confidence
   // notes, so the workflow bundle stays a hard threshold with no top-K fallback.
   const survivors = recalled.notes.filter(passesRecallThreshold);
-  const notes: BundleNote[] = [];
+  const admitted: Array<{ recalled: RecalledNote; note: Note }> = [];
   for (const survivor of survivors) {
     // The write-path curator set re-applied on read: a body accepted before a tightening (or edited
     // on disk) must not ride the bundle into the agent context. The exclusion is loud — an event
@@ -81,7 +84,16 @@ export async function compileRecallBundle(
       deps.eventWriter.append({ type: "bundle_note_rejected", note_id: survivor.id, marker });
       continue;
     }
-    notes.push(await buildBundleNote(deps, survivor, request.anchorPaths));
+    admitted.push({ recalled: survivor, note: readNote(deps, survivor.id) });
+  }
+  const bases = await resolveCommitBases(
+    deps.projectRoot,
+    admitted.filter(({ note }) => isBranchAware(note)).map(({ note }) => note.frontmatter.commit),
+    readStoredCommitIdentities(deps.corpus.commitIdentitiesDir),
+  );
+  const notes: BundleNote[] = [];
+  for (const { recalled: survivor, note } of admitted) {
+    notes.push(await buildBundleNote(deps, survivor, note, bases, request.anchorPaths));
   }
   return {
     query,
@@ -134,6 +146,7 @@ async function rebuildIndexWhenNeeded(deps: StagingDeps): Promise<void> {
     indexPath: deps.corpus.indexPath,
     notesDir: deps.corpus.notesDir,
     mapDir: deps.corpus.mapDir,
+    commitIdentitiesDir: deps.corpus.commitIdentitiesDir,
     projectRoot: deps.projectRoot,
     embeddings: deps.embeddings,
     eventWriter: deps.eventWriter,
@@ -171,10 +184,11 @@ async function runRecall(
 async function buildBundleNote(
   deps: StagingDeps,
   recalled: RecalledNote,
+  note: Note,
+  bases: ReadonlyMap<string, CommitBase>,
   anchorPaths: string[],
 ): Promise<BundleNote> {
-  const note = readNote(deps, recalled.id);
-  const branch = await resolveBranchLayer(deps.projectRoot, note);
+  const branch = await resolveBranchLayer(deps.projectRoot, note, bases);
   return {
     id: recalled.id,
     type: note.frontmatter.type,
@@ -214,23 +228,31 @@ interface BranchLayer {
   branchName: string | null;
 }
 
+function isBranchAware(note: Note): boolean {
+  return !BRANCH_NEUTRAL_TYPES.has(note.frontmatter.type);
+}
+
 // Branch awareness applies to decision/pattern only: bugfix/antipattern are branch-neutral and never
-// touch git. Any non-zero git exit reads as "unreachable" or "no containing branch" — a GC'd or
-// parallel commit is normal corpus data, not a bug. Reachability is asked of the PROJECT repo.
-async function resolveBranchLayer(projectRoot: string, note: Note): Promise<BranchLayer> {
-  if (BRANCH_NEUTRAL_TYPES.has(note.frontmatter.type)) {
+// touch git. The commit base decides reachability: a commit on HEAD and a rebase copy on HEAD are
+// both this branch's; an alive commit off HEAD names the branch that holds it; an unresolved one is
+// demoted with no name — nothing proves it belongs here.
+async function resolveBranchLayer(
+  projectRoot: string,
+  note: Note,
+  bases: ReadonlyMap<string, CommitBase>,
+): Promise<BranchLayer> {
+  if (!isBranchAware(note)) {
     return { reachable: true, branchName: null };
   }
-  if (await isCommitReachable(projectRoot, note.frontmatter.commit)) {
+  const base = bases.get(note.frontmatter.commit)!;
+  if (base.kind === "on-head" || base.kind === "copy") {
     return { reachable: true, branchName: null };
+  }
+  if (base.kind === "unresolved") {
+    return { reachable: false, branchName: null };
   }
   const branches = await branchesContaining(projectRoot, note.frontmatter.commit);
   return { reachable: false, branchName: branches[0] ?? null };
-}
-
-async function isCommitReachable(projectRoot: string, commit: string): Promise<boolean> {
-  const result = await runGit(projectRoot, ["merge-base", "--is-ancestor", commit, "HEAD"]);
-  return result.exitCode === 0;
 }
 
 async function branchesContaining(projectRoot: string, commit: string): Promise<string[]> {

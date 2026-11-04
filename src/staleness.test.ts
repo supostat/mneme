@@ -8,9 +8,12 @@ import {
   DEAD_ANCHOR_SINK,
   DRIFT_PENALTY_CAP,
   KNOWN_ELSEWHERE_PENALTY,
+  UNRESOLVED_BASE_PENALTY,
 } from "./staleness";
 import { createLivenessContext } from "./anchor-liveness";
 import type { LivenessContext } from "./anchor-liveness";
+import { resolveCommitBases } from "./commit-base";
+import type { CommitBase } from "./commit-base";
 
 // Every case here builds a real git repository and walks its history, and the heaviest one makes
 // thirteen sequential commits. That is seconds of honest work, so the default 5s per-test cap turns a
@@ -51,6 +54,12 @@ async function head(repoDir: string): Promise<string> {
   return (await runGit(repoDir, ["rev-parse", "HEAD"])).stdout.trim();
 }
 
+const UNRESOLVED: CommitBase = { kind: "unresolved" };
+
+function onHead(commit: string): CommitBase {
+  return { kind: "on-head", commit };
+}
+
 function contextOf(repoDir: string): Promise<LivenessContext> {
   return createLivenessContext(repoDir);
 }
@@ -65,7 +74,7 @@ describe("stalenessBoost live anchors", () => {
     const repoDir = await makeRepo();
     const commit = await commitFile(repoDir, "src/live.ts", "v0", "add live");
 
-    expect(await stalenessBoost(await contextOf(repoDir), ["src/live.ts"], commit)).toBe(0);
+    expect(await stalenessBoost(await contextOf(repoDir), ["src/live.ts"], onHead(commit))).toBe(0);
   }, GIT_TEST_TIMEOUT_MS);
 
   test("drift after the note commit accrues -0.001 per commit", async () => {
@@ -75,7 +84,7 @@ describe("stalenessBoost live anchors", () => {
     await commitFile(repoDir, "src/live.ts", "v2", "drift 2");
     await commitFile(repoDir, "src/live.ts", "v3", "drift 3");
 
-    expect(await stalenessBoost(await contextOf(repoDir), ["src/live.ts"], commit)).toBeCloseTo(-0.003, 6);
+    expect(await stalenessBoost(await contextOf(repoDir), ["src/live.ts"], onHead(commit))).toBeCloseTo(-0.003, 6);
   }, GIT_TEST_TIMEOUT_MS);
 
   test("drift is floored at the cap beyond ten commits", async () => {
@@ -85,7 +94,7 @@ describe("stalenessBoost live anchors", () => {
       await commitFile(repoDir, "src/live.ts", `v${index}`, `drift ${index}`);
     }
 
-    expect(await stalenessBoost(await contextOf(repoDir), ["src/live.ts"], commit)).toBe(DRIFT_PENALTY_CAP);
+    expect(await stalenessBoost(await contextOf(repoDir), ["src/live.ts"], onHead(commit))).toBe(DRIFT_PENALTY_CAP);
   }, GIT_TEST_TIMEOUT_MS);
 
   test("commits that do not touch the anchor do not accrue drift", async () => {
@@ -94,7 +103,7 @@ describe("stalenessBoost live anchors", () => {
     await commitFile(repoDir, "src/other.ts", "o1", "unrelated 1");
     await commitFile(repoDir, "src/other.ts", "o2", "unrelated 2");
 
-    expect(await stalenessBoost(await contextOf(repoDir), ["src/live.ts"], commit)).toBe(0);
+    expect(await stalenessBoost(await contextOf(repoDir), ["src/live.ts"], onHead(commit))).toBe(0);
   }, GIT_TEST_TIMEOUT_MS);
 });
 
@@ -103,14 +112,14 @@ describe("stalenessBoost dead anchors and robustness", () => {
     const repoDir = await makeRepo();
     const commit = await commitFile(repoDir, "src/live.ts", "v0", "add live");
 
-    expect(await stalenessBoost(await contextOf(repoDir), ["src/ghost.ts"], commit)).toBe(DEAD_ANCHOR_SINK);
+    expect(await stalenessBoost(await contextOf(repoDir), ["src/ghost.ts"], onHead(commit))).toBe(DEAD_ANCHOR_SINK);
   }, GIT_TEST_TIMEOUT_MS);
 
   test("worst anchor wins: one live, one dead sinks the whole note", async () => {
     const repoDir = await makeRepo();
     const commit = await commitFile(repoDir, "src/live.ts", "v0", "add live");
 
-    expect(await stalenessBoost(await contextOf(repoDir), ["src/live.ts", "src/ghost.ts"], commit)).toBe(
+    expect(await stalenessBoost(await contextOf(repoDir), ["src/live.ts", "src/ghost.ts"], onHead(commit))).toBe(
       DEAD_ANCHOR_SINK,
     );
   }, GIT_TEST_TIMEOUT_MS);
@@ -119,15 +128,29 @@ describe("stalenessBoost dead anchors and robustness", () => {
     const plainDir = mkdtempSync(join(tmpdir(), "mneme-norepo-"));
     writeFileSync(join(plainDir, "file.ts"), "content");
 
-    expect(await stalenessBoost(await contextOf(plainDir), ["file.ts"], "abc1234")).toBe(DEAD_ANCHOR_SINK);
+    expect(await stalenessBoost(await contextOf(plainDir), ["file.ts"], UNRESOLVED)).toBe(DEAD_ANCHOR_SINK);
   }, GIT_TEST_TIMEOUT_MS);
 
-  test("a live anchor with a rewritten/unknown commit yields the dead sink, not a throw", async () => {
+  test("a live anchor whose commit base is unresolved earns the pinned penalty, not the dead sink", async () => {
+    const repoDir = await makeRepo();
+    await commitFile(repoDir, "src/live.ts", "v0", "add live");
+
+    expect(await stalenessBoost(await contextOf(repoDir), ["src/live.ts"], UNRESOLVED)).toBe(UNRESOLVED_BASE_PENALTY);
+  }, GIT_TEST_TIMEOUT_MS);
+
+  test("an untracked anchor with an unresolved base still sinks: liveness decides first", async () => {
+    const repoDir = await makeRepo();
+    await commitFile(repoDir, "src/live.ts", "v0", "add live");
+
+    expect(await stalenessBoost(await contextOf(repoDir), ["src/ghost.ts"], UNRESOLVED)).toBe(DEAD_ANCHOR_SINK);
+  }, GIT_TEST_TIMEOUT_MS);
+
+  test("a live base git cannot count from still sinks the anchor, not a throw", async () => {
     const repoDir = await makeRepo();
     await commitFile(repoDir, "src/live.ts", "v0", "add live");
 
     expect(
-      await stalenessBoost(await contextOf(repoDir), ["src/live.ts"], "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"),
+      await stalenessBoost(await contextOf(repoDir), ["src/live.ts"], { kind: "off-head", commit: "deadbeef".repeat(5) }),
     ).toBe(DEAD_ANCHOR_SINK);
   }, GIT_TEST_TIMEOUT_MS);
 
@@ -135,7 +158,7 @@ describe("stalenessBoost dead anchors and robustness", () => {
     const repoDir = await makeRepo();
     const commit = await commitFile(repoDir, "-x", "v0", "add dashed path");
 
-    expect(await stalenessBoost(await contextOf(repoDir), ["-x"], commit)).toBe(0);
+    expect(await stalenessBoost(await contextOf(repoDir), ["-x"], onHead(commit))).toBe(0);
   }, GIT_TEST_TIMEOUT_MS);
 });
 
@@ -154,7 +177,7 @@ describe("stalenessBoost known-elsewhere", () => {
   test("an anchor parked on another branch earns the pinned penalty, not the sink", async () => {
     const { repoDir, commit } = await repoWithParkedBranch();
 
-    expect(await stalenessBoost(await contextOf(repoDir), ["src/parked.ts"], commit)).toBe(
+    expect(await stalenessBoost(await contextOf(repoDir), ["src/parked.ts"], onHead(commit))).toBe(
       KNOWN_ELSEWHERE_PENALTY,
     );
   }, GIT_TEST_TIMEOUT_MS);
@@ -165,9 +188,9 @@ describe("stalenessBoost known-elsewhere", () => {
     const { repoDir, commit } = await repoWithParkedBranch();
     const context = await contextOf(repoDir);
 
-    const fresh = await stalenessBoost(context, ["src/live.ts"], commit);
-    const parked = await stalenessBoost(context, ["src/parked.ts"], commit);
-    const missing = await stalenessBoost(context, ["src/ghost.ts"], commit);
+    const fresh = await stalenessBoost(context, ["src/live.ts"], onHead(commit));
+    const parked = await stalenessBoost(context, ["src/parked.ts"], onHead(commit));
+    const missing = await stalenessBoost(context, ["src/ghost.ts"], onHead(commit));
 
     expect(fresh).toBe(0);
     expect(fresh).toBeGreaterThan(parked);
@@ -180,7 +203,60 @@ describe("stalenessBoost known-elsewhere", () => {
     const { repoDir, commit } = await repoWithParkedBranch();
 
     expect(
-      await stalenessBoost(await contextOf(repoDir), ["src/parked.ts", "src/ghost.ts"], commit),
+      await stalenessBoost(await contextOf(repoDir), ["src/parked.ts", "src/ghost.ts"], onHead(commit)),
     ).toBe(DEAD_ANCHOR_SINK);
+  }, GIT_TEST_TIMEOUT_MS);
+});
+
+describe("stalenessBoost from a rebase copy", () => {
+  // feature carries two commits on src/ledger.ts, the note pinned to the second; main moves forward
+  // and feature is rebased onto it, so both commits are rewritten into copies on HEAD; one more
+  // commit then touches the anchor after the copy.
+  async function rebasedLedger(): Promise<{ repoDir: string; pinned: string }> {
+    const repoDir = await makeRepo();
+    await commitFile(repoDir, "src/base.ts", "base", "start");
+    await checkout(repoDir, ["-b", "feature"]);
+    await commitFile(repoDir, "src/ledger.ts", "v1", "first ledger change");
+    const pinned = await commitFile(repoDir, "src/ledger.ts", "v2", "second ledger change");
+    await checkout(repoDir, ["main"]);
+    await commitFile(repoDir, "src/main.ts", "m", "move main");
+    await checkout(repoDir, ["feature"]);
+    const rebased = await runGit(repoDir, ["-c", "user.email=t@t", "-c", "user.name=t", "rebase", "-q", "main"]);
+    if (rebased.exitCode !== 0) throw new Error(`git rebase failed: ${rebased.stderr}`);
+    await commitFile(repoDir, "src/ledger.ts", "v3", "ledger change after the rebase");
+    return { repoDir, pinned };
+  }
+
+  test("drift counts from the copy: the rewritten commits of the branch are not drift, the commit after the copy is", async () => {
+    const { repoDir, pinned } = await rebasedLedger();
+    const base = (await resolveCommitBases(repoDir, [pinned], new Map())).get(pinned)!;
+
+    expect(base.kind).toBe("copy");
+    expect(await stalenessBoost(await contextOf(repoDir), ["src/ledger.ts"], base)).toBeCloseTo(-0.001, 6);
+  }, GIT_TEST_TIMEOUT_MS);
+
+  test("counted from the rewritten original instead, every copy of the branch would read as drift", async () => {
+    const { repoDir, pinned } = await rebasedLedger();
+
+    expect(
+      await stalenessBoost(await contextOf(repoDir), ["src/ledger.ts"], { kind: "off-head", commit: pinned }),
+    ).toBeCloseTo(-0.003, 6);
+  }, GIT_TEST_TIMEOUT_MS);
+
+  // Directional, never exact-value: the lost base sits with the maximally drifted, above the sink.
+  test("directional order: fresh 0 above an unresolved base, which ranks no lower than the cap and above the sink", async () => {
+    const repoDir = await makeRepo();
+    const commit = await commitFile(repoDir, "src/live.ts", "v0", "add live");
+    const context = await contextOf(repoDir);
+
+    const fresh = await stalenessBoost(context, ["src/live.ts"], onHead(commit));
+    const lostBase = await stalenessBoost(context, ["src/live.ts"], UNRESOLVED);
+    const missing = await stalenessBoost(context, ["src/ghost.ts"], onHead(commit));
+
+    expect(fresh).toBe(0);
+    expect(fresh).toBeGreaterThan(lostBase);
+    expect(lostBase).toBeGreaterThanOrEqual(DRIFT_PENALTY_CAP);
+    expect(lostBase).toBeGreaterThan(missing);
+    expect(missing).toBe(DEAD_ANCHOR_SINK);
   }, GIT_TEST_TIMEOUT_MS);
 });

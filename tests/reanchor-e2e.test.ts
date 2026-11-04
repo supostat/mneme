@@ -14,6 +14,8 @@ import { parseNote, serializeNote } from "../src/note";
 import type { NoteFrontmatter } from "../src/note";
 import { DEAD_ANCHOR_SINK, stalenessBoost } from "../src/staleness";
 import { createLivenessContext } from "../src/anchor-liveness";
+import { resolveCommitBases } from "../src/commit-base";
+import type { CommitBase } from "../src/commit-base";
 import { countStagedNotes, stagingList, stagingResolve } from "../src/staging";
 import type { StagingDeps } from "../src/staging";
 import { listReanchorRequests, listRetireRequests } from "../src/curation";
@@ -39,6 +41,10 @@ function offlineClient(): EmbeddingsClient {
         ? { available: true, embeddings: [], retries: 0 }
         : { available: false, embeddings: [], retries: 0 },
   };
+}
+
+async function baseOf(projectRoot: string, commit: string): Promise<CommitBase> {
+  return (await resolveCommitBases(projectRoot, [commit], new Map())).get(commit)!;
 }
 
 async function commitProject(projectRoot: string, message: string): Promise<void> {
@@ -102,7 +108,7 @@ test("rename -> sweep -> staging surface -> accept repairs the anchor, and the r
   await runGit(deps.projectRoot, ["mv", "src/old.ts", "src/new.ts"]);
   await commitProject(deps.projectRoot, "rename old to new");
   expect(
-    await stalenessBoost(await createLivenessContext(deps.projectRoot), ["src/old.ts"], noteCommit),
+    await stalenessBoost(await createLivenessContext(deps.projectRoot), ["src/old.ts"], await baseOf(deps.projectRoot, noteCommit)),
   ).toBe(DEAD_ANCHOR_SINK);
 
   // The sweep traces the rename and stages exactly one confident repair.
@@ -138,7 +144,7 @@ test("rename -> sweep -> staging surface -> accept repairs the anchor, and the r
   const boost = await stalenessBoost(
     await createLivenessContext(deps.projectRoot),
     repaired.frontmatter.anchors,
-    noteCommit,
+    await baseOf(deps.projectRoot, noteCommit),
   );
   expect(boost).toBeGreaterThan(DEAD_ANCHOR_SINK);
 

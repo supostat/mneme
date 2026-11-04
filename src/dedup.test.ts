@@ -83,7 +83,7 @@ async function indexWithExistingVector(components: number[]): Promise<string> {
   await rebuild({
     indexPath,
     notesDir,
-    mapDir: join(corpusDir, "map"),
+    mapDir: join(corpusDir, "map"), commitIdentitiesDir: join(corpusDir, "commit-identities"),
     projectRoot,
     embeddings: keyedClient(new Map([[EXISTING_BODY, components]])),
     eventWriter: buildEventWriter(eventsDir),

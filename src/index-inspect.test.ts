@@ -45,6 +45,7 @@ interface Layout {
   indexPath: string;
   notesDir: string;
   mapDir: string;
+  commitIdentitiesDir: string;
 }
 
 function corpusLayout(): Layout {
@@ -53,7 +54,12 @@ function corpusLayout(): Layout {
   mkdirSync(join(corpusDir, "notes"));
   mkdirSync(join(mapDir, "domains"), { recursive: true });
   mkdirSync(join(mapDir, "flows"));
-  return { indexPath: join(corpusDir, "index.db"), notesDir: join(corpusDir, "notes"), mapDir };
+  return {
+    indexPath: join(corpusDir, "index.db"),
+    notesDir: join(corpusDir, "notes"),
+    mapDir,
+    commitIdentitiesDir: join(corpusDir, "commit-identities"),
+  };
 }
 
 async function projectWithFile(): Promise<{ projectRoot: string; commit: string }> {

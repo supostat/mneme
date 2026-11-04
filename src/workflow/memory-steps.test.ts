@@ -3,6 +3,7 @@ import { Database } from "bun:sqlite";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { planCommitIdentityCapture, writeCommitIdentityCapture } from "../commit-identity-store";
 import { defaultConfig } from "../config";
 import { resolveCorpus } from "../corpus";
 import { EMBEDDING_DIMENSION, EMBEDDING_MODEL } from "../embeddings";
@@ -406,6 +407,40 @@ describe("compileRecallBundle branch awareness", () => {
     expect(formatted).toContain(`[decision] ${ulid(100)}\n`);
   });
 
+  test("a decision whose commit a rebase rewrote reads as this branch's: reachable and unlabeled, even after gc removed the original", async () => {
+    const projectRoot = mkdtempSync(join(tmpdir(), "mneme-memory-steps-rebase-"));
+    await initRepo(projectRoot);
+    mkdirSync(join(projectRoot, "src"), { recursive: true });
+    writeFileSync(join(projectRoot, "src/base.ts"), "base\n");
+    await commitAll(projectRoot, "start");
+    await runGit(projectRoot, ["checkout", "-q", "-b", "feature"]);
+    writeFileSync(join(projectRoot, "src/ledger.ts"), "ledger\n");
+    const original = await commitAll(projectRoot, "split the ledger");
+    await runGit(projectRoot, ["checkout", "-q", "main"]);
+    writeFileSync(join(projectRoot, "src/main.ts"), "main\n");
+    await commitAll(projectRoot, "move main");
+    await runGit(projectRoot, ["checkout", "-q", "feature"]);
+    await runGit(projectRoot, ["-c", "user.email=t@t", "-c", "user.name=t", "rebase", "-q", "main"]);
+    const deps = await makeDeps(projectRoot, bagClient());
+    writeNote(deps, ulid(100), "decision", "ledger split decision", ["src/ledger.ts"], original);
+    await writeCommitIdentityCapture(deps.corpus, await planCommitIdentityCapture(deps, []));
+    await runGit(projectRoot, ["reflog", "expire", "--expire-unreachable=now", "--all"]);
+    await runGit(projectRoot, ["gc", "-q", "--prune=now"]);
+    expect((await runGit(projectRoot, ["cat-file", "-e", original])).exitCode).not.toBe(0);
+
+    const bundle = await compileRecallBundle(deps, {
+      phaseDescription: "ledger split",
+      anchorPaths: ["src/ledger.ts"],
+      domains: [],
+      budget: 100000,
+    });
+
+    const note = bundleNoteAt(bundle, ulid(100));
+    expect(note.branchReachable).toBe(true);
+    expect(note.branchName).toBeNull();
+    expect(formatRecallBundle(bundle)).toContain(`[decision] ${ulid(100)}\n`);
+  });
+
   test("a demoted decision whose commit no branch contains carries a null branch name and no label", async () => {
     const { projectRoot } = await buildProjectRepo();
     const deps = await makeDeps(projectRoot, bagClient());
@@ -763,7 +798,7 @@ describe("harvestPhase dedup rejection", () => {
     );
     await rebuild({
       indexPath: deps.corpus.indexPath,
-      notesDir: deps.corpus.notesDir, mapDir: deps.corpus.mapDir,
+      notesDir: deps.corpus.notesDir, mapDir: deps.corpus.mapDir, commitIdentitiesDir: deps.corpus.commitIdentitiesDir,
       projectRoot,
       embeddings: deps.embeddings,
       eventWriter: deps.eventWriter,

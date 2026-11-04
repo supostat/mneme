@@ -526,6 +526,7 @@ export function rebuildDeps(deps: StagingDeps): RebuildDeps {
     indexPath: deps.corpus.indexPath,
     notesDir: deps.corpus.notesDir,
     mapDir: deps.corpus.mapDir,
+    commitIdentitiesDir: deps.corpus.commitIdentitiesDir,
     projectRoot: deps.projectRoot,
     embeddings: deps.embeddings,
     eventWriter: deps.eventWriter,

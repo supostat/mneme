@@ -204,7 +204,7 @@ describe("index rebuild with two live writers and a reader", () => {
       const seedEventsDir = tempDirectory("mneme-rebuild-seed-events-");
       await rebuild({
         indexPath: corpus.indexPath,
-        notesDir: corpus.notesDir, mapDir: corpus.mapDir,
+        notesDir: corpus.notesDir, mapDir: corpus.mapDir, commitIdentitiesDir: corpus.commitIdentitiesDir,
         projectRoot,
         embeddings: instantClient(SEED_MODEL),
         eventWriter: new EventWriter(seedEventsDir, { sessionId: "seed", mnemeVersion: "0.1.0", clock: fixedClock }),

@@ -201,7 +201,7 @@ describe("applyHarvest defers the next phase's recall (lazy)", () => {
     writeAcceptedNote(deps, "01ARZ3NDEKTSV4RRFFQ69G5FB0", noteBody, commit);
     await rebuild({
       indexPath: deps.corpus.indexPath,
-      notesDir: deps.corpus.notesDir, mapDir: deps.corpus.mapDir,
+      notesDir: deps.corpus.notesDir, mapDir: deps.corpus.mapDir, commitIdentitiesDir: deps.corpus.commitIdentitiesDir,
       projectRoot,
       embeddings: deps.embeddings,
       eventWriter: deps.eventWriter,
@@ -229,7 +229,7 @@ describe("applyHarvest dedup visibility", () => {
     );
     await rebuild({
       indexPath: deps.corpus.indexPath,
-      notesDir: deps.corpus.notesDir, mapDir: deps.corpus.mapDir,
+      notesDir: deps.corpus.notesDir, mapDir: deps.corpus.mapDir, commitIdentitiesDir: deps.corpus.commitIdentitiesDir,
       projectRoot,
       embeddings: deps.embeddings,
       eventWriter: deps.eventWriter,
@@ -396,7 +396,7 @@ describe("runEngineSteps records the bundle composition it compiled", () => {
     writeAcceptedNote(deps, noteId, noteBody, commit);
     await rebuild({
       indexPath: deps.corpus.indexPath,
-      notesDir: deps.corpus.notesDir, mapDir: deps.corpus.mapDir,
+      notesDir: deps.corpus.notesDir, mapDir: deps.corpus.mapDir, commitIdentitiesDir: deps.corpus.commitIdentitiesDir,
       projectRoot,
       embeddings: deps.embeddings,
       eventWriter: deps.eventWriter,
@@ -433,7 +433,7 @@ describe("runEngineSteps records the bundle composition it compiled", () => {
     writeAcceptedNote(deps, noteId, "phase one module ranking probe restored evidence", commit);
     await rebuild({
       indexPath: deps.corpus.indexPath,
-      notesDir: deps.corpus.notesDir, mapDir: deps.corpus.mapDir,
+      notesDir: deps.corpus.notesDir, mapDir: deps.corpus.mapDir, commitIdentitiesDir: deps.corpus.commitIdentitiesDir,
       projectRoot,
       embeddings: deps.embeddings,
       eventWriter: deps.eventWriter,
@@ -635,7 +635,7 @@ describe("runEngineSteps scopes the phase's bundle by its recall domains", () =>
     await rebuild({
       indexPath: deps.corpus.indexPath,
       notesDir: deps.corpus.notesDir,
-      mapDir: deps.corpus.mapDir,
+      mapDir: deps.corpus.mapDir, commitIdentitiesDir: deps.corpus.commitIdentitiesDir,
       projectRoot: deps.projectRoot,
       embeddings: deps.embeddings,
       eventWriter: deps.eventWriter,
@@ -732,7 +732,7 @@ describe("the run's own events name its bundle gap and its staged notes (v22)", 
     writeAcceptedNote(deps, "01ARZ3NDEKTSV4RRFFQ69G5FB7", "phase one module ranking probe closure evidence", commit);
     await rebuild({
       indexPath: deps.corpus.indexPath,
-      notesDir: deps.corpus.notesDir, mapDir: deps.corpus.mapDir,
+      notesDir: deps.corpus.notesDir, mapDir: deps.corpus.mapDir, commitIdentitiesDir: deps.corpus.commitIdentitiesDir,
       projectRoot,
       embeddings: deps.embeddings,
       eventWriter: deps.eventWriter,
@@ -752,7 +752,7 @@ describe("the run's own events name its bundle gap and its staged notes (v22)", 
     writeAcceptedNote(deps, ulid(200), "Decision: use sqlite for the index\nRationale: single-file disposable cache", commit);
     await rebuild({
       indexPath: deps.corpus.indexPath,
-      notesDir: deps.corpus.notesDir, mapDir: deps.corpus.mapDir,
+      notesDir: deps.corpus.notesDir, mapDir: deps.corpus.mapDir, commitIdentitiesDir: deps.corpus.commitIdentitiesDir,
       projectRoot,
       embeddings: deps.embeddings,
       eventWriter: deps.eventWriter,

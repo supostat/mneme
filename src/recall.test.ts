@@ -134,7 +134,7 @@ async function setupIndex(
     mnemeVersion: "0.1.0",
     clock: () => new Date("2026-07-06T10:00:00.000Z"),
   });
-  await rebuild({ indexPath, notesDir, mapDir: join(corpusDir, "map"), projectRoot, embeddings, eventWriter, clock: () => new Date("2026-07-06T10:00:00.000Z") });
+  await rebuild({ indexPath, notesDir, mapDir: join(corpusDir, "map"), commitIdentitiesDir: join(corpusDir, "commit-identities"), projectRoot, embeddings, eventWriter, clock: () => new Date("2026-07-06T10:00:00.000Z") });
   return { indexPath, eventsDir };
 }
 
@@ -941,8 +941,9 @@ describe("recall map sections", () => {
     expect(withoutSections.sections).toEqual([]);
   });
 
-  // billing's anchor is a live file but its commit is not in the project repository, so its
-  // staleness boost is the dead-anchor sink: in fused order it falls below everything relevant.
+  // billing's anchor is a live file but its commit is not in the project repository, so its base is
+  // unresolved and it carries the lost-base penalty: in fused order it falls below the flow that
+  // depends on it.
   test("a named domain takes the first slot although a flow that depends on it outranks it", async () => {
     const { indexPath, eventsDir } = await setupIndex([billingNote, ordersNote], bagOfWordsClient(), [billing, orders, orderToInvoice]);
 
@@ -1016,8 +1017,9 @@ describe("recall map sections", () => {
     ]);
   });
 
-  // shipping has no anchors and so no staleness penalty, which puts it first among the named
-  // domains; orders and billing both sink, and billing's lexical hit keeps it above orders.
+  // orders and billing both carry the lost-base penalty (live anchors, a commit the project does not
+  // hold) and shipping, without anchors, none; the penalty is smaller than billing's lexical hit, so
+  // billing leads, shipping follows, and orders — no hit and the penalty — is third.
   test("of three named domains the first two in fused order take the slots and the third is logged unreturned", async () => {
     const shipping = section({ id: "shipping" }, "Parcels leave the warehouse.");
     const { indexPath, eventsDir } = await setupIndex(
@@ -1034,11 +1036,11 @@ describe("recall map sections", () => {
       ["orders", "billing", "shipping"],
     );
 
-    expect(result.sections.map((candidate) => candidate.id)).toEqual(["shipping", "billing"]);
+    expect(result.sections.map((candidate) => candidate.id)).toEqual(["billing", "shipping"]);
     const logged = readEvents(eventsDir)[0]!.sections as Array<{ id: string; returned: boolean }>;
     expect(logged.map((candidate) => [candidate.id, candidate.returned])).toEqual([
-      ["shipping", true],
       ["billing", true],
+      ["shipping", true],
       ["orders", false],
       ["order-to-invoice", false],
     ]);
