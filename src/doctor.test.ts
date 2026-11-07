@@ -23,6 +23,7 @@ import { EMBEDDING_DIMENSION, EMBEDDING_MODEL } from "./embeddings";
 import type { EmbeddingsClient } from "./embeddings";
 import { defaultConfig } from "./config";
 import { CLIPPED_BODIES_COMPONENT, MAP_SECTIONS_COMPONENT, runDoctor, renderDoctorReport } from "./doctor";
+import { HttpJudgeClient } from "./judge";
 import { writeMapSection } from "./map/map-store";
 import { serializeMapSection } from "./map/map-section";
 import type { MapSection } from "./map/map-section";
@@ -42,6 +43,7 @@ const EXPECTED_COMPONENTS = [
   "event_log",
   "index",
   "embeddings",
+  "judge",
   "git",
   "note_bodies",
   "clipped_bodies",
@@ -721,5 +723,51 @@ describe("runDoctor map sections", () => {
     const sections = byName(report).get(MAP_SECTIONS_COMPONENT)!;
     expect(sections.status).toBe("degraded");
     expect(sections.detail).toBe("section liveness unknown (rebuilt on next recall)");
+  });
+});
+
+describe("runDoctor judge", () => {
+  // The judge's fetch is the network boundary; the client itself is the real HttpJudgeClient.
+  function judgeClient(answer: () => Promise<{ ok: boolean; json: () => Promise<unknown> }>): HttpJudgeClient {
+    return new HttpJudgeClient("https://judge.test", answer, "jev-test", "apikey-test");
+  }
+
+  test("without a judge the component is ok and says the key is unset", async () => {
+    const corpus = await buildHealthyCorpus();
+
+    const report = await runDoctor({ corpusDir: corpus.corpusDir, embedder: bagOfWordsClient() });
+
+    const judge = byName(report).get("judge")!;
+    expect(judge.status).toBe("ok");
+    expect(judge.detail).toBe("not configured (MNEME_JUDGE_API_KEY unset)");
+    expect(report.overall).toBe("ok");
+  });
+
+  test("a configured judge that answers the probe is ok and names its model", async () => {
+    const corpus = await buildHealthyCorpus();
+    const judge = judgeClient(async () => ({ ok: true, json: async () => ({ answers: { probe: { type: "noul", noul: 0.93 } } }) }));
+
+    const report = await runDoctor({ corpusDir: corpus.corpusDir, embedder: bagOfWordsClient(), judge });
+
+    const component = byName(report).get("judge")!;
+    expect(component.status).toBe("ok");
+    expect(component.detail).toBe("reachable, model jev-test");
+    expect(report.overall).toBe("ok");
+  });
+
+  test("a configured judge that is unreachable degrades, never fails, and the rest stays ok", async () => {
+    const corpus = await buildHealthyCorpus();
+    const judge = judgeClient(async () => {
+      throw new TypeError("connection refused");
+    });
+
+    const report = await runDoctor({ corpusDir: corpus.corpusDir, embedder: bagOfWordsClient(), judge });
+
+    const component = byName(report).get("judge")!;
+    expect(component.status).toBe("degraded");
+    expect(component.detail).toContain("unavailable");
+    expect(component.detail).toContain("jev-test");
+    expect(report.overall).toBe("degraded");
+    expect(byName(report).get("embeddings")!.status).toBe("ok");
   });
 });

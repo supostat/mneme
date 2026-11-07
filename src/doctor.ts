@@ -13,6 +13,7 @@ import { runGit } from "./git";
 import type { GitResult } from "./git";
 import { EMBEDDING_DIMENSION } from "./embeddings";
 import type { EmbeddingsClient } from "./embeddings";
+import type { JudgeClient } from "./judge";
 import { readActiveNotes } from "./active-notes";
 import { findDanglingDependencies, readMapSections } from "./map/map-store";
 import type { MapSection } from "./map/map-section";
@@ -49,6 +50,9 @@ export type IndexInspector = (indexPath: string) => IndexInspection;
 export interface DoctorDeps {
   corpusDir: string;
   embedder: EmbeddingsClient;
+  // Absent when MNEME_JUDGE_API_KEY is unset: the judge is optional, and "not configured" is a
+  // healthy state, not a fault.
+  judge?: JudgeClient;
   git?: GitRunner;
   inspectIndex?: IndexInspector;
   expectedDimension?: number;
@@ -63,6 +67,8 @@ interface CheckOutcome {
 type IndexProbe = { ok: true; inspection: IndexInspection } | { ok: false; error: string };
 
 const DOCTOR_PROBE_TEXT = "mneme doctor embedding probe";
+const JUDGE_PROBE_STATE = "mneme doctor judge probe";
+const JUDGE_NOT_CONFIGURED_DETAIL = "not configured (MNEME_JUDGE_API_KEY unset)";
 const SECURE_DIRECTORY_MODE = 0o700;
 const STATUS_SEVERITY: Record<DoctorStatus, number> = { ok: 0, degraded: 1, fail: 2 };
 
@@ -79,6 +85,7 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
     runGuarded("event_log", () => checkEventLog(paths.eventsDir)),
     runGuarded("index", () => checkIndex(indexProbe, paths.indexPath)),
     runGuarded("embeddings", () => checkEmbeddings(deps.embedder, indexProbe, expectedDimension, probeText)),
+    runGuarded("judge", () => checkJudge(deps.judge)),
     runGuarded("git", () => checkGit(gitRunner, deps.corpusDir)),
     runGuarded("note_bodies", () => checkNoteBodies(paths)),
     runGuarded(CLIPPED_BODIES_COMPONENT, () => checkClippedBodies(paths)),
@@ -282,6 +289,22 @@ async function checkEmbeddings(
     };
   }
   return { status: "ok", detail: `reachable, dimension ${vector.length}` };
+}
+
+// The judge only advises on dedup, so an unreachable judge degrades rather than fails: nothing stops
+// working without it, the staging card merely loses its recommendation line. "Not configured" is ok,
+// not degraded — a project that never set the key has nothing to repair.
+async function checkJudge(judge: JudgeClient | undefined): Promise<CheckOutcome> {
+  if (judge === undefined) {
+    return { status: "ok", detail: JUDGE_NOT_CONFIGURED_DETAIL };
+  }
+  const result = await judge.judge(JUDGE_PROBE_STATE, {
+    probe: { type: "noul", instructions: "The state is a diagnostic probe." },
+  });
+  if (!result.available) {
+    return { status: "degraded", detail: `judge is unavailable (endpoint unreachable or malformed answer at probe), model ${judge.model}` };
+  }
+  return { status: "ok", detail: `reachable, model ${judge.model}` };
 }
 
 // Bodies are immutable by design, so a legacy body carrying foreign protocol markup (accepted

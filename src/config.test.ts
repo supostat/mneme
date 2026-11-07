@@ -6,6 +6,7 @@ import { CONFIG_FILE_NAME, ConfigError, defaultConfig, loadConfig } from "./conf
 import { DEFAULT_RECALL_BUDGET } from "./fusion";
 import { DEDUP_NOOP_THRESHOLD, DEDUP_SUPERSEDE_THRESHOLD } from "./dedup";
 import { EMBEDDING_MODEL, OLLAMA_BASE_URL } from "./embeddings";
+import { JUDGE_BASE_URL, JUDGE_MODEL } from "./judge";
 
 function emptyProject(): string {
   return mkdtempSync(join(tmpdir(), "mneme-config-"));
@@ -30,16 +31,19 @@ describe("default parity", () => {
       dedup: { supersedeThreshold: DEDUP_SUPERSEDE_THRESHOLD, noopThreshold: DEDUP_NOOP_THRESHOLD },
       recall: { budget: DEFAULT_RECALL_BUDGET },
       corpus: { name: undefined },
+      judge: { baseUrl: JUDGE_BASE_URL, model: JUDGE_MODEL, apiKey: undefined },
     });
     expect(config).toEqual(defaultConfig());
   });
 
-  test("the historical constants are pinned: 127.0.0.1:11434, qwen3, 0.85/0.97, 2000", () => {
+  test("the historical constants are pinned: 127.0.0.1:11434, qwen3, 0.85/0.97, 2000, TypeSafe jev-latest", () => {
     expect(OLLAMA_BASE_URL).toBe("http://127.0.0.1:11434");
     expect(EMBEDDING_MODEL).toBe("qwen3-embedding:0.6b");
     expect(DEDUP_SUPERSEDE_THRESHOLD).toBe(0.85);
     expect(DEDUP_NOOP_THRESHOLD).toBe(0.97);
     expect(DEFAULT_RECALL_BUDGET).toBe(2000);
+    expect(JUDGE_BASE_URL).toBe("https://api.typesafe.ai");
+    expect(JUDGE_MODEL).toBe("jev-latest");
   });
 });
 
@@ -57,6 +61,7 @@ describe("file overrides", () => {
     expect(config.dedup.supersedeThreshold).toBe(0.9);
     expect(config.dedup.noopThreshold).toBe(DEDUP_NOOP_THRESHOLD);
     expect(config.recall.budget).toBe(DEFAULT_RECALL_BUDGET);
+    expect(config.judge).toEqual({ baseUrl: JUDGE_BASE_URL, model: JUDGE_MODEL, apiKey: undefined });
   });
 
   test("a full file overrides every field", () => {
@@ -66,6 +71,7 @@ describe("file overrides", () => {
         dedup: { supersede_threshold: 0.8, noop_threshold: 0.95 },
         recall: { budget: 4000 },
         corpus: { name: "shared-corpus" },
+        judge: { base_url: "https://openrouter.ai/api", model: "typesafe/jev-latest" },
       }),
     );
 
@@ -74,13 +80,16 @@ describe("file overrides", () => {
       dedup: { supersedeThreshold: 0.8, noopThreshold: 0.95 },
       recall: { budget: 4000 },
       corpus: { name: "shared-corpus" },
+      judge: { baseUrl: "https://openrouter.ai/api", model: "typesafe/jev-latest", apiKey: undefined },
     });
   });
 });
 
 describe("environment overrides", () => {
   test("MNEME_* variables override both the defaults and the file", () => {
-    const projectRoot = projectWithFile(JSON.stringify({ embedder: { base_url: "http://from-file:1" } }));
+    const projectRoot = projectWithFile(
+      JSON.stringify({ embedder: { base_url: "http://from-file:1" }, judge: { base_url: "https://judge-from-file:1" } }),
+    );
 
     const config = loadConfig(projectRoot, {
       MNEME_EMBEDDER_BASE_URL: "http://from-env:2",
@@ -90,6 +99,9 @@ describe("environment overrides", () => {
       MNEME_DEDUP_NOOP_THRESHOLD: "0.9",
       MNEME_RECALL_BUDGET: "1500",
       MNEME_CORPUS_NAME: "from-env",
+      MNEME_JUDGE_BASE_URL: "https://judge-from-env:2",
+      MNEME_JUDGE_MODEL: "jev-env",
+      MNEME_JUDGE_API_KEY: "apikey-from-env",
     });
 
     expect(config).toEqual({
@@ -97,6 +109,7 @@ describe("environment overrides", () => {
       dedup: { supersedeThreshold: 0.7, noopThreshold: 0.9 },
       recall: { budget: 1500 },
       corpus: { name: "from-env" },
+      judge: { baseUrl: "https://judge-from-env:2", model: "jev-env", apiKey: "apikey-from-env" },
     });
   });
 
@@ -175,5 +188,55 @@ describe("corpus name", () => {
   test("the same grammar guards the environment override", () => {
     expect(() => loadConfig(emptyProject(), { MNEME_CORPUS_NAME: "../evil" })).toThrow(ConfigError);
     expect(() => loadConfig(emptyProject(), { MNEME_CORPUS_NAME: "../evil" })).toThrow(/MNEME_CORPUS_NAME is "\.\.\/evil"/);
+  });
+});
+
+describe("judge", () => {
+  test("without a file, an environment or a key the judge is the TypeSafe defaults and disabled", () => {
+    const config = loadConfig(emptyProject(), NO_ENV);
+
+    expect(config.judge).toEqual({ baseUrl: JUDGE_BASE_URL, model: JUDGE_MODEL, apiKey: undefined });
+  });
+
+  test("the file overrides base_url and model, and only those", () => {
+    const projectRoot = projectWithFile(JSON.stringify({ judge: { base_url: "https://openrouter.ai/api", model: "typesafe/jev-1.14" } }));
+
+    expect(loadConfig(projectRoot, NO_ENV).judge).toEqual({
+      baseUrl: "https://openrouter.ai/api",
+      model: "typesafe/jev-1.14",
+      apiKey: undefined,
+    });
+  });
+
+  test("api_key in the file is refused by name, pointing at the environment variable", () => {
+    const projectRoot = projectWithFile(JSON.stringify({ judge: { api_key: "apikey-in-file" } }));
+
+    expect(() => loadConfig(projectRoot, NO_ENV)).toThrow(ConfigError);
+    expect(() => loadConfig(projectRoot, NO_ENV)).toThrow(/judge\.api_key/);
+    expect(() => loadConfig(projectRoot, NO_ENV)).toThrow(/MNEME_JUDGE_API_KEY/);
+    expect(() => loadConfig(projectRoot, NO_ENV)).toThrow(new RegExp(CONFIG_FILE_NAME));
+  });
+
+  test("an unknown judge key is still a typo", () => {
+    const projectRoot = projectWithFile(JSON.stringify({ judge: { baseurl: "https://typo" } }));
+
+    expect(() => loadConfig(projectRoot, NO_ENV)).toThrow(ConfigError);
+    expect(() => loadConfig(projectRoot, NO_ENV)).toThrow(/judge/);
+  });
+
+  test("the environment overrides the file and supplies the key", () => {
+    const projectRoot = projectWithFile(JSON.stringify({ judge: { base_url: "https://from-file", model: "file-model" } }));
+
+    expect(
+      loadConfig(projectRoot, {
+        MNEME_JUDGE_BASE_URL: "https://from-env",
+        MNEME_JUDGE_MODEL: "env-model",
+        MNEME_JUDGE_API_KEY: "apikey-env",
+      }).judge,
+    ).toEqual({ baseUrl: "https://from-env", model: "env-model", apiKey: "apikey-env" });
+  });
+
+  test("an empty key is the same as no key", () => {
+    expect(loadConfig(emptyProject(), { MNEME_JUDGE_API_KEY: "" }).judge.apiKey).toBeUndefined();
   });
 });

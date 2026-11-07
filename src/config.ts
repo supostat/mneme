@@ -5,11 +5,17 @@ import { DEDUP_NOOP_THRESHOLD, DEDUP_SUPERSEDE_THRESHOLD } from "./dedup";
 import { EMBEDDER_FORMATS, EMBEDDING_MODEL, OLLAMA_BASE_URL } from "./embeddings";
 import type { EmbedderFormat } from "./embeddings";
 import { DEFAULT_RECALL_BUDGET } from "./fusion";
+import { JUDGE_BASE_URL, JUDGE_MODEL } from "./judge";
 
 // Project-level configuration: <projectRoot>/.mneme.json overridden by MNEME_* environment
 // variables. Every default IS the historical constant, imported from its canonical module, so a
 // project without a config file behaves byte-for-byte as before the file existed. Validation is
 // fail-closed: a broken file or a malformed override is a named ConfigError, never a silent default.
+//
+// The judge (System One advisor on dedup) is configured in two halves on purpose: base_url and model
+// may live in the file, the API key may live ONLY in the MNEME_JUDGE_API_KEY environment variable —
+// the file sits in the project root and travels with its git. The judge is enabled exactly when the
+// key is set; without it the engine behaves byte-for-byte as before the judge existed.
 
 export class ConfigError extends Error {}
 
@@ -28,6 +34,7 @@ export interface MnemeConfig {
   dedup: { supersedeThreshold: number; noopThreshold: number };
   recall: { budget: number };
   corpus: { name: string | undefined };
+  judge: { baseUrl: string; model: string; apiKey: string | undefined };
 }
 
 export function defaultConfig(): MnemeConfig {
@@ -36,8 +43,11 @@ export function defaultConfig(): MnemeConfig {
     dedup: { supersedeThreshold: DEDUP_SUPERSEDE_THRESHOLD, noopThreshold: DEDUP_NOOP_THRESHOLD },
     recall: { budget: DEFAULT_RECALL_BUDGET },
     corpus: { name: undefined },
+    judge: { baseUrl: JUDGE_BASE_URL, model: JUDGE_MODEL, apiKey: undefined },
   };
 }
+
+const JUDGE_API_KEY_VARIABLE = "MNEME_JUDGE_API_KEY";
 
 // Every section and field is optional (the file states only what it overrides), but unknown keys are
 // rejected: a typo that would silently fall back to a default is exactly the fail-closed case.
@@ -70,6 +80,14 @@ const configFileSchema = z
       })
       .strict()
       .optional(),
+    // api_key is deliberately absent: the key never comes from the file (see refuseFileApiKey).
+    judge: z
+      .object({
+        base_url: z.string().min(1).optional(),
+        model: z.string().min(1).optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -92,7 +110,9 @@ function applyConfigFile(config: MnemeConfig, configPath: string): void {
   if (!existsSync(configPath)) {
     return;
   }
-  const parsed = configFileSchema.safeParse(parseJson(configPath, readFileSync(configPath, "utf8")));
+  const json = parseJson(configPath, readFileSync(configPath, "utf8"));
+  refuseFileApiKey(configPath, json);
+  const parsed = configFileSchema.safeParse(json);
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
     const where = issue === undefined || issue.path.length === 0 ? "" : ` at "${issue.path.join(".")}"`;
@@ -106,6 +126,23 @@ function applyConfigFile(config: MnemeConfig, configPath: string): void {
   config.dedup.noopThreshold = file.dedup?.noop_threshold ?? config.dedup.noopThreshold;
   config.recall.budget = file.recall?.budget ?? config.recall.budget;
   config.corpus.name = file.corpus?.name ?? config.corpus.name;
+  config.judge.baseUrl = file.judge?.base_url ?? config.judge.baseUrl;
+  config.judge.model = file.judge?.model ?? config.judge.model;
+}
+
+// The strict schema would refuse judge.api_key as an unknown key anyway; this check refuses it BY
+// NAME, so the message says where the key belongs instead of calling it a typo.
+function refuseFileApiKey(configPath: string, json: unknown): void {
+  if (typeof json !== "object" || json === null) {
+    return;
+  }
+  const judge = (json as { judge?: unknown }).judge;
+  if (typeof judge === "object" && judge !== null && "api_key" in judge) {
+    throw new ConfigError(
+      `${configPath} must not carry judge.api_key: the file travels with the project's git, ` +
+        `so the judge key is read only from the ${JUDGE_API_KEY_VARIABLE} environment variable`,
+    );
+  }
 }
 
 function parseJson(configPath: string, text: string): unknown {
@@ -127,6 +164,16 @@ function applyEnvironment(config: MnemeConfig, environment: ConfigEnvironment): 
     thresholdFrom(environment, "MNEME_DEDUP_NOOP_THRESHOLD") ?? config.dedup.noopThreshold;
   config.recall.budget = budgetFrom(environment) ?? config.recall.budget;
   config.corpus.name = corpusNameFrom(environment) ?? config.corpus.name;
+  config.judge.baseUrl = environment["MNEME_JUDGE_BASE_URL"] ?? config.judge.baseUrl;
+  config.judge.model = environment["MNEME_JUDGE_MODEL"] ?? config.judge.model;
+  config.judge.apiKey = judgeApiKeyFrom(environment);
+}
+
+// An empty value is the same as an unset one: `MNEME_JUDGE_API_KEY=` in a shell profile disables the
+// judge instead of sending an empty bearer token.
+function judgeApiKeyFrom(environment: ConfigEnvironment): string | undefined {
+  const raw = environment[JUDGE_API_KEY_VARIABLE];
+  return raw === undefined || raw === "" ? undefined : raw;
 }
 
 function corpusNameFrom(environment: ConfigEnvironment): string | undefined {

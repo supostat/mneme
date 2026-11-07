@@ -96,4 +96,37 @@ describe("doctorForProject config wiring", () => {
     expect(urls).toEqual(["http://127.0.0.1:11434/api/embed"]);
     expect(embeddingsComponent(report).status).toBe("ok");
   });
+
+  // The judge is wired exactly as the server wires it: only MNEME_JUDGE_API_KEY turns it on, the
+  // endpoint and model come from the file, and the probe rides the same fetch under the bearer key.
+  test("with MNEME_JUDGE_API_KEY set the judge is probed at the configured endpoint and reports ok", async () => {
+    const projectRoot = emptyProject();
+    writeFileSync(
+      join(projectRoot, CONFIG_FILE_NAME),
+      JSON.stringify({ judge: { base_url: "https://judge.invalid/api", model: "typesafe/jev-stub" } }),
+    );
+    const requests: Array<{ url: string; authorization: string | undefined; model: string }> = [];
+
+    const report = await doctorForProject(projectRoot, {
+      corpusHome: isolatedCorpusHome(),
+      environment: { MNEME_JUDGE_API_KEY: "apikey-cli-test" },
+      fetchImplementation: async (url, init) => {
+        const body = JSON.parse(init.body) as { model: string };
+        requests.push({ url, authorization: init.headers["authorization"], model: body.model });
+        if (url.endsWith("/v1/systemone")) {
+          return okResponse({ answers: { probe: { type: "noul", noul: 0.9 } } });
+        }
+        return okResponse({ embeddings: [validRow()] });
+      },
+    });
+
+    const judgeRequest = requests.find((request) => request.url === "https://judge.invalid/api/v1/systemone");
+    expect(judgeRequest).toEqual({
+      url: "https://judge.invalid/api/v1/systemone",
+      authorization: "Bearer apikey-cli-test",
+      model: "typesafe/jev-stub",
+    });
+    const judge = report.components.find((candidate) => candidate.name === "judge");
+    expect(judge).toEqual({ name: "judge", status: "ok", detail: "reachable, model typesafe/jev-stub" });
+  });
 });

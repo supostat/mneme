@@ -6,6 +6,7 @@ import { runDoctor, renderDoctorReport } from "../src/doctor";
 import type { DoctorReport } from "../src/doctor";
 import { HttpEmbeddingsClient } from "../src/embeddings";
 import type { FetchImplementation } from "../src/embeddings";
+import { HttpJudgeClient } from "../src/judge";
 
 // Thin human-driven CLI over the read-only doctor library (mirrors scripts/replay.ts and
 // scripts/migrate.ts): locate the current project's corpus WITHOUT creating it, run every wiring check,
@@ -22,23 +23,29 @@ export interface DoctorProjectOptions {
 
 // The embedder is built from the project's .mneme.json (base_url, model, format), so the probe hits
 // the endpoint the server itself would use — a configured openai endpoint is probed as openai, never
-// the default Ollama. A broken config throws its named ConfigError into the caller's catch: config
-// validity is a CLI precondition (exit 2), not a report component. loadConfig and corpusDirFor are
-// both read-only, so the doctor still creates nothing.
+// the default Ollama. The judge is built the same way, and only when MNEME_JUDGE_API_KEY is set — the
+// exact condition under which the server itself would call it. A broken config throws its named
+// ConfigError into the caller's catch: config validity is a CLI precondition (exit 2), not a report
+// component. loadConfig and corpusDirFor are both read-only, so the doctor still creates nothing.
 export async function doctorForProject(
   projectRoot: string,
   options: DoctorProjectOptions = {},
 ): Promise<DoctorReport> {
   const config =
     options.environment === undefined ? loadConfig(projectRoot) : loadConfig(projectRoot, options.environment);
+  const fetchImplementation = options.fetchImplementation ?? ((url, init) => fetch(url, init));
   const embedder = new HttpEmbeddingsClient(
     config.embedder.baseUrl,
-    options.fetchImplementation ?? ((url, init) => fetch(url, init)),
+    fetchImplementation,
     config.embedder.model,
     config.embedder.format,
   );
+  const judge =
+    config.judge.apiKey === undefined
+      ? undefined
+      : new HttpJudgeClient(config.judge.baseUrl, fetchImplementation, config.judge.model, config.judge.apiKey);
   const { corpusDir } = corpusDirFor(projectRoot, options.corpusHome, config.corpus.name);
-  return runDoctor({ corpusDir, embedder });
+  return runDoctor({ corpusDir, embedder, judge });
 }
 
 export async function main(argv: string[]): Promise<number> {
