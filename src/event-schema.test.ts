@@ -40,6 +40,25 @@ const DEDUP_ADD = {
   supersede_threshold: 0.85,
   noop_threshold: 0.97,
   degraded: false,
+  judge: null,
+};
+
+const JUDGE_SUPERSEDES = {
+  model: "jev-1.14.0",
+  relation: "supersedes",
+  probabilities: { duplicate: 0.01, supersedes: 0.9, contradicts: 0.05, complements: 0.04, unrelated: 0 },
+  confidence: 0.88,
+  recommended: true,
+  degraded: false,
+};
+
+const JUDGE_DEGRADED = {
+  model: "jev-1.14.0",
+  relation: null,
+  probabilities: null,
+  confidence: null,
+  recommended: null,
+  degraded: true,
 };
 
 const FULL_CANDIDATE = {
@@ -114,6 +133,7 @@ const LIVE_EVENTS: Record<string, EventInput> = {
   staging_listed: { type: "staging_listed", count: 1, liveness: [{ id: "n1", anchors: [{ path: "src/a.ts", liveness: "tracked" }] }] },
   rebuild: { type: "rebuild", duration_ms: 0, notes_n: 2, embedded_n: 2, bodies_n: 2, chunks_n: 1, chunks_ok_n: 1, dead_anchors_n: 1, staleness: [0, -1], ollama: { available: true, retries: 0 } },
   rebuild_failed: { type: "rebuild_failed", message: "unable to open database file" },
+  corpus_adopted: { type: "corpus_adopted", source_path: "/corpora/other", adopted_n: 2, skipped_n: 1, judge_flagged_n: 1 },
   map_section_put: { type: "map_section_put", id: "billing", kind: "domain", body_len: 24, anchors_n: 1, depends_on_n: 0, terms_n: 2, commit: "abc1234" },
   map_section_deleted: { type: "map_section_deleted", id: "billing", kind: "domain", commit: "abc1234" },
   session_start: { type: "session_start", pid: 4242 },
@@ -191,8 +211,8 @@ const AGENT_VOTE_MIRROR = {
 } as const satisfies Record<Vote, true>;
 
 describe("event-schema constants", () => {
-  test("SCHEMA_VERSION is 23", () => {
-    expect(SCHEMA_VERSION).toBe(23);
+  test("SCHEMA_VERSION is 24", () => {
+    expect(SCHEMA_VERSION).toBe(24);
   });
 
   test("the unclipped-harvest boundary is fixed at 19 and never ahead of the producer", () => {
@@ -240,6 +260,42 @@ describe("event-schema constants", () => {
       note_rejected: "staging_resolve",
       note_superseded: "staging_resolve",
     });
+  });
+});
+
+describe("judge verdict on remember.dedup and corpus_adopted (v24)", () => {
+  function rememberWith(judge: unknown): EventInput {
+    return { ...LIVE_EVENTS["remember"]!, dedup: { ...DEDUP_ADD, nearest_id: "n0", similarity: 0.61, judge } };
+  }
+
+  test("a full verdict passes", () => {
+    expect(eventSchema.safeParse(stamp(rememberWith(JUDGE_SUPERSEDES))).success).toBe(true);
+  });
+
+  test("a degraded verdict with every answer field null passes", () => {
+    expect(eventSchema.safeParse(stamp(rememberWith(JUDGE_DEGRADED))).success).toBe(true);
+  });
+
+  test("null — no judge configured — passes", () => {
+    expect(eventSchema.safeParse(stamp(rememberWith(null))).success).toBe(true);
+  });
+
+  test("a field the producer never promised fails", () => {
+    expect(eventSchema.safeParse(stamp(rememberWith({ ...JUDGE_SUPERSEDES, neighbor_id: "n0" }))).success).toBe(false);
+  });
+
+  test("a relation outside the registry fails", () => {
+    expect(eventSchema.safeParse(stamp(rememberWith({ ...JUDGE_SUPERSEDES, relation: "maybe" }))).success).toBe(false);
+  });
+
+  test("a remember without the judge key fails the producer schema", () => {
+    const { judge: _omitted, ...withoutJudge } = DEDUP_ADD;
+    expect(eventSchema.safeParse(stamp({ ...LIVE_EVENTS["remember"]!, dedup: withoutJudge })).success).toBe(false);
+  });
+
+  test("a corpus_adopted without judge_flagged_n fails the producer schema", () => {
+    const { judge_flagged_n: _omitted, ...withoutCount } = LIVE_EVENTS["corpus_adopted"]!;
+    expect(eventSchema.safeParse(stamp(withoutCount)).success).toBe(false);
   });
 });
 

@@ -9,6 +9,8 @@ import {
 import { canonicalize, corpusPaths, readManifest } from "./corpus";
 import { commitPaths } from "./corpus-git";
 import { classifyCandidate } from "./dedup";
+import { judgeNeighbor } from "./dedup-judge";
+import type { JudgeVerdict } from "./dedup-judge";
 import { rebuild } from "./index-db";
 import { isNoteId, parseNote } from "./note";
 import { rebuildDeps } from "./staging";
@@ -35,11 +37,16 @@ export class CorpusAdoptError extends Error {}
 const NOTE_EXTENSION = ".md";
 const EMBEDDER_PROBE = "mneme corpus adoption probe";
 
+// judge is the verdict on an ADOPTED note against the receiving corpus's nearest neighbour (null
+// without a judge, and null for the two skip reasons — a skipped note was never judged). An adoption
+// has no human gate, so a recommending verdict is flagged in the report and counted on the event
+// rather than acted on.
 export interface AdoptedNote {
   id: string;
   reason: "adopted" | "already-present" | "duplicate";
   nearestId?: string;
   similarity?: number;
+  judge: JudgeVerdict | null;
 }
 
 export interface AdoptOutcome {
@@ -85,6 +92,7 @@ export async function adoptCorpus(deps: StagingDeps, sourceCorpusDir: string): P
     source_path: source.path,
     adopted_n: adoptedCount,
     skipped_n: notes.length - adoptedCount,
+    judge_flagged_n: notes.filter(isJudgeFlagged).length,
   });
   return {
     sourcePath: source.path,
@@ -162,7 +170,7 @@ async function classifySourceNote(deps: StagingDeps, sourceNotesDir: string, id:
   const note = parseNote(readFileSync(notePath(sourceNotesDir, id), "utf8"));
   const commit = note.frontmatter.commit;
   if (existsSync(notePath(deps.corpus.notesDir, id))) {
-    return { note: { id, reason: "already-present" }, commit };
+    return { note: { id, reason: "already-present", judge: null }, commit };
   }
   const classification = await classifyCandidate(
     deps.corpus.indexPath,
@@ -172,11 +180,20 @@ async function classifySourceNote(deps: StagingDeps, sourceNotesDir: string, id:
   );
   if (classification.kind === "noop") {
     return {
-      note: { id, reason: "duplicate", nearestId: classification.neighborId, similarity: classification.similarity },
+      note: { id, reason: "duplicate", nearestId: classification.neighborId, similarity: classification.similarity, judge: null },
       commit,
     };
   }
-  return { note: { id, reason: "adopted" }, commit };
+  const judge = await judgeNeighbor(
+    deps,
+    { type: note.frontmatter.type, tags: note.frontmatter.tags ?? [], anchors: note.frontmatter.anchors, body: note.body },
+    classification,
+  );
+  return { note: { id, reason: "adopted", judge }, commit };
+}
+
+export function isJudgeFlagged(note: AdoptedNote): boolean {
+  return note.reason === "adopted" && note.judge !== null && !note.judge.degraded && note.judge.recommended;
 }
 
 function notePath(directory: string, id: string): string {

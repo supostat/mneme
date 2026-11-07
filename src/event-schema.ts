@@ -134,7 +134,16 @@ import { z } from "zod";
 //       ordered by rrf + staleness_boost, a formula that no longer exists, so replay skips those
 //       recall events instead of verifying them (RELEVANCE_FIRST_SCHEMA_VERSION is that boundary).
 //       No event shape changed: candidates still carry rrf and staleness_boost, the two keys.
-export const SCHEMA_VERSION = 23;
+//  24 — judge: remember.dedup gains judge — the System One judge's verdict on the staged note against
+//       its nearest accepted neighbour {model, relation, probabilities, confidence, recommended,
+//       degraded}. null = no judge configured (the menu precedent: absent instrumentation, never
+//       false); degraded: true carries the model and nulls for the rest (the call was made and did
+//       not answer usably). recommended is the producer's verdict under the dedup-judge threshold,
+//       stamped so a reader never recomputes it with a later threshold; the neighbour the verdict is
+//       about is dedup.nearest_id, real for an add too. corpus_adopted gains judge_flagged_n — the
+//       adopted notes whose verdict recommended a supersede (an adoption has no human gate, so the
+//       flag is the only trace). The judge never changes dedup.outcome.
+export const SCHEMA_VERSION = 24;
 
 // The first schema version whose harvest bodies are guaranteed whole. A fixed boundary, not an alias
 // of SCHEMA_VERSION: later bumps must never move it, or old clipped bodies would read as whole.
@@ -146,6 +155,11 @@ export const UNCLIPPED_HARVEST_SCHEMA_VERSION = 19;
 export const RELEVANCE_FIRST_SCHEMA_VERSION = 23;
 
 export const DEDUP_OUTCOMES = ["add", "supersede_suggest", "noop"] as const;
+// How the judge reads a staged note A against its nearest accepted neighbour B (v24). The
+// dedup-judge module types its question's options by this registry, so the logged enum and the
+// options the judge may answer with cannot drift apart.
+export const DEDUP_RELATIONS = ["duplicate", "supersedes", "contradicts", "complements", "unrelated"] as const;
+export type DedupRelation = (typeof DEDUP_RELATIONS)[number];
 // The closed v1 registry of digit-menu decision classes: curation rides staging_resolve, plan-fan
 // rides the remember that stages a plan's choice note. commit/boundary classes are a future extend.
 export const DECISION_CLASSES = ["curation", "plan-fan"] as const;
@@ -214,6 +228,19 @@ const envelope = {
   schema_version: z.literal(SCHEMA_VERSION),
 };
 
+// v24: the judge's verdict. Strict on purpose — a field the producer did not promise is a drift, not
+// an extension; degraded: true nulls every answer field while keeping the model that was asked.
+const judgeVerdictPayload = z
+  .object({
+    model: z.string(),
+    relation: z.enum(DEDUP_RELATIONS).nullable(),
+    probabilities: z.record(z.enum(DEDUP_RELATIONS), z.number()).nullable(),
+    confidence: z.number().nullable(),
+    recommended: z.boolean().nullable(),
+    degraded: z.boolean(),
+  })
+  .strict();
+
 const dedupOutcome = z.object({
   outcome: z.enum(DEDUP_OUTCOMES),
   nearest_id: z.string().nullable(),
@@ -221,6 +248,7 @@ const dedupOutcome = z.object({
   supersede_threshold: z.number(),
   noop_threshold: z.number(),
   degraded: z.boolean(),
+  judge: judgeVerdictPayload.nullable(),
 });
 
 // branches is present only for known-elsewhere (the local branch tips carrying the path);
@@ -449,6 +477,9 @@ const corpusAdoptedEvent = z.object({
   source_path: z.string(),
   adopted_n: z.number().int(),
   skipped_n: z.number().int(),
+  // v24: adopted notes whose judge verdict recommended a supersede — flagged in the report, since an
+  // adoption crosses the human gate by design.
+  judge_flagged_n: z.number().int(),
 });
 
 // v21: one map write. No human gate — the map is a synthetic layer the plugin rebuilds — so the

@@ -35,7 +35,7 @@ function remembered(noteId: string, tags: string[], outcome: "add" | "noop" = "a
     tags_n: tags.length,
     tags,
     source: "mcp",
-    dedup: dedupPayload(outcome, null, null, false, defaultConfig().dedup),
+    dedup: dedupPayload(outcome, null, null, false, defaultConfig().dedup, null),
   };
 }
 

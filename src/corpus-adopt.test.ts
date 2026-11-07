@@ -14,6 +14,8 @@ import { rebuild } from "./index-db";
 import { parseNote, serializeNote } from "./note";
 import type { StagingDeps } from "./staging";
 import { adoptCorpus, CorpusAdoptError } from "./corpus-adopt";
+import { HttpJudgeClient } from "./judge";
+import type { JudgeClient } from "./judge";
 
 // Adoption is exercised on REAL corpora: real resolveCorpus, real manifests read by the real
 // readManifest, real corpus git and a real SQLite index. The only stand-in is the embedder, and it
@@ -115,6 +117,7 @@ function makeDeps(
   corpus: Corpus,
   projectRoot: string,
   embeddings: EmbeddingsClient = bagOfWordsClient(),
+  judge?: JudgeClient,
 ): StagingDeps {
   return {
     corpus,
@@ -128,7 +131,27 @@ function makeDeps(
       mnemeVersion: "0.1.0",
       clock: fixedClock,
     }),
+    judge,
   };
+}
+
+// A System One stand-in at the network boundary: the real HttpJudgeClient, a fetch that answers
+// every pair with one fixed relation.
+function judgeAnswering(relation: "supersedes" | "complements", probability: number): HttpJudgeClient {
+  const rest = 1 - probability;
+  const probabilities =
+    relation === "supersedes"
+      ? { duplicate: 0, supersedes: probability, contradicts: 0, complements: rest, unrelated: 0 }
+      : { duplicate: 0, supersedes: 0, contradicts: 0, complements: probability, unrelated: rest };
+  return new HttpJudgeClient(
+    "https://judge.test",
+    async () => ({
+      ok: true,
+      json: async () => ({ answers: { relation: { type: "choice", choice: relation, probabilities, confidence: 0.8 } } }),
+    }),
+    "jev-test",
+    "apikey-test",
+  );
 }
 
 // The receiving corpus carries an INDEX only where the test is about dedup: that is the one question
@@ -179,7 +202,7 @@ describe("adopting a corpus that drifted apart", () => {
 
     expect(outcome.adoptedCount).toBe(1);
     expect(outcome.skippedCount).toBe(0);
-    expect(outcome.notes).toEqual([{ id: ulid(2), reason: "adopted" }]);
+    expect(outcome.notes).toEqual([{ id: ulid(2), reason: "adopted", judge: null }]);
     expect(noteIds(deps.corpus.notesDir)).toEqual([`${ulid(1)}.md`, `${ulid(2)}.md`]);
     expect(readFileSync(join(deps.corpus.notesDir, `${ulid(2)}.md`), "utf8")).toContain("source corpus beta wisdom");
     expect(await headOf(deps.corpus)).not.toBe(headBefore);
@@ -190,6 +213,7 @@ describe("adopting a corpus that drifted apart", () => {
     expect(events[0]!.source_path).toBe(canonicalize(source.corpus.corpusDir));
     expect(events[0]!.adopted_n).toBe(1);
     expect(events[0]!.skipped_n).toBe(0);
+    expect(events[0]!.judge_flagged_n).toBe(0);
     expect(events[0]!.type).toBe("corpus_adopted");
   }, ADOPT_TEST_TIMEOUT_MS);
 
@@ -201,7 +225,7 @@ describe("adopting a corpus that drifted apart", () => {
 
     const outcome = await adoptCorpus(deps, source.corpus.corpusDir);
 
-    expect(outcome.notes).toEqual([{ id: shared, reason: "already-present" }]);
+    expect(outcome.notes).toEqual([{ id: shared, reason: "already-present", judge: null }]);
     expect(outcome.adoptedCount).toBe(0);
     expect(outcome.skippedCount).toBe(1);
     expect(readFileSync(join(deps.corpus.notesDir, `${shared}.md`), "utf8")).toBe(before);
@@ -239,6 +263,53 @@ describe("adopting a corpus that drifted apart", () => {
     expect(noteIds(source.corpus.notesDir)).toEqual(idsBefore);
     expect(readFileSync(join(source.corpus.notesDir, `${ulid(8)}.md`), "utf8")).toBe(bodyBefore);
     expect(await headOf(source.corpus)).toBe(headBefore);
+  }, ADOPT_TEST_TIMEOUT_MS);
+});
+
+describe("adoption with a judge", () => {
+  test("an adopted note near an existing one carries the judge's verdict and is counted when it recommends", async () => {
+    const deps = await receivingDeps([{ id: ulid(40), body: "the landing roster has eight cards today" }], true);
+    deps.judge = judgeAnswering("supersedes", 0.9);
+    const source = await buildCorpus([{ id: ulid(41), body: "the landing roster has nine cards from now on" }]);
+
+    const outcome = await adoptCorpus(deps, source.corpus.corpusDir);
+
+    expect(outcome.adoptedCount).toBe(1);
+    const adopted = outcome.notes.find((note) => note.id === ulid(41))!;
+    expect(adopted.reason).toBe("adopted");
+    expect(adopted.judge).toEqual({
+      degraded: false,
+      model: "jev-test",
+      neighborId: ulid(40),
+      relation: "supersedes",
+      probabilities: { duplicate: 0, supersedes: 0.9, contradicts: 0, complements: 0.09999999999999998, unrelated: 0 },
+      confidence: 0.8,
+      recommended: true,
+    });
+    expect(existsSync(join(deps.corpus.notesDir, `${ulid(41)}.md`))).toBe(true);
+    expect(adoptionEvents(deps.corpus)[0]!.judge_flagged_n).toBe(1);
+  }, ADOPT_TEST_TIMEOUT_MS);
+
+  test("a verdict that does not recommend is carried but not counted", async () => {
+    const deps = await receivingDeps([{ id: ulid(42), body: "receiving note about billing retries" }], true);
+    deps.judge = judgeAnswering("complements", 0.9);
+    const source = await buildCorpus([{ id: ulid(43), body: "source note about billing retry budgets" }]);
+
+    const outcome = await adoptCorpus(deps, source.corpus.corpusDir);
+
+    const adopted = outcome.notes.find((note) => note.id === ulid(43))!;
+    expect(adopted.judge !== null && !adopted.judge.degraded && adopted.judge.recommended).toBe(false);
+    expect(adoptionEvents(deps.corpus)[0]!.judge_flagged_n).toBe(0);
+  }, ADOPT_TEST_TIMEOUT_MS);
+
+  test("without a judge every adopted note carries null and the count is zero", async () => {
+    const deps = await receivingDeps([{ id: ulid(44), body: "receiving note about caches" }], true);
+    const source = await buildCorpus([{ id: ulid(45), body: "source note about cache eviction" }]);
+
+    const outcome = await adoptCorpus(deps, source.corpus.corpusDir);
+
+    expect(outcome.notes).toEqual([{ id: ulid(45), reason: "adopted", judge: null }]);
+    expect(adoptionEvents(deps.corpus)[0]!.judge_flagged_n).toBe(0);
   }, ADOPT_TEST_TIMEOUT_MS);
 });
 
@@ -284,7 +355,7 @@ describe("adoption converges on retry", () => {
     const second = await adoptCorpus(deps, source.corpus.corpusDir);
 
     expect(second.adoptedCount).toBe(0);
-    expect(second.notes).toEqual([{ id: ulid(10), reason: "already-present" }]);
+    expect(second.notes).toEqual([{ id: ulid(10), reason: "already-present", judge: null }]);
     expect(second.commit).toBe(headAfterFirst);
     expect(await headOf(deps.corpus)).toBe(headAfterFirst);
     expect(noteIds(deps.corpus.notesDir)).toEqual([`${ulid(9)}.md`, `${ulid(10)}.md`]);
@@ -303,7 +374,7 @@ describe("adoption converges on retry", () => {
 
     const outcome = await adoptCorpus(deps, source.corpus.corpusDir);
 
-    expect(outcome.notes).toEqual([{ id: ulid(12), reason: "already-present" }]);
+    expect(outcome.notes).toEqual([{ id: ulid(12), reason: "already-present", judge: null }]);
     expect(outcome.commit).not.toBe(headBefore);
     const tracked = await runGit(deps.corpus.corpusDir, ["ls-files", `notes/${ulid(12)}.md`]);
     expect(tracked.stdout.trim()).toBe(`notes/${ulid(12)}.md`);

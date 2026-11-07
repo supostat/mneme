@@ -175,7 +175,7 @@ describe("two working copies sharing one named corpus", () => {
     const adoption = await adoptCorpus(sessionB, corpusOf(driftedSession).corpusDir);
 
     expect(adoption.adoptedCount).toBe(1);
-    expect(adoption.notes).toEqual([{ id: acceptedInDrifted, reason: "adopted" }]);
+    expect(adoption.notes).toEqual([{ id: acceptedInDrifted, reason: "adopted", judge: null }]);
     // Both copies reach the adopted knowledge, because both read the one corpus it landed in.
     expect(await recalledIds(sessionA, "doctor never heals wiring")).toContain(acceptedInDrifted);
     expect(await recalledIds(sessionB, "doctor never heals wiring")).toContain(acceptedInDrifted);

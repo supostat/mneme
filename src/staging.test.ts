@@ -18,6 +18,9 @@ import { noteReanchor, noteRetag, noteRetire } from "./curation";
 import { rebuildDeps, remember, stagingList, stagingResolve, StagingError } from "./staging";
 import type { ResolveDecision, ResolveResult, StagingDeps } from "./staging";
 import { formatStagingList } from "./mcp-rendering";
+import { HttpJudgeClient } from "./judge";
+import type { JudgeClient } from "./judge";
+import type { FetchImplementation } from "./embeddings";
 
 // These tests spawn real git repositories and dozens of git subprocesses per case; under machine
 // load the slowest cases exceed bun's 5s default per-test timeout and fail the suite spuriously.
@@ -116,6 +119,7 @@ async function makeDeps(
   embeddings: EmbeddingsClient,
   idFactory: () => string,
   clock: () => Date = fixedClock,
+  judge?: JudgeClient,
 ): Promise<StagingDeps> {
   const corpusHome = mkdtempSync(join(tmpdir(), "mneme-staging-home-"));
   const corpus = await resolveCorpus(projectRoot, { corpusHome, clock });
@@ -124,7 +128,7 @@ async function makeDeps(
     mnemeVersion: "0.1.0",
     clock,
   });
-  return { corpus, projectRoot, config: defaultConfig(), clock, idFactory, embeddings, eventWriter };
+  return { corpus, projectRoot, config: defaultConfig(), clock, idFactory, embeddings, eventWriter, judge };
 }
 
 function eventsOfType(corpus: Corpus, type: string): StoredEvent[] {
@@ -203,6 +207,7 @@ describe("remember staging", () => {
       supersede_threshold: 0.85,
       noop_threshold: 0.97,
       degraded: true,
+      judge: null,
     });
   });
 
@@ -816,7 +821,7 @@ describe("stagingList dedup honesty", () => {
 
     const entries = await stagingList(deps);
 
-    expect(entries[0]!.dedup).toEqual({ kind: "no_neighbor" });
+    expect(entries[0]!.dedup).toEqual({ kind: "no_neighbor", judge: null });
   });
 
   test("surfaces the nearest neighbor when dedup offers a supersede", async () => {
@@ -1205,5 +1210,152 @@ describe("commit identity capture on the accepting writes", () => {
     await stagingResolve(deps, ulid(1), { supersede: ulid(0) });
 
     expect(await corpusHeadPaths(deps)).toEqual([`commit-identities/${moved}`, `notes/${ulid(1)}.md`]);
+  });
+});
+
+describe("remember with a judge", () => {
+  const storedBody = "connection pool sizing heuristics";
+  const addedBody = "graphql resolver batch loading";
+  const JUDGE_MODEL_UNDER_TEST = "jev-test";
+  const SUPERSEDES = { duplicate: 0, supersedes: 0.9, contradicts: 0.05, complements: 0.05, unrelated: 0 };
+
+  interface JudgeLog {
+    count: number;
+  }
+
+  // The real HttpJudgeClient over a fetch at the network boundary: `answering` plays a System One
+  // that reads every pair as a supersede; `failing` plays an outage.
+  function answering(log: JudgeLog): FetchImplementation {
+    return async () => {
+      log.count++;
+      return {
+        ok: true,
+        json: async () => ({ answers: { relation: { type: "choice", choice: "supersedes", probabilities: SUPERSEDES, confidence: 0.88 } } }),
+      };
+    };
+  }
+
+  function failing(log: JudgeLog): FetchImplementation {
+    return async () => {
+      log.count++;
+      throw new TypeError("connection refused");
+    };
+  }
+
+  function judgeOver(fetchImplementation: FetchImplementation): JudgeClient {
+    return new HttpJudgeClient("https://judge.test", fetchImplementation, JUDGE_MODEL_UNDER_TEST, "apikey-test");
+  }
+
+  // One accepted note and a second, far one (cosine 0.6, an `add` below the offer threshold):
+  // exactly the pair where the cosine hint says "no close neighbor" and the judge still has a view.
+  async function depsWithAcceptedNeighbor(judge: JudgeClient | undefined): Promise<{ deps: StagingDeps; storedId: string }> {
+    const projectRoot = await buildProjectRepo();
+    const embeddings = keyedClient(new Map([[storedBody, [1, 0]], [addedBody, [3, 4]]]));
+    const deps = await makeDeps(projectRoot, embeddings, sequentialIds(), fixedClock, judge);
+    await remember(deps, { type: "decision", body: storedBody, anchors: ["src/a.ts"], source: "mcp" });
+    const storedId = ulid(0);
+    await stagingResolve(deps, storedId, "accept");
+    return { deps, storedId };
+  }
+
+  test("a configured judge writes its verdict into the result, the sidecar and the remember event", async () => {
+    const log: JudgeLog = { count: 0 };
+    const { deps, storedId } = await depsWithAcceptedNeighbor(judgeOver(answering(log)));
+
+    const result = await remember(deps, { type: "decision", body: addedBody, anchors: ["src/a.ts"], tags: ["graphql"], source: "mcp" });
+
+    expect(log.count).toBe(1);
+    expect(result.outcome).toBe("staged");
+    if (result.outcome === "staged") {
+      expect(result.dedup).toBe("add");
+      expect(result.nearestId).toBeNull();
+      expect(result.judge).toEqual({
+        degraded: false,
+        model: JUDGE_MODEL_UNDER_TEST,
+        neighborId: storedId,
+        relation: "supersedes",
+        probabilities: SUPERSEDES,
+        confidence: 0.88,
+        recommended: true,
+      });
+    }
+    const sidecar = JSON.parse(readFileSync(join(deps.corpus.stagingDir, `${ulid(1)}.dedup.json`), "utf8")) as { judge: { recommended: boolean; neighborId: string } };
+    expect(sidecar.judge.recommended).toBe(true);
+    expect(sidecar.judge.neighborId).toBe(storedId);
+    const event = eventsOfType(deps.corpus, "remember").find((candidate) => candidate.note_id === ulid(1))!;
+    const dedup = event.dedup as { nearest_id: string; judge: unknown };
+    expect(dedup.nearest_id).toBe(storedId);
+    expect(dedup.judge).toEqual({
+      model: JUDGE_MODEL_UNDER_TEST,
+      relation: "supersedes",
+      probabilities: SUPERSEDES,
+      confidence: 0.88,
+      recommended: true,
+      degraded: false,
+    });
+    const entries = await stagingList(deps);
+    expect(entries.find((entry) => entry.id === ulid(1))!.dedup).toEqual({
+      kind: "no_neighbor",
+      judge: { degraded: false, model: JUDGE_MODEL_UNDER_TEST, neighborId: storedId, relation: "supersedes", probabilities: SUPERSEDES, confidence: 0.88, recommended: true },
+    });
+  });
+
+  test("without a judge the verdict is null everywhere and the staging surface is the historical one", async () => {
+    const { deps, storedId } = await depsWithAcceptedNeighbor(undefined);
+
+    const result = await remember(deps, { type: "decision", body: addedBody, anchors: ["src/a.ts"], source: "mcp" });
+
+    if (result.outcome === "staged") {
+      expect(result.judge).toBeNull();
+    }
+    const sidecar = JSON.parse(readFileSync(join(deps.corpus.stagingDir, `${ulid(1)}.dedup.json`), "utf8")) as { judge: unknown; nearest_id: unknown };
+    expect(sidecar.judge).toBeNull();
+    expect(sidecar.nearest_id).toBeNull();
+    const event = eventsOfType(deps.corpus, "remember").find((candidate) => candidate.note_id === ulid(1))!;
+    const dedup = event.dedup as { nearest_id: string; judge: unknown };
+    expect(dedup.nearest_id).toBe(storedId);
+    expect(dedup.judge).toBeNull();
+    const entries = await stagingList(deps);
+    expect(entries.find((entry) => entry.id === ulid(1))!.dedup).toEqual({ kind: "no_neighbor", judge: null });
+    expect(formatStagingList(entries, [], [])).not.toContain("judge");
+  });
+
+  test("a noop never asks the judge", async () => {
+    const log: JudgeLog = { count: 0 };
+    const projectRoot = await buildProjectRepo();
+    const body = "payment refund ledger reconciliation nightly";
+    const deps = await makeDeps(projectRoot, bagClient(), sequentialIds(), fixedClock, judgeOver(answering(log)));
+    await remember(deps, { type: "pattern", body, anchors: ["src/a.ts"], source: "mcp" });
+    await stagingResolve(deps, ulid(0), "accept");
+
+    const result = await remember(deps, { type: "pattern", body, anchors: ["src/a.ts"], source: "mcp" });
+
+    expect(result.outcome).toBe("noop");
+    expect(log.count).toBe(0);
+    const noop = eventsOfType(deps.corpus, "remember").find((event) => (event.dedup as { outcome: string }).outcome === "noop")!;
+    expect((noop.dedup as { judge: unknown }).judge).toBeNull();
+  });
+
+  test("a judge outage degrades the verdict and the note is staged all the same", async () => {
+    const log: JudgeLog = { count: 0 };
+    const { deps, storedId } = await depsWithAcceptedNeighbor(judgeOver(failing(log)));
+
+    const result = await remember(deps, { type: "decision", body: addedBody, anchors: ["src/a.ts"], source: "mcp" });
+
+    expect(log.count).toBe(1);
+    expect(result.outcome).toBe("staged");
+    if (result.outcome === "staged") {
+      expect(result.judge).toEqual({ degraded: true, model: JUDGE_MODEL_UNDER_TEST, neighborId: storedId });
+    }
+    expect(existsSync(join(deps.corpus.stagingDir, `${ulid(1)}.md`))).toBe(true);
+    const event = eventsOfType(deps.corpus, "remember").find((candidate) => candidate.note_id === ulid(1))!;
+    expect((event.dedup as { judge: unknown }).judge).toEqual({
+      model: JUDGE_MODEL_UNDER_TEST,
+      relation: null,
+      probabilities: null,
+      confidence: null,
+      recommended: null,
+      degraded: true,
+    });
   });
 });

@@ -17,6 +17,8 @@ import { loadConfig } from "./config";
 import type { MnemeConfig } from "./config";
 import { HttpEmbeddingsClient } from "./embeddings";
 import type { EmbeddingsClient } from "./embeddings";
+import { HttpJudgeClient } from "./judge";
+import type { JudgeClient } from "./judge";
 import { indexNeedsRebuild, openReadOnlyDatabase, rebuild } from "./index-db";
 import { MAP_SECTION_KINDS, MAP_SECTION_LIMIT_RULE } from "./map/map-section";
 import type { MapSectionKind } from "./map/map-section";
@@ -218,6 +220,7 @@ export interface CreateServerOptions {
   clock?: () => Date;
   idFactory?: () => string;
   embeddings?: EmbeddingsClient;
+  judge?: JudgeClient;
   corpusHome?: string;
 }
 
@@ -245,6 +248,13 @@ export function buildServer(options: CreateServerOptions): BuiltServer {
       config.embedder.model,
       config.embedder.format,
     );
+  // The judge exists exactly when its key does: no MNEME_JUDGE_API_KEY, no client, every dedup
+  // verdict null, and the staging surface byte-for-byte as before the judge.
+  const judge =
+    options.judge ??
+    (config.judge.apiKey === undefined
+      ? undefined
+      : new HttpJudgeClient(config.judge.baseUrl, (url, init) => fetch(url, init), config.judge.model, config.judge.apiKey));
   const sessionId = idFactory();
   let cached: ServerContext | undefined;
 
@@ -262,7 +272,7 @@ export function buildServer(options: CreateServerOptions): BuiltServer {
   }
 
   function buildStagingDeps(current: ServerContext): StagingDeps {
-    return { corpus: current.corpus, projectRoot: options.projectRoot, config, clock, idFactory, embeddings, eventWriter: current.eventWriter };
+    return { corpus: current.corpus, projectRoot: options.projectRoot, config, clock, idFactory, embeddings, eventWriter: current.eventWriter, judge };
   }
 
   const server = new McpServer({ name: "mneme", version: MNEME_VERSION });

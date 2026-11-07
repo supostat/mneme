@@ -66,7 +66,7 @@ function remembered(noteId: string, source: string = "mcp", outcome: "add" | "no
     tags_n: 0,
     tags: [],
     source,
-    dedup: dedupPayload(outcome, null, null, false, defaultConfig().dedup),
+    dedup: dedupPayload(outcome, null, null, false, defaultConfig().dedup, null),
   };
 }
 

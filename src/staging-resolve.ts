@@ -2,8 +2,9 @@ import { readEvents } from "./events";
 import type { StoredEvent } from "./events";
 import { isStagingEvent } from "./event-dialect";
 import { DEDUP_OUTCOMES, REANCHOR_DECISIONS, RESOLVE_DECISIONS, RETAG_DECISIONS, RETIRE_DECISIONS } from "./event-schema";
-import type { DecisionClass, ReanchorSource } from "./event-schema";
+import type { DecisionClass, DedupRelation, ReanchorSource } from "./event-schema";
 import type { DedupThresholds } from "./dedup";
+import type { JudgeVerdict } from "./dedup-judge";
 import type { StagedClassification } from "./dedup-sidecar";
 import type { StagingDeps, RememberInput } from "./staging";
 
@@ -20,6 +21,17 @@ export interface MenuContext {
   chosen_position: number;
 }
 
+// The verdict as the log carries it (v24): one flat shape for both verdict kinds, with every answer
+// field null under degraded. The neighbour is the event's own nearest_id, so it is not repeated here.
+export interface JudgeEventPayload {
+  model: string;
+  relation: DedupRelation | null;
+  probabilities: Record<DedupRelation, number> | null;
+  confidence: number | null;
+  recommended: boolean | null;
+  degraded: boolean;
+}
+
 interface DedupEventPayload {
   outcome: (typeof DEDUP_OUTCOMES)[number];
   nearest_id: string | null;
@@ -27,6 +39,24 @@ interface DedupEventPayload {
   supersede_threshold: number;
   noop_threshold: number;
   degraded: boolean;
+  judge: JudgeEventPayload | null;
+}
+
+export function judgeEventPayload(verdict: JudgeVerdict | null): JudgeEventPayload | null {
+  if (verdict === null) {
+    return null;
+  }
+  if (verdict.degraded) {
+    return { model: verdict.model, relation: null, probabilities: null, confidence: null, recommended: null, degraded: true };
+  }
+  return {
+    model: verdict.model,
+    relation: verdict.relation,
+    probabilities: verdict.probabilities,
+    confidence: verdict.confidence,
+    recommended: verdict.recommended,
+    degraded: false,
+  };
 }
 
 export function emitRemember(
@@ -55,6 +85,7 @@ export function dedupPayload(
   similarity: number | null,
   degraded: boolean,
   thresholds: DedupThresholds,
+  judge: JudgeVerdict | null,
 ): DedupEventPayload {
   return {
     outcome,
@@ -63,17 +94,19 @@ export function dedupPayload(
     supersede_threshold: thresholds.supersedeThreshold,
     noop_threshold: thresholds.noopThreshold,
     degraded,
+    judge: judgeEventPayload(judge),
   };
 }
 
 export function dedupFromClassification(
   classification: StagedClassification,
   thresholds: DedupThresholds,
+  judge: JudgeVerdict | null,
 ): DedupEventPayload {
   if (classification.kind === "supersede_offer") {
-    return dedupPayload("supersede_suggest", classification.neighborId, classification.similarity, false, thresholds);
+    return dedupPayload("supersede_suggest", classification.neighborId, classification.similarity, false, thresholds, judge);
   }
-  return dedupPayload("add", classification.neighborId, classification.similarity, classification.degraded, thresholds);
+  return dedupPayload("add", classification.neighborId, classification.similarity, classification.degraded, thresholds, judge);
 }
 
 export function appendRetireStaged(deps: StagingDeps, requestId: string, targetId: string, reason: string): void {

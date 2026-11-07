@@ -11,6 +11,9 @@ import { serializeNote, parseNote, isNoteId } from "./note";
 import type { Note, NoteFrontmatter, NoteType } from "./note";
 import { assertCleanNoteBody } from "./sanitize-body";
 import { classifyCandidate } from "./dedup";
+import { judgeNeighbor } from "./dedup-judge";
+import type { JudgeVerdict } from "./dedup-judge";
+import type { JudgeClient } from "./judge";
 import type { RebuildDeps } from "./index-db";
 import { refreshIndexAfterDecision } from "./index-refresh";
 import type { IndexRefresh } from "./index-refresh";
@@ -38,6 +41,9 @@ export interface StagingDeps {
   idFactory: () => string;
   embeddings: EmbeddingsClient;
   eventWriter: EventWriter;
+  // The System One judge, present exactly when MNEME_JUDGE_API_KEY is configured; without it every
+  // dedup verdict is null and staging behaves byte-for-byte as before the judge existed.
+  judge?: JudgeClient;
 }
 
 export interface RememberInput {
@@ -57,6 +63,7 @@ export interface StagedRemember {
   nearestId: string | null;
   similarity: number | null;
   degraded: boolean;
+  judge: JudgeVerdict | null;
 }
 
 export type RememberResult =
@@ -136,11 +143,19 @@ function dedupeNoop(
   existingId: string,
   similarity: number,
 ): RememberResult {
-  emitRemember(deps, noteId, input, dedupPayload("noop", existingId, similarity, false, deps.config.dedup));
+  emitRemember(deps, noteId, input, dedupPayload("noop", existingId, similarity, false, deps.config.dedup, null));
   return { outcome: "noop", noteId, existingId, similarity };
 }
 
-function stageNote(deps: StagingDeps, noteId: string, commit: string, input: RememberInput, classification: StagedClassification): StagedRemember {
+// The judge is asked after the cosine classification and before anything is written: its verdict
+// lands in the sidecar and the event beside the cosine facts, never instead of them.
+async function stageNote(
+  deps: StagingDeps,
+  noteId: string,
+  commit: string,
+  input: RememberInput,
+  classification: StagedClassification,
+): Promise<StagedRemember> {
   const frontmatter: NoteFrontmatter = {
     id: noteId,
     type: input.type,
@@ -154,10 +169,15 @@ function stageNote(deps: StagingDeps, noteId: string, commit: string, input: Rem
     frontmatter.tags = input.tags;
   }
   const serialized = serializeNote({ frontmatter, body: input.body });
-  const sidecar = sidecarFor(classification, deps.config.dedup);
+  const judge = await judgeNeighbor(
+    deps,
+    { type: input.type, tags: input.tags ?? [], anchors: input.anchors, body: input.body },
+    classification,
+  );
+  const sidecar = sidecarFor(classification, deps.config.dedup, judge);
   writeFileSync(notePath(deps.corpus.stagingDir, noteId), serialized);
   writeSidecar(deps.corpus, noteId, sidecar);
-  emitRemember(deps, noteId, input, dedupFromClassification(classification, deps.config.dedup));
+  emitRemember(deps, noteId, input, dedupFromClassification(classification, deps.config.dedup, judge));
   return {
     outcome: "staged",
     noteId,
@@ -166,6 +186,7 @@ function stageNote(deps: StagingDeps, noteId: string, commit: string, input: Rem
     nearestId: sidecar.nearest_id,
     similarity: sidecar.similarity,
     degraded: sidecar.degraded,
+    judge: sidecar.judge,
   };
 }
 

@@ -155,7 +155,7 @@ function diaryEntry(noteId: string, runId: string): EventInput {
     tags_n: 2,
     tags: [DIARY_TAG, runTag(runId)],
     source: "mcp",
-    dedup: dedupPayload("add", null, null, false, defaultConfig().dedup),
+    dedup: dedupPayload("add", null, null, false, defaultConfig().dedup, null),
   };
 }
 
