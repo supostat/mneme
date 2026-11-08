@@ -12,7 +12,10 @@ import { EMBEDDING_DIMENSION, EMBEDDING_MODEL } from "./embeddings";
 import { createServer, createSessionEndHandler } from "./mcp-server";
 import type { CreateServerOptions } from "./mcp-server";
 import { eventSchema } from "./event-schema";
-import { formatResolve, INDEX_NOT_REBUILT_LABEL, MAP_FENCE_BEGIN_LABEL, STAGING_BODY_LABEL } from "./mcp-rendering";
+import { formatAdoption, formatResolve, INDEX_NOT_REBUILT_LABEL, JUDGE_UNAVAILABLE_LINE, MAP_FENCE_BEGIN_LABEL, STAGING_BODY_LABEL } from "./mcp-rendering";
+import { HttpJudgeClient } from "./judge";
+import type { JudgeClient } from "./judge";
+import type { FetchImplementation } from "./embeddings";
 import { MAP_SECTION_LIMIT_RULE } from "./map/map-section";
 import { RECALL_GAP_NOTICE } from "./recall";
 import { writeMapSection } from "./map/map-store";
@@ -1082,5 +1085,114 @@ describe("mcp-server map tools", () => {
     for (const name of ["map_put", "map_delete"]) {
       expect(descriptionOf(name)).toContain("no human gate: the map is a synthetic layer the plugin rebuilds");
     }
+  });
+});
+
+describe("mcp-server judge lines", () => {
+  const storedBody = "connection pool sizing heuristics";
+  const addedBody = "graphql resolver batch loading";
+  const SUPERSEDES = { duplicate: 0, supersedes: 0.9, contradicts: 0.05, complements: 0.05, unrelated: 0 };
+  const COMPLEMENTS = { duplicate: 0, supersedes: 0.1, contradicts: 0, complements: 0.82, unrelated: 0.08 };
+
+  // The real HttpJudgeClient over a fetch at the network boundary, answering every pair alike.
+  function judgeAnswering(choice: "supersedes" | "complements", probabilities: Record<string, number>): JudgeClient {
+    const fetchImplementation: FetchImplementation = async () => ({
+      ok: true,
+      json: async () => ({ answers: { relation: { type: "choice", choice, probabilities, confidence: 0.8 } } }),
+    });
+    return new HttpJudgeClient("https://judge.test", fetchImplementation, "jev-test", "apikey-test");
+  }
+
+  function judgeFailing(): JudgeClient {
+    return new HttpJudgeClient(
+      "https://judge.test",
+      async () => {
+        throw new TypeError("connection refused");
+      },
+      "jev-test",
+      "apikey-test",
+    );
+  }
+
+  // An accepted note and a far second one (cosine 0.6, below the offer threshold): the card says
+  // "no close neighbor" and only the judge's line can name whom to supersede.
+  async function stagedPair(judge: JudgeClient): Promise<{ client: Client; storedId: string; rememberAnswer: string }> {
+    const client = await connect({
+      projectRoot: await buildProjectRepo(),
+      corpusHome: corpusHomeDir(),
+      embeddings: keyedClient(new Map([[storedBody, [1, 0]], [addedBody, [3, 4]]])),
+      idFactory: sequentialIds(),
+      clock: fixedClock,
+      judge,
+    });
+    await callText(client, "remember", { type: "decision", body: storedBody, anchors: ["src/a.ts"] });
+    const storedId = ulid(1);
+    await callText(client, "staging_resolve", { id: storedId, decision: "accept" });
+    const rememberAnswer = await callText(client, "remember", { type: "decision", body: addedBody, anchors: ["src/a.ts"] });
+    return { client, storedId, rememberAnswer };
+  }
+
+  function stagedBlockOf(listed: string): string[] {
+    const lines = listed.split("\n");
+    const start = lines.findIndex((line) => /^----- BEGIN MNEME NOTE [0-9a-f]{16} -----$/.test(line));
+    const nonce = /^----- BEGIN MNEME NOTE ([0-9a-f]{16}) -----$/.exec(lines[start]!)![1];
+    return lines.slice(start + 1, lines.indexOf(`----- END MNEME NOTE ${nonce} -----`));
+  }
+
+  test("a recommending verdict is the remember hint and a card line naming the note to supersede", async () => {
+    const { client, storedId, rememberAnswer } = await stagedPair(judgeAnswering("supersedes", SUPERSEDES));
+
+    expect(rememberAnswer.split("\n")).toEqual([
+      `Staged note ${ulid(2)} for human review.`,
+      `The judge reads it as superseding ${storedId} (supersedes 0.90); the human may choose to supersede that note.`,
+      "Ask the human to review the queue with staging_list and decide accept, reject, or supersede.",
+    ]);
+    expect(stagedBlockOf(await callText(client, "staging_list", {}))).toEqual([
+      `id: ${ulid(2)}`,
+      "type: decision",
+      "no close neighbor",
+      `judge: supersedes 0.90 — recommends supersede of ${storedId}`,
+      "anchors: src/a.ts [tracked]",
+      STAGING_BODY_LABEL,
+      addedBody,
+    ]);
+  });
+
+  test("a verdict that does not recommend keeps the cosine hint and says so on the card", async () => {
+    const { client, rememberAnswer } = await stagedPair(judgeAnswering("complements", COMPLEMENTS));
+
+    expect(rememberAnswer.split("\n")[1]).toBe("No close existing note was found.");
+    expect(stagedBlockOf(await callText(client, "staging_list", {}))[3]).toBe("judge: complements 0.82 — supersede not recommended");
+  });
+
+  test("a judge outage renders as unavailable and the note is staged with the cosine hint", async () => {
+    const { client, rememberAnswer } = await stagedPair(judgeFailing());
+
+    expect(rememberAnswer.split("\n")[1]).toBe("No close existing note was found.");
+    expect(stagedBlockOf(await callText(client, "staging_list", {}))[3]).toBe(JUDGE_UNAVAILABLE_LINE);
+  });
+
+  test("the adoption report flags an adopted note whose verdict recommends, before its closing line", () => {
+    const report = formatAdoption({
+      sourcePath: "/corpora/other",
+      adoptedCount: 2,
+      skippedCount: 0,
+      commit: "abc1234",
+      notes: [
+        { id: ulid(7), reason: "adopted", judge: null },
+        {
+          id: ulid(8),
+          reason: "adopted",
+          judge: { degraded: false, model: "jev-test", neighborId: ulid(3), relation: "supersedes", probabilities: SUPERSEDES, confidence: 0.8, recommended: true },
+        },
+      ],
+    });
+
+    expect(report.split("\n")).toEqual([
+      "Adopted 2 note(s) from /corpora/other, skipped 0.",
+      "Corpus commit: abc1234.",
+      `judge flags ${ulid(8)} as supersedes (0.90) against ${ulid(3)}`,
+      "The source corpus was only read; deleting that folder stays your decision.",
+    ]);
   });
 });

@@ -564,6 +564,19 @@ cat "$EVENTS"/*.jsonl | jq -s '
 > tool counts those events as pre-rule skips (below). `rrf` and `staleness_boost` keep their meaning
 > and remain the two keys; no event shape changed.
 
+> **Schema note (v24).** `remember.dedup` gains `judge` — the System One judge's verdict on the
+> staged note against its nearest accepted neighbour: `{model, relation, probabilities, confidence,
+> recommended, degraded}`. `null` means no judge was configured (the v14 `menu` discipline: absent
+> instrumentation, never "not recommended"); `degraded: true` means the judge was asked and did not
+> answer usably, and every answer field is `null`. `recommended` is the producer's verdict under the
+> dedup-judge threshold (0.8 over P(supersedes) + P(contradicts)) stamped at write time, so a reader
+> never recomputes it with a later threshold; `model` names the model that produced the
+> probabilities, because they are not comparable across versions. The neighbour the verdict is about
+> is `dedup.nearest_id`, real for an `add` too. `corpus_adopted` gains `judge_flagged_n`: adopted
+> notes whose verdict recommended a supersede. The judge never changes `dedup.outcome`, so (a), (b),
+> the NOOP confirmations and the human-gate metrics keep their meaning; agreement (h) now also
+> measures whether the judge's recommendation was followed wherever the plugin surfaced it.
+
 ## Offline replay
 
 The candidate list makes each recall decision **reproducible offline**. `scripts/replay.ts` rebuilds

@@ -46,6 +46,8 @@ docs/*
 !docs/HANDOFF-MAP.md
 # Same reason: tests/handoff-diary.test.ts pins the diary tag, tool, brief-line and CLI contract.
 !docs/HANDOFF-DIARY.md
+# Same reason: tests/handoff-judge.test.ts pins the judge's staging-card and remember-answer lines.
+!docs/HANDOFF-JUDGE.md
 
 # analytics package (generated, local-only)
 mneme-analytics/

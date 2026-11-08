@@ -9,7 +9,8 @@ memory you approved. Recall fuses full-text and vector search under a token budg
 candidates so retrieval decisions can be replayed and audited offline.
 
 The binary exposes nineteen MCP tools over stdio. Five are the memory surface: `remember` (stage a
-note), `recall` (token-budgeted fused retrieval; `domains` narrows it to the notes linked to the
+note; with a judge configured — see below — the answer also carries the judge's reading of the
+nearest existing note), `recall` (token-budgeted fused retrieval; `domains` narrows it to the notes linked to the
 named map domains and the sections around them, and an answer with nothing above the relevance
 threshold ends with a memory-gap notice), `staging_list` and `staging_resolve` (review and
 accept/reject/supersede staged notes), and `stats` (reuse and footprint metrics from the event log).
@@ -108,7 +109,48 @@ corpus_adopt { "source_corpus_dir": "~/.mneme/-Users-you-Projects-my-project-cop
 Notes cross without re-staging — both sides already passed the human review gate — while a note
 already present by id, or one the receiving corpus's dedup recognizes as the same knowledge, is
 skipped and reported. The source corpus is only read; deleting that folder afterwards is your
-decision. Adoption needs the embedder running, because the dedup check is the point.
+decision. Adoption needs the embedder running, because the dedup check is the point. With a judge
+configured (below), an adopted note the judge reads as superseding an existing one is adopted all
+the same — adoption has no human gate — and flagged in the report as a candidate for `note_retire`.
+
+## Judge (optional)
+
+Cosine similarity finds the nearest existing note but cannot tell "the same idea in other words"
+from "the same subject, the opposite decision". The judge can: with a key configured, every
+`remember` and every `corpus_adopt` also asks a System One model (TypeSafe's Jev — it answers one
+typed question with probabilities, never with generated text) how the new note relates to its
+nearest accepted neighbour, and the staging card shows the answer right under the similarity line:
+
+```
+no close neighbor
+judge: supersedes 0.91 — recommends supersede of 01ARZ3NDEKTSV4RRFFQ69G5FAV
+```
+
+The judge only advises. It never changes the dedup outcome, never writes `supersedes`, never drops
+a note; the human still decides through `staging_resolve`. A supersede is recommended when the
+probability of "supersedes" plus "contradicts" reaches 0.8. The verdict is also written to the
+remember event (schema v24) with the model that produced it, so the recommendation can be audited
+offline.
+
+Enable it with the API key in the engine's environment and, optionally, the endpoint and model in
+`.mneme.json`:
+
+```
+MNEME_JUDGE_API_KEY=...            # the only place the key may live; judge.api_key in the file is refused
+```
+
+```json
+{ "judge": { "base_url": "https://api.typesafe.ai", "model": "jev-latest" } }
+```
+
+`MNEME_JUDGE_BASE_URL` and `MNEME_JUDGE_MODEL` override the file; any gateway speaking the System One
+contract works (OpenRouter: `https://openrouter.ai/api` and `typesafe/jev-latest`). Without the key
+the judge does not exist: no call is made and the staging surface is byte-for-byte the one above
+minus the judge line. With the key, the body of every staged note and of its nearest neighbour is
+sent to the provider — enabling the judge is that consent, per corpus. A judge that does not answer
+(network, a 3 s timeout, a malformed reply) degrades to `judge: unavailable` on the card and never
+blocks a remember; `bun scripts/doctor.ts` reports the component as not configured, reachable, or
+degraded.
 
 ## Building the plugin
 

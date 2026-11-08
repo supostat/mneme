@@ -5,8 +5,10 @@ import type { RecalledNote, RecalledSection } from "./recall";
 import type { NotesListResult, ReanchorRequest, RetagRequest, RetireRequest } from "./curation";
 import type { SweepReport, ScoredCandidate } from "./anchor-repair";
 import type { DedupSummary } from "./dedup-sidecar";
+import type { JudgeVerdict } from "./dedup-judge";
 import type { Note } from "./note";
 import type { StagedAnchor } from "./anchor-liveness";
+import { isJudgeFlagged } from "./corpus-adopt";
 import type { AdoptOutcome } from "./corpus-adopt";
 import type { IndexRefresh } from "./index-refresh";
 import type { MapSection } from "./map/map-section";
@@ -66,21 +68,54 @@ export function textResult(text: string): CallToolResult {
   return { content: [{ type: "text", text }] };
 }
 
+// The judge's line, one per place it appears. Exported because docs/HANDOFF-JUDGE.md quotes them for
+// the plugin's skills and tests/handoff-judge.test.ts pins the quotes to these values.
+export const JUDGE_LINE_PREFIX = "judge: ";
+export const JUDGE_RECOMMENDS_SUFFIX = " — recommends supersede of ";
+export const JUDGE_NOT_RECOMMENDED_SUFFIX = " — supersede not recommended";
+export const JUDGE_UNAVAILABLE_LINE = "judge: unavailable";
+export const JUDGE_ADOPT_FLAG_PREFIX = "judge flags ";
+
 export function formatRemember(result: RememberResult): string {
   if (result.outcome === "noop") {
     return `Skipped as a duplicate of ${result.existingId} (similarity ${result.similarity.toFixed(3)}). Nothing was staged.`;
   }
   const hint =
-    result.dedup === "supersede_offer" && result.nearestId
+    judgeRememberHint(result.judge) ??
+    (result.dedup === "supersede_offer" && result.nearestId
       ? `It closely resembles ${result.nearestId} (similarity ${result.similarity!.toFixed(3)}); the human may choose to supersede that note.`
       : result.degraded
         ? "Dedup ran in degraded mode because the embedder was unavailable."
-        : "No close existing note was found.";
+        : "No close existing note was found.");
   return [
     `Staged note ${result.noteId} for human review.`,
     hint,
     "Ask the human to review the queue with staging_list and decide accept, reject, or supersede.",
   ].join("\n");
+}
+
+// A recommending verdict replaces the cosine hint: it names the note to supersede even when the
+// cosine stayed below the offer threshold and the hint would have said "no close existing note".
+function judgeRememberHint(verdict: JudgeVerdict | null): string | undefined {
+  if (verdict === null || verdict.degraded || !verdict.recommended) {
+    return undefined;
+  }
+  return `The judge reads it as superseding ${verdict.neighborId} (${verdictReading(verdict)}); the human may choose to supersede that note.`;
+}
+
+function verdictReading(verdict: Extract<JudgeVerdict, { degraded: false }>): string {
+  return `${verdict.relation} ${verdict.probabilities[verdict.relation].toFixed(2)}`;
+}
+
+// The judge's line on the staging card: the relation and its probability, then whether a supersede
+// is recommended and of whom. An unavailable judge says so; no judge configured prints nothing.
+export function judgeLine(verdict: JudgeVerdict | null): string[] {
+  if (verdict === null) return [];
+  if (verdict.degraded) return [JUDGE_UNAVAILABLE_LINE];
+  const verdictSuffix = verdict.recommended
+    ? `${JUDGE_RECOMMENDS_SUFFIX}${verdict.neighborId}`
+    : JUDGE_NOT_RECOMMENDED_SUFFIX;
+  return [`${JUDGE_LINE_PREFIX}${verdictReading(verdict)}${verdictSuffix}`];
 }
 
 export interface RecallRendering {
@@ -178,7 +213,7 @@ function formatStagingEntry(entry: StagingEntry, fence: NoteFence): string {
     fence.begin,
     `id: ${entry.id}`,
     `type: ${entry.type}`,
-    formatDedup(entry.dedup),
+    ...formatDedupLines(entry.dedup),
     formatAnchors(entry.anchors),
     ...(entry.tags.length > 0 ? [`tags: ${entry.tags.join(", ")}`] : []),
     ...anchorWarnings(entry.anchors),
@@ -224,10 +259,12 @@ function anchorWarning(anchor: StagedAnchor): string {
   return `warning: anchor ${anchor.path} is not tracked by the project's git, so this note will sink in recall ranking; fix the anchor before accepting it`;
 }
 
-function formatDedup(dedup: DedupSummary): string {
-  if (dedup.kind === "unavailable") return "dedup: unavailable";
-  if (dedup.kind === "no_neighbor") return "no close neighbor";
-  return `resembles ${dedup.nearestId} (similarity ${dedup.similarity.toFixed(3)})`;
+// The cosine line first, the judge's line right after it when there is one: the curator reads the
+// two readings of the same neighbour together.
+export function formatDedupLines(dedup: DedupSummary): string[] {
+  if (dedup.kind === "unavailable") return ["dedup: unavailable"];
+  if (dedup.kind === "no_neighbor") return ["no close neighbor", ...judgeLine(dedup.judge)];
+  return [`resembles ${dedup.nearestId} (similarity ${dedup.similarity.toFixed(3)})`, ...judgeLine(dedup.judge)];
 }
 
 function formatAnchors(anchors: StagedAnchor[]): string {
@@ -474,6 +511,14 @@ export function formatAdoption(outcome: AdoptOutcome): string {
   for (const duplicate of duplicates) {
     lines.push(
       `duplicate of ${duplicate.nearestId} (similarity ${duplicate.similarity?.toFixed(3)}): ${duplicate.id}`,
+    );
+  }
+  // An adoption has no human gate, so a note the judge reads as superseding an existing one is
+  // adopted all the same and named here: the human's cue to retire the older note.
+  for (const flagged of outcome.notes.filter(isJudgeFlagged)) {
+    if (flagged.judge === null || flagged.judge.degraded) continue;
+    lines.push(
+      `${JUDGE_ADOPT_FLAG_PREFIX}${flagged.id} as ${flagged.judge.relation} (${flagged.judge.probabilities[flagged.judge.relation].toFixed(2)}) against ${flagged.judge.neighborId}`,
     );
   }
   lines.push("The source corpus was only read; deleting that folder stays your decision.");
