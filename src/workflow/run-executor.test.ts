@@ -24,6 +24,10 @@ import { pendingDirectiveOf, restoreRuns } from "./run-events";
 import type { ReadableRun } from "./run-events";
 import { applyGatedFinalStep, applyHarvest, runEngineSteps } from "./run-executor";
 import { runStartedPayload } from "./run-payloads";
+import type { RunProvenance } from "./run-payloads";
+
+// Seeded starts record the provenance of a run started from phase texts; no test here reads it.
+const INLINE_PROVENANCE: RunProvenance = { spec: { kind: "inline" }, baseCommit: { kind: "no-commits" } };
 
 const fixedClock = () => new Date("2026-07-06T10:00:00.000Z");
 
@@ -117,6 +121,7 @@ function activeRunFrom(definition: RunDefinition): ReadableRun {
     failedGatesHistory: [],
     lastInconclusiveGate: null,
     bundleNotesByPhase: {},
+    provenance: null,
   };
 }
 
@@ -353,7 +358,7 @@ describe("applyGatedFinalStep mirrors the failed-gates history", () => {
     const definition = judgedDefinition();
     const active = activeRunFrom(definition);
     deps.eventWriter.append({
-      ...runStartedPayload(active.runId, active.branch, definition, active.retrieval),
+      ...runStartedPayload(active.runId, active.branch, definition, active.retrieval, INLINE_PROVENANCE),
       type: "workflow_run_started",
     });
     await runEngineSteps(deps, active);
@@ -442,7 +447,7 @@ describe("runEngineSteps records the bundle composition it compiled", () => {
     const definition = twoPhaseDefinition();
     const active = activeRunFrom(definition);
     deps.eventWriter.append({
-      ...runStartedPayload(active.runId, active.branch, definition, active.retrieval),
+      ...runStartedPayload(active.runId, active.branch, definition, active.retrieval, INLINE_PROVENANCE),
       type: "workflow_run_started",
     });
     await runEngineSteps(deps, active);
@@ -545,7 +550,7 @@ describe("applyGatedFinalStep on a gate whose every red criterion timed out", ()
     const definition = gatedDefinition(doneWhen);
     const active = activeRunFrom(definition);
     deps.eventWriter.append({
-      ...runStartedPayload(active.runId, active.branch, definition, active.retrieval),
+      ...runStartedPayload(active.runId, active.branch, definition, active.retrieval, INLINE_PROVENANCE),
       type: "workflow_run_started",
     });
     await runEngineSteps(deps, active);

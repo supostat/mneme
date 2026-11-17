@@ -14,6 +14,10 @@ import { surveySections } from "./run-directives";
 import { runAbandonedPayload, runStartedPayload } from "./run-payloads";
 import { commitStaleMarks, inspectRuns, surveyRuns } from "./run-survey";
 import { EMBEDDING_MODEL } from "../embeddings";
+import type { RunProvenance } from "./run-payloads";
+
+// Seeded starts record the provenance of a run started from phase texts; no test here reads it.
+const INLINE_PROVENANCE: RunProvenance = { spec: { kind: "inline" }, baseCommit: { kind: "no-commits" } };
 
 const fixedClock = () => new Date("2026-07-06T10:00:00.000Z");
 const FOREIGN_RUN_ID = "01ARZ3NDEKTSV4RRFFQ69G5FB0";
@@ -56,7 +60,7 @@ describe("surveyRuns with unanswerable branch questions", () => {
   test("a foreign-branch run is warned about as indeterminate and NEVER marked stale", async () => {
     const deps = await makeNonRepoDeps();
     deps.eventWriter.append({
-      ...runStartedPayload(FOREIGN_RUN_ID, "feature", makeDefinition(), { recallBudget: 2000, recallAnchors: {}, recallDomains: {} }),
+      ...runStartedPayload(FOREIGN_RUN_ID, "feature", makeDefinition(), { recallBudget: 2000, recallAnchors: {}, recallDomains: {} }, INLINE_PROVENANCE),
       type: "workflow_run_started",
     });
 
@@ -79,7 +83,7 @@ describe("surveyRuns with unanswerable branch questions", () => {
   test("an abandoned run leaves every live listing before the orphan scan", async () => {
     const deps = await makeNonRepoDeps();
     deps.eventWriter.append({
-      ...runStartedPayload(FOREIGN_RUN_ID, "feature", makeDefinition(), { recallBudget: 2000, recallAnchors: {}, recallDomains: {} }),
+      ...runStartedPayload(FOREIGN_RUN_ID, "feature", makeDefinition(), { recallBudget: 2000, recallAnchors: {}, recallDomains: {} }, INLINE_PROVENANCE),
       type: "workflow_run_started",
     });
     deps.eventWriter.append({
@@ -108,7 +112,7 @@ async function makeDeletedBranchDeps(): Promise<StagingDeps> {
   await runGit(deps.projectRoot, ["branch", "feature"]);
   await runGit(deps.projectRoot, ["branch", "-D", "feature"]);
   deps.eventWriter.append({
-    ...runStartedPayload(FOREIGN_RUN_ID, "feature", makeDefinition(), { recallBudget: 2000, recallAnchors: {}, recallDomains: {} }),
+    ...runStartedPayload(FOREIGN_RUN_ID, "feature", makeDefinition(), { recallBudget: 2000, recallAnchors: {}, recallDomains: {} }, INLINE_PROVENANCE),
     type: "workflow_run_started",
   });
   return deps;

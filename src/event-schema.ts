@@ -143,7 +143,13 @@ import { z } from "zod";
 //       about is dedup.nearest_id, real for an add too. corpus_adopted gains judge_flagged_n — the
 //       adopted notes whose verdict recommended a supersede (an adoption has no human gate, so the
 //       flag is the only trace). The judge never changes dedup.outcome.
-export const SCHEMA_VERSION = 24;
+//  25 — run provenance: workflow_run_started gains spec — {slug, knowledge} when the run was started
+//       from a migrated spec by its slug (knowledge is the archive's Knowledge as the start read it,
+//       null when the archive was absent), null when the phases were passed as text — and
+//       base_commit, the project HEAD at start (null in a repository without commits). The producer
+//       writes both keys on every start; both are optional in the shape (the v4 extend-never-
+//       repurpose rule), so a pre-25 start restores unchanged and reads as "not recorded".
+export const SCHEMA_VERSION = 25;
 
 // The first schema version whose harvest bodies are guaranteed whole. A fixed boundary, not an alias
 // of SCHEMA_VERSION: later bumps must never move it, or old clipped bodies would read as whole.
@@ -581,10 +587,18 @@ const gateCriterionPayload = z.object({
   timeout_seconds: z.number().int().nullable().optional(),
 });
 
+const runSpecPayload = z.object({
+  slug: z.string(),
+  knowledge: z.array(z.string()).nullable(),
+});
+
 const workflowRunStartedPayload = {
   run_id: z.string(),
   branch: z.string(),
   definition: runDefinitionPayload,
+  // Optional in the shape: a pre-v25 start carries neither key (see the v25 changelog entry).
+  spec: runSpecPayload.nullable().optional(),
+  base_commit: z.string().nullable().optional(),
 };
 
 // step_id/outcome/attempt are null for recall and harvest applications; gates is non-null only for a

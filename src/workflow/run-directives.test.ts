@@ -44,6 +44,7 @@ function activeRunFrom(definition: RunDefinition): ReadableRun {
     failedGatesHistory: [],
     lastInconclusiveGate: null,
     bundleNotesByPhase: {},
+    provenance: null,
   };
 }
 

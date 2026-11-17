@@ -17,7 +17,10 @@ import {
 } from "./run-events";
 import type { ReadableRun, RestoredRun, UnreadableRun } from "./run-events";
 import { runMarkedStalePayload, runStartedPayload, stepAppliedPayload } from "./run-payloads";
-import type { StepApplication } from "./run-payloads";
+import type { RunProvenance, StepApplication } from "./run-payloads";
+
+// Seeded starts record the provenance of a run started from phase texts; no test here reads it.
+const INLINE_PROVENANCE: RunProvenance = { spec: { kind: "inline" }, baseCommit: { kind: "no-commits" } };
 
 const fixedClock = () => new Date("2026-07-06T10:00:00.000Z");
 const EVENTS_FILE = "2026-07.jsonl";
@@ -73,7 +76,7 @@ function makeLog(): LogFixture {
 }
 
 function appendStarted(log: LogFixture, runId: string, branch: string, definition: RunDefinition): void {
-  log.writer.append({ ...runStartedPayload(runId, branch, definition, RETRIEVAL), type: "workflow_run_started" });
+  log.writer.append({ ...runStartedPayload(runId, branch, definition, RETRIEVAL, INLINE_PROVENANCE), type: "workflow_run_started" });
 }
 
 function appendApplied(log: LogFixture, runId: string, branch: string, application: StepApplication): void {
@@ -125,7 +128,7 @@ function corruptedStartedEvent(
   corrupt: (payload: Record<string, unknown>) => void,
 ): Record<string, unknown> {
   const payload = JSON.parse(
-    JSON.stringify(runStartedPayload(CORRUPTED_RUN_ID, "main", definition, RETRIEVAL)),
+    JSON.stringify(runStartedPayload(CORRUPTED_RUN_ID, "main", definition, RETRIEVAL, INLINE_PROVENANCE)),
   ) as Record<string, unknown>;
   corrupt(payload);
   return { ...payload, type: "workflow_run_started" };
@@ -343,7 +346,7 @@ describe("restoreRuns yields unreadable, never a crash", () => {
   test("a started event whose run_id fails the ULID/UUID grammar is unreadable", () => {
     const log = makeLog();
     log.writer.append({
-      ...runStartedPayload("../escape", "main", definition, RETRIEVAL),
+      ...runStartedPayload("../escape", "main", definition, RETRIEVAL, INLINE_PROVENANCE),
       type: "workflow_run_started",
     });
 
@@ -449,7 +452,7 @@ describe("restore tolerance", () => {
   test("a started event stamped with a FUTURE schema_version still restores", () => {
     const log = makeLog();
     const raw = {
-      ...runStartedPayload(RUN_ID, "main", makeDefinition([phaseDocument("phase-one")]), RETRIEVAL),
+      ...runStartedPayload(RUN_ID, "main", makeDefinition([phaseDocument("phase-one")]), RETRIEVAL, INLINE_PROVENANCE),
       type: "workflow_run_started",
       session_id: "s-future",
       ts: "2026-07-06T10:00:00.000Z",
@@ -515,7 +518,7 @@ describe("restoreRuns carries each criterion's gate limit", () => {
   test("a v17 definition without timeout_seconds restores onto a null limit", () => {
     const log = makeLog();
     const payload = JSON.parse(
-      JSON.stringify(runStartedPayload(RUN_ID, "main", makeDefinition([limitedPhase(null)]), RETRIEVAL)),
+      JSON.stringify(runStartedPayload(RUN_ID, "main", makeDefinition([limitedPhase(null)]), RETRIEVAL, INLINE_PROVENANCE)),
     ) as Record<string, unknown>;
     for (const phase of definitionOf(payload)["phases"] as Array<Record<string, unknown>>) {
       for (const criterion of phase["done_when"] as Array<Record<string, unknown>>) {
@@ -555,7 +558,7 @@ describe("payload shape", () => {
   test("no workflow payload carries a type key of its own", () => {
     const definition = makeDefinition([phaseDocument("phase-one")]);
     const payloads = [
-      runStartedPayload(RUN_ID, "main", definition, RETRIEVAL),
+      runStartedPayload(RUN_ID, "main", definition, RETRIEVAL, INLINE_PROVENANCE),
       stepAppliedPayload(RUN_ID, "main", executeSuccess("phase-one", "implement", 1)),
       runMarkedStalePayload(RUN_ID, "main"),
     ];
@@ -828,7 +831,7 @@ describe("restoreRuns carries each phase's recall domains", () => {
   test("a pre-21 definition without recall_domains restores onto an empty scope", () => {
     const log = makeLog();
     const payload = JSON.parse(
-      JSON.stringify(runStartedPayload(RUN_ID, "main", makeDefinition([phaseDocument("phase-one")]), RETRIEVAL)),
+      JSON.stringify(runStartedPayload(RUN_ID, "main", makeDefinition([phaseDocument("phase-one")]), RETRIEVAL, INLINE_PROVENANCE)),
     ) as Record<string, unknown>;
     delete definitionOf(payload)["recall_domains"];
     const raw = {
@@ -842,5 +845,69 @@ describe("restoreRuns carries each phase's recall domains", () => {
     appendFileSync(join(log.eventsDir, EVENTS_FILE), JSON.stringify(raw) + "\n");
 
     expect(onlyRun(log).retrieval).toEqual({ ...RETRIEVAL, recallDomains: {} });
+  });
+});
+
+describe("restoreRuns carries where the run came from (v25)", () => {
+  const SPEC_PROVENANCE: RunProvenance = {
+    spec: { kind: "spec", slug: "sample-spec", knowledge: ["**Rule.** keep it", "**Limit.** state it"] },
+    baseCommit: { kind: "commit", sha: "0123456789abcdef0123456789abcdef01234567" },
+  };
+
+  function appendStartedWith(log: LogFixture, provenance: RunProvenance): void {
+    const payload = runStartedPayload(RUN_ID, "main", makeDefinition([phaseDocument("phase-one")]), RETRIEVAL, provenance);
+    log.writer.append({ ...payload, type: "workflow_run_started" });
+  }
+
+  // A start written by an older producer: the same payload with the v25 keys removed (or only one of
+  // them, for a damaged line), appended raw so its schema_version is the old one.
+  function appendOlderStart(log: LogFixture, removedKeys: string[]): void {
+    const payload = JSON.parse(
+      JSON.stringify(runStartedPayload(RUN_ID, "main", makeDefinition([phaseDocument("phase-one")]), RETRIEVAL, SPEC_PROVENANCE)),
+    ) as Record<string, unknown>;
+    for (const key of removedKeys) delete payload[key];
+    const raw = {
+      ...payload,
+      type: "workflow_run_started",
+      session_id: "s-v24",
+      ts: "2026-07-06T10:00:00.000Z",
+      mneme_version: "0.1.20",
+      schema_version: 24,
+    };
+    appendFileSync(join(log.eventsDir, EVENTS_FILE), JSON.stringify(raw) + "\n");
+  }
+
+  test("a start from a migrated spec restores its slug, its Knowledge and the base commit", () => {
+    const log = makeLog();
+    appendStartedWith(log, SPEC_PROVENANCE);
+
+    const [event] = readEvents(log.eventsDir);
+    expect(event!["spec"]).toEqual({ slug: "sample-spec", knowledge: ["**Rule.** keep it", "**Limit.** state it"] });
+    expect(event!["base_commit"]).toBe("0123456789abcdef0123456789abcdef01234567");
+    expect(onlyRun(log).provenance).toEqual(SPEC_PROVENANCE);
+  });
+
+  test("a start from phase texts in a repository without commits writes both keys null and restores them as such", () => {
+    const log = makeLog();
+    appendStartedWith(log, INLINE_PROVENANCE);
+
+    const [event] = readEvents(log.eventsDir);
+    expect(event!["spec"]).toBeNull();
+    expect(event!["base_commit"]).toBeNull();
+    expect(onlyRun(log).provenance).toEqual(INLINE_PROVENANCE);
+  });
+
+  test("a pre-v25 start without either key restores with its provenance not recorded", () => {
+    const log = makeLog();
+    appendOlderStart(log, ["spec", "base_commit"]);
+
+    expect(onlyRun(log).provenance).toBeNull();
+  });
+
+  test("a start carrying only one of the two keys is unreadable, never half-attributed", () => {
+    const log = makeLog();
+    appendOlderStart(log, ["base_commit"]);
+
+    expect(onlyUnreadable(log).problem).toBe("workflow_run_started carries only one of spec and base_commit");
   });
 });

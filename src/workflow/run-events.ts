@@ -9,7 +9,7 @@ import { validatePhaseDocument } from "./phase-document";
 import { buildPhaseGraph } from "./phase-graph";
 import { applyStepResult, initialRun, reduce } from "./reducer";
 import type { Directive, RunDefinition, StepResult, WorkflowRun } from "./reducer";
-import type { BundleNoteRef } from "./run-payloads";
+import type { BundleNoteRef, RunProvenance } from "./run-payloads";
 
 // Pure, total restore of workflow runs from the event log (producer serialization lives in
 // run-payloads.ts). Restore parses with the version-TOLERANT *Restore schema variants (see the v4
@@ -81,6 +81,9 @@ export interface ReadableRun {
   // not the same as an empty bundle, and the usage-declaration check must refuse rather than
   // silently pass when it cannot see the ground truth.
   bundleNotesByPhase: Record<string, BundleNoteRef[]>;
+  // The spec and the project HEAD the run started from — null when its start event predates schema
+  // v25, which recorded neither: "not recorded", never mistaken for phases passed as text.
+  provenance: RunProvenance | null;
 }
 
 export interface UnreadableRun {
@@ -193,6 +196,23 @@ function restoredRunFrom(runId: string, payload: RunStartedPayload): ReadableRun
     failedGatesHistory: [],
     lastInconclusiveGate: null,
     bundleNotesByPhase: {},
+    provenance: provenanceFromPayload(payload),
+  };
+}
+
+// The producer writes both keys on every start since v25, so a start carrying exactly one of them is
+// not an older event but a damaged one, and the run turns unreadable rather than half-attributed.
+function provenanceFromPayload(payload: RunStartedPayload): RunProvenance | null {
+  if (payload.spec === undefined && payload.base_commit === undefined) return null;
+  if (payload.spec === undefined || payload.base_commit === undefined) {
+    throw new Error("workflow_run_started carries only one of spec and base_commit");
+  }
+  return {
+    spec:
+      payload.spec === null
+        ? { kind: "inline" }
+        : { kind: "spec", slug: payload.spec.slug, knowledge: payload.spec.knowledge },
+    baseCommit: payload.base_commit === null ? { kind: "no-commits" } : { kind: "commit", sha: payload.base_commit },
   };
 }
 

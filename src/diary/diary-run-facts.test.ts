@@ -16,11 +16,14 @@ import {
   runStartedPayload,
   stepAppliedPayload,
 } from "../workflow/run-payloads";
-import type { StagedNoteRef, StepApplication, UsedNoteRef } from "../workflow/run-payloads";
+import type { RunProvenance, StagedNoteRef, StepApplication, UsedNoteRef } from "../workflow/run-payloads";
 import { DIARY_TAG, runTag } from "./diary-entries";
 import { renderRunAnswer } from "./diary-rendering";
 import { lastTerminalRunOf, runFacts } from "./diary-run-facts";
 import type { RunFacts, RunFactsAnswer } from "./diary-run-facts";
+
+// Seeded starts record the provenance of a run started from phase texts; no test here reads it.
+const INLINE_PROVENANCE: RunProvenance = { spec: { kind: "inline" }, baseCommit: { kind: "no-commits" } };
 
 // The facts of one finished run, folded from the run's own events as the engine's real serializers
 // write them. Each phase's attempts, gate failures, bundle gap, harvest and usage declaration, and
@@ -69,7 +72,7 @@ function definition(phaseIds: string[], maxAttempts: number): RunDefinition {
 }
 
 function started(log: Log, runId: string, branch: string, phaseIds: string[], maxAttempts = 2): void {
-  log.append({ ...runStartedPayload(runId, branch, definition(phaseIds, maxAttempts), RETRIEVAL), type: "workflow_run_started" });
+  log.append({ ...runStartedPayload(runId, branch, definition(phaseIds, maxAttempts), RETRIEVAL, INLINE_PROVENANCE), type: "workflow_run_started" });
 }
 
 function applied(log: Log, runId: string, branch: string, application: StepApplication): void {

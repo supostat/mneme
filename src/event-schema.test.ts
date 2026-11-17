@@ -144,6 +144,8 @@ const LIVE_EVENTS: Record<string, EventInput> = {
     run_id: "r1",
     branch: "main",
     definition: WORKFLOW_DEFINITION,
+    spec: { slug: "sample-spec", knowledge: ["**Rule.** keep it"] },
+    base_commit: "0123456789abcdef0123456789abcdef01234567",
   },
   workflow_step_applied_execute: {
     type: "workflow_step_applied",
@@ -211,8 +213,8 @@ const AGENT_VOTE_MIRROR = {
 } as const satisfies Record<Vote, true>;
 
 describe("event-schema constants", () => {
-  test("SCHEMA_VERSION is 24", () => {
-    expect(SCHEMA_VERSION).toBe(24);
+  test("SCHEMA_VERSION is 25", () => {
+    expect(SCHEMA_VERSION).toBe(25);
   });
 
   test("the unclipped-harvest boundary is fixed at 19 and never ahead of the producer", () => {
@@ -260,6 +262,40 @@ describe("event-schema constants", () => {
       note_rejected: "staging_resolve",
       note_superseded: "staging_resolve",
     });
+  });
+});
+
+describe("run provenance on workflow_run_started (v25)", () => {
+  function startedWith(provenance: Record<string, unknown>): EventInput {
+    const { spec: _spec, base_commit: _baseCommit, ...rest } = LIVE_EVENTS["workflow_run_started"]!;
+    return { ...rest, ...provenance } as EventInput;
+  }
+
+  test("a start from a migrated spec with its Knowledge and a base commit passes", () => {
+    expect(eventSchema.safeParse(stamp(LIVE_EVENTS["workflow_run_started"]!)).success).toBe(true);
+  });
+
+  test("a start from phase texts in a repository without commits passes with both keys null", () => {
+    expect(eventSchema.safeParse(stamp(startedWith({ spec: null, base_commit: null }))).success).toBe(true);
+  });
+
+  test("a spec whose archive was absent passes with knowledge null", () => {
+    const event = startedWith({ spec: { slug: "sample-spec", knowledge: null }, base_commit: null });
+
+    expect(eventSchema.safeParse(stamp(event)).success).toBe(true);
+  });
+
+  test("a pre-v25 start without either key still parses, live and on restore", () => {
+    const event = stamp(startedWith({}));
+
+    expect(eventSchema.safeParse(event).success).toBe(true);
+    expect(workflowRunStartedRestore.safeParse(event).success).toBe(true);
+  });
+
+  test("a spec without its slug or with a non-string Knowledge bullet fails", () => {
+    for (const spec of [{ knowledge: [] }, { slug: "sample-spec", knowledge: [1] }]) {
+      expect(eventSchema.safeParse(stamp(startedWith({ spec, base_commit: null }))).success).toBe(false);
+    }
   });
 });
 

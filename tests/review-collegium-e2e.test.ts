@@ -18,6 +18,10 @@ import type { ReadableRun } from "../src/workflow/run-events";
 import { applyGatedFinalStep, runEngineSteps } from "../src/workflow/run-executor";
 import { runStartedPayload } from "../src/workflow/run-payloads";
 import { EMBEDDING_MODEL } from "../src/embeddings";
+import type { RunProvenance } from "../src/workflow/run-payloads";
+
+// Seeded starts record the provenance of a run started from phase texts; no test here reads it.
+const INLINE_PROVENANCE: RunProvenance = { spec: { kind: "inline" }, baseCommit: { kind: "no-commits" } };
 
 // The review-collegium loop on REAL modules end-to-end: two agent-judged criteria on different
 // axes fail on different attempts, and the attempt-3 retry directive must replay BOTH attempts'
@@ -99,6 +103,7 @@ async function buildFixture(maxAttempts: number): Promise<{ deps: StagingDeps; a
     failedGatesHistory: [],
     lastInconclusiveGate: null,
     bundleNotesByPhase: {},
+    provenance: null,
   };
   const deps: StagingDeps = {
     corpus,
@@ -110,7 +115,7 @@ async function buildFixture(maxAttempts: number): Promise<{ deps: StagingDeps; a
     eventWriter,
   };
   deps.eventWriter.append({
-    ...runStartedPayload(active.runId, active.branch, definition, active.retrieval),
+    ...runStartedPayload(active.runId, active.branch, definition, active.retrieval, INLINE_PROVENANCE),
     type: "workflow_run_started",
   });
   await runEngineSteps(deps, active);

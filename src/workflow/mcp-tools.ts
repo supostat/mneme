@@ -15,6 +15,7 @@ import type { StepDefinition } from "./failure-policy";
 import { phaseDocumentsFromSpec } from "./from-spec";
 import { HARVEST_BODY_LIMIT_RULE } from "./harvest-artifacts";
 import type { PhaseArtifact } from "./harvest-artifacts";
+import { readMigratedSpec } from "./migrated-spec";
 import { applyMigration, planMigration, specSlug } from "./migration";
 import type { MigrationPlan, MigrationReport } from "./migration";
 import {
@@ -30,6 +31,7 @@ import type { PhaseDocument } from "./phase-document";
 import { buildPhaseGraph } from "./phase-graph";
 import { applyStepResult, initialRun } from "./reducer";
 import type { RunDefinition, StepResult } from "./reducer";
+import { resolveBaseCommit } from "./run-base-commit";
 import { resolveCurrentBranch } from "./run-branch";
 import {
   describePending,
@@ -46,7 +48,7 @@ import { abandonedRunIds, isFinalStep, pendingDirectiveOf, restoreRuns } from ".
 import type { ReadableRun, RunRetrievalConfig } from "./run-events";
 import { appendStepApplied, applyGatedFinalStep, applyHarvest, echoMatches, runEngineSteps } from "./run-executor";
 import { runAbandonedPayload, runStartedPayload } from "./run-payloads";
-import type { UsedNoteRef } from "./run-payloads";
+import type { RunBaseCommit, RunSpecOrigin, UsedNoteRef } from "./run-payloads";
 import { USED_NOTES_WITHOUT_HARVEST } from "./used-notes";
 import { inspectRuns, surveyRuns } from "./run-survey";
 import { renderSurveyLine, renderSurveyMap, renderSurveyOffBranch } from "./run-survey-rendering";
@@ -54,10 +56,14 @@ import { renderSurveyLine, renderSurveyMap, renderSurveyOffBranch } from "./run-
 export class WorkflowToolError extends Error {}
 
 export const WORKFLOW_START_DESCRIPTION =
-  "Start a workflow run anchored to the CURRENT git branch. phases are phase-document markdown " +
-  "texts; steps define the retry/failure policy applied inside every phase; run state lives only " +
-  "in the append-only event log. If this branch already has an unfinished run, its run_id is " +
-  "returned and the submitted definition is IGNORED. Call workflow_step for the first directive.";
+  "Start a workflow run anchored to the CURRENT git branch. Pass exactly one phase source: " +
+  "spec_slug names a spec workflow_migrate already wrote into this project's corpus, and the engine " +
+  "reads its phase files and its archived Knowledge itself; phases are phase-document markdown texts " +
+  "(the run then records no spec). steps define the retry/failure policy applied inside every phase; " +
+  "run state lives only in the append-only event log, which also records the spec and the project " +
+  "HEAD the run started from. If this branch already has an unfinished run, its run_id is returned " +
+  "and the submitted definition is IGNORED (nothing is read). Call workflow_step for the first " +
+  "directive.";
 export const WORKFLOW_STEP_DESCRIPTION =
   "Advance or inspect the current branch's workflow run. The reducer decides ALL sequencing; the " +
   "caller never chooses the next step - it only executes the pending directive and submits the " +
@@ -102,7 +108,8 @@ export const WORKFLOW_SURVEY_DESCRIPTION =
   "tool never starts, advances, or submits anything.";
 
 export const WORKFLOW_START_INPUT = {
-  phases: z.array(z.string()).min(1),
+  phases: z.array(z.string()).min(1).optional(),
+  spec_slug: z.string().optional(),
   steps: z
     .array(
       z.object({
@@ -178,7 +185,8 @@ export const WORKFLOW_STEP_INPUT = {
 };
 
 export interface WorkflowStartArgs {
-  phases: string[];
+  phases?: string[];
+  spec_slug?: string;
   steps: Array<{
     id: string;
     max_attempts: number;
@@ -335,6 +343,7 @@ function renderMigrationApplied(
 }
 
 export async function workflowStartTool(deps: StagingDeps, args: WorkflowStartArgs): Promise<CallToolResult> {
+  const sourceArgument = phaseSourceOf(args);
   const resolution = await resolveCurrentBranch(deps.projectRoot);
   if (resolution.kind === "git-error") {
     throw new WorkflowToolError("cannot start a workflow run: git failed to resolve the current branch");
@@ -346,7 +355,9 @@ export async function workflowStartTool(deps: StagingDeps, args: WorkflowStartAr
   if (survey.activeRun !== null) {
     return textResult(joinSections([renderExistingRunNotice(survey.activeRun.runId), ...surveySections(survey)]));
   }
-  const definition = buildDefinitionFromArgs(args);
+  const source = readPhaseSource(deps, sourceArgument);
+  const baseCommit = await resolveRunBaseCommit(deps.projectRoot);
+  const definition = buildDefinition(source.documents, args);
   const retrieval: RunRetrievalConfig = {
     recallBudget: args.recall_budget ?? deps.config.recall.budget,
     recallAnchors: args.recall_anchors ?? {},
@@ -357,7 +368,7 @@ export async function workflowStartTool(deps: StagingDeps, args: WorkflowStartAr
   initialRun(definition); // re-validates the step policy before anything is persisted
   const runId = deps.idFactory();
   deps.eventWriter.append({
-    ...runStartedPayload(runId, resolution.name, definition, retrieval),
+    ...runStartedPayload(runId, resolution.name, definition, retrieval, { spec: source.origin, baseCommit }),
     type: "workflow_run_started",
   });
   return textResult(joinSections([renderRunStarted(runId, resolution.name), ...surveySections(survey)]));
@@ -536,8 +547,42 @@ function requireMatchingRunId(args: WorkflowStepArgs, active: ReadableRun, submi
   }
 }
 
-function buildDefinitionFromArgs(args: WorkflowStartArgs): RunDefinition {
-  const documents = args.phases.map(parsePhaseDocument);
+type PhaseSourceArgument = { kind: "slug"; slug: string } | { kind: "texts"; texts: string[] };
+
+// Checked before git, the log or the corpus is touched: a start names its phases exactly one way.
+function phaseSourceOf(args: WorkflowStartArgs): PhaseSourceArgument {
+  if (args.phases !== undefined && args.spec_slug !== undefined) {
+    throw new WorkflowToolError("pass phases or spec_slug, not both");
+  }
+  if (args.spec_slug !== undefined) return { kind: "slug", slug: args.spec_slug };
+  if (args.phases !== undefined) return { kind: "texts", texts: args.phases };
+  throw new WorkflowToolError("pass phases or spec_slug: neither was given");
+}
+
+interface PhaseSource {
+  documents: PhaseDocument[];
+  origin: RunSpecOrigin;
+}
+
+// A slug is read through the engine's own corpus directory, whatever the corpus is named; texts are
+// parsed as given and record no spec — the engine never infers a slug from them.
+function readPhaseSource(deps: StagingDeps, argument: PhaseSourceArgument): PhaseSource {
+  if (argument.kind === "slug") {
+    const spec = readMigratedSpec(deps.corpus.corpusDir, argument.slug);
+    return { documents: spec.documents, origin: { kind: "spec", slug: spec.slug, knowledge: spec.knowledge } };
+  }
+  return { documents: argument.texts.map(parsePhaseDocument), origin: { kind: "inline" } };
+}
+
+async function resolveRunBaseCommit(projectRoot: string): Promise<RunBaseCommit> {
+  const resolution = await resolveBaseCommit(projectRoot);
+  if (resolution.kind === "git-error") {
+    throw new WorkflowToolError("cannot start a workflow run: git failed to resolve the project HEAD");
+  }
+  return resolution;
+}
+
+function buildDefinition(documents: PhaseDocument[], args: WorkflowStartArgs): RunDefinition {
   return {
     graph: buildPhaseGraph(documents),
     steps: args.steps.map(stepDefinitionFromArgs),

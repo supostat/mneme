@@ -23,6 +23,10 @@ import type { DoneWhenCriterion } from "./phase-document";
 import { buildPhaseGraph } from "./phase-graph";
 import type { RunDefinition } from "./reducer";
 import { runStartedPayload } from "./run-payloads";
+import type { RunProvenance } from "./run-payloads";
+
+// Seeded starts record the provenance of a run started from phase texts; no test here reads it.
+const INLINE_PROVENANCE: RunProvenance = { spec: { kind: "inline" }, baseCommit: { kind: "no-commits" } };
 
 const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
@@ -706,11 +710,11 @@ describe("workflow log anomaly surfacing", () => {
     const bench = await makeWorkbench();
     const writer = await workbenchEventWriter(bench);
     writer.append({
-      ...runStartedPayload(ulid(80), "main", seededDefinition("phase-one"), SEEDED_RETRIEVAL),
+      ...runStartedPayload(ulid(80), "main", seededDefinition("phase-one"), SEEDED_RETRIEVAL, INLINE_PROVENANCE),
       type: "workflow_run_started",
     });
     writer.append({
-      ...runStartedPayload(ulid(81), "main", seededDefinition("phase-one"), SEEDED_RETRIEVAL),
+      ...runStartedPayload(ulid(81), "main", seededDefinition("phase-one"), SEEDED_RETRIEVAL, INLINE_PROVENANCE),
       type: "workflow_run_started",
     });
 
@@ -1632,5 +1636,133 @@ describe("workflow_survey", () => {
 describe("workflow_step description", () => {
   test("names the harvest body limit, so the agent knows it before the first submission", () => {
     expect(WORKFLOW_STEP_DESCRIPTION).toContain(HARVEST_BODY_LIMIT_RULE);
+  });
+});
+
+// The sample spec with a Knowledge section whose bullet continues on a second line, so the archive's
+// Knowledge is observable in the folded form from-spec gives it.
+const SLUG_START_SPEC = ["# Knowledge", "", "- **Rule.** read the archive", "  across two lines.", "", MIGRATE_SAMPLE_SPEC].join("\n");
+const SLUG_START_KNOWLEDGE = ["**Rule.** read the archive across two lines."];
+const SAMPLE_SLUG = "sample-spec";
+
+describe("workflow start by spec_slug", () => {
+  // The spec is migrated through the real tool, so the start reads exactly what migrate wrote.
+  async function migratedBench(): Promise<Workbench> {
+    const bench = await makeWorkbench();
+    writeFileSync(join(bench.projectRoot, SPEC_FILE_NAME), SLUG_START_SPEC);
+    await callText(bench.client, "workflow_migrate", { spec_path: SPEC_FILE_NAME, apply: true });
+    return bench;
+  }
+
+  async function projectHead(projectRoot: string): Promise<string> {
+    return (await runGit(projectRoot, ["rev-parse", "HEAD"])).stdout.trim();
+  }
+
+  async function startRefusal(client: Client, args: Record<string, unknown>): Promise<string> {
+    const result = await client.callTool({ name: "workflow_start", arguments: args });
+    expect(result.isError).toBe(true);
+    return (result.content as Array<{ text: string }>)[0]!.text;
+  }
+
+  function slugArgs(slug: string): Record<string, unknown> {
+    return { spec_slug: slug, steps: SINGLE_STEP, max_iterations: 10 };
+  }
+
+  test("a start by spec_slug reads the migrated phases through the corpus and records the spec and the project HEAD", async () => {
+    const bench = await migratedBench();
+
+    const runId = await startRun(bench.client, slugArgs(SAMPLE_SLUG));
+
+    const started = eventsOfType(await loggedEvents(bench), "workflow_run_started");
+    expect(started.length).toBe(1);
+    expect(started[0]!["run_id"]).toBe(runId);
+    expect(started[0]!["spec"]).toEqual({ slug: SAMPLE_SLUG, knowledge: SLUG_START_KNOWLEDGE });
+    expect(started[0]!["base_commit"]).toBe(await projectHead(bench.projectRoot));
+    const phases = (started[0]!["definition"] as { phases: Array<{ id: string; deps: string[] }> }).phases;
+    expect(phases.map((phase) => [phase.id, phase.deps])).toEqual([
+      ["parse-input", []],
+      ["store-records", ["parse-input"]],
+    ]);
+    expect(await callText(bench.client, "workflow_step", {})).toContain("phase: parse-input");
+  });
+
+  test("phases and spec_slug together, or neither, are refused before anything is read or written", async () => {
+    const bench = await makeWorkbench();
+
+    const both = await startRefusal(bench.client, { ...slugArgs("nowhere"), phases: [phaseText("phase-one")] });
+    const neither = await startRefusal(bench.client, { steps: SINGLE_STEP, max_iterations: 10 });
+
+    expect(both).toBe("Error: pass phases or spec_slug, not both");
+    expect(neither).toBe("Error: pass phases or spec_slug: neither was given");
+    expect(eventsOfType(await loggedEvents(bench), "workflow_run_started")).toEqual([]);
+  });
+
+  test("an unknown slug or a phase file that does not parse refuses the start with no started event", async () => {
+    const bench = await migratedBench();
+    const corpus = await resolveCorpus(bench.projectRoot, { corpusHome: bench.corpusHome });
+
+    const unknown = await startRefusal(bench.client, slugArgs("nowhere"));
+    writeFileSync(join(corpus.corpusDir, WORKFLOW_PHASE_DIR, SAMPLE_SLUG, "phase-zz-broken.md"), "not a phase document\n");
+    const broken = await startRefusal(bench.client, slugArgs(SAMPLE_SLUG));
+
+    expect(unknown).toBe(`Error: no migrated spec "nowhere" in this corpus; migrated specs: ${SAMPLE_SLUG}`);
+    expect(broken).toStartWith(
+      `Error: phase file ${join(WORKFLOW_PHASE_DIR, SAMPLE_SLUG, "phase-zz-broken.md")} does not parse: `,
+    );
+    expect(eventsOfType(await loggedEvents(bench), "workflow_run_started")).toEqual([]);
+  });
+
+  test("an unfinished run ignores spec_slug and reads nothing: even an unknown slug answers with the existing run", async () => {
+    const bench = await makeWorkbench();
+    const runId = await startRun(bench.client, startArgs([phaseText("phase-one")]));
+
+    const result = await bench.client.callTool({ name: "workflow_start", arguments: slugArgs("nowhere") });
+
+    expect(result.isError).toBeFalsy();
+    expect((result.content as Array<{ text: string }>)[0]!.text).toContain(
+      `NOTICE: an unfinished workflow run already exists on this branch: ${runId}.`,
+    );
+    expect(eventsOfType(await loggedEvents(bench), "workflow_run_started").length).toBe(1);
+  });
+
+  test("a start from phase texts records no spec and still records the project HEAD", async () => {
+    const bench = await makeWorkbench();
+
+    await startRun(bench.client, startArgs([phaseText("phase-one")]));
+
+    const [started] = eventsOfType(await loggedEvents(bench), "workflow_run_started");
+    expect(started!["spec"]).toBeNull();
+    expect(started!["base_commit"]).toBe(await projectHead(bench.projectRoot));
+  });
+
+  test("a start in a repository without commits records no base commit", async () => {
+    const projectRoot = mkdtempSync(join(tmpdir(), "mneme-wf-unborn-"));
+    await initRepo(projectRoot);
+    const corpusHome = mkdtempSync(join(tmpdir(), "mneme-wf-home-"));
+    const client = await connect({ projectRoot, corpusHome, embeddings: bagClient(), idFactory: sequentialIds(), clock: fixedClock });
+
+    await startRun(client, startArgs([phaseText("phase-one")]));
+
+    const corpus = await resolveCorpus(projectRoot, { corpusHome });
+    const [started] = eventsOfType(readEvents(corpus.eventsDir), "workflow_run_started");
+    expect(started!["spec"]).toBeNull();
+    expect(started!["base_commit"]).toBeNull();
+  });
+
+  test("a corpus named in .mneme.json migrates and starts by slug through its own directory", async () => {
+    const projectRoot = await buildProjectRepo();
+    writeFileSync(join(projectRoot, ".mneme.json"), JSON.stringify({ corpus: { name: "named-corpus" } }));
+    writeFileSync(join(projectRoot, SPEC_FILE_NAME), SLUG_START_SPEC);
+    const corpusHome = mkdtempSync(join(tmpdir(), "mneme-wf-home-"));
+    const client = await connect({ projectRoot, corpusHome, embeddings: bagClient(), idFactory: sequentialIds(), clock: fixedClock });
+    await callText(client, "workflow_migrate", { spec_path: SPEC_FILE_NAME, apply: true });
+
+    await startRun(client, slugArgs(SAMPLE_SLUG));
+
+    const named = await resolveCorpus(projectRoot, { corpusHome, corpusName: "named-corpus" });
+    expect(named.corpusDir).toBe(join(corpusHome, "named-corpus"));
+    expect(existsSync(join(named.corpusDir, WORKFLOW_PHASE_DIR, SAMPLE_SLUG))).toBe(true);
+    const [started] = eventsOfType(readEvents(named.eventsDir), "workflow_run_started");
+    expect(started!["spec"]).toEqual({ slug: SAMPLE_SLUG, knowledge: SLUG_START_KNOWLEDGE });
   });
 });

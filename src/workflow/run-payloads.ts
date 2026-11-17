@@ -55,13 +55,31 @@ export interface StepApplication {
   stagedNotes: StagedNoteRef[] | null;
 }
 
+// Where a run came from (schema v25). The spec is a migrated spec named by its slug, with the
+// archive's Knowledge as the start read it (null when the archive was absent), or phases passed as
+// text; the base commit is the project HEAD at start, or none in a repository without commits.
+export type RunSpecOrigin = { kind: "spec"; slug: string; knowledge: string[] | null } | { kind: "inline" };
+export type RunBaseCommit = { kind: "commit"; sha: string } | { kind: "no-commits" };
+
+export interface RunProvenance {
+  spec: RunSpecOrigin;
+  baseCommit: RunBaseCommit;
+}
+
 export function runStartedPayload(
   runId: string,
   branch: string,
   definition: RunDefinition,
   retrieval: RunRetrievalConfig,
+  provenance: RunProvenance,
 ): Record<string, unknown> {
-  return { run_id: runId, branch, definition: definitionToPayload(definition, retrieval) };
+  return {
+    run_id: runId,
+    branch,
+    definition: definitionToPayload(definition, retrieval),
+    spec: provenance.spec.kind === "spec" ? { slug: provenance.spec.slug, knowledge: provenance.spec.knowledge } : null,
+    base_commit: provenance.baseCommit.kind === "commit" ? provenance.baseCommit.sha : null,
+  };
 }
 
 export function stepAppliedPayload(
