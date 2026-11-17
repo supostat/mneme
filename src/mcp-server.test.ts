@@ -1000,6 +1000,26 @@ describe("mcp-server map tools", () => {
     expect(await callText(client, "map_list", {})).toBe("The project map is empty.");
   });
 
+  test("map_list with anchors: true prints each section's commit and anchors in one call; with an id too it is refused", async () => {
+    const projectRoot = await buildProjectRepo();
+    const corpusHome = corpusHomeDir();
+    const projectHead = (await runGit(projectRoot, ["rev-parse", "HEAD"])).stdout.trim();
+    const client = await connect({ projectRoot, corpusHome, embeddings: bagClient(), idFactory: sequentialIds(), clock: fixedClock });
+    await callText(client, "map_put", BILLING);
+
+    const anchors = await callText(client, "map_list", { anchors: true });
+    const refused = await client.callTool({ name: "map_list", arguments: { id: "billing", anchors: true } });
+    const overview = await callText(client, "map_list", { anchors: false });
+
+    expect(anchors).toBe(`billing [domain] commit ${projectHead} anchors: src/a.ts`);
+    expect(refused.isError).toBe(true);
+    expect((refused.content as Array<{ text: string }>)[0]!.text).toBe("Error: pass id or anchors: true, not both");
+    expect(overview.split("\n")).toEqual([
+      "billing [domain] anchors: 1, dead: 0, depends_on: (none), terms: 2 — Billing issues invoices.",
+      "Bodies are not listed; call map_list with an id to read one section in full.",
+    ]);
+  });
+
   test("a put and a delete whose rebuild fails answer with the three lines, not an error; the next recall catches the index up", async () => {
     const projectRoot = await buildProjectRepo();
     const corpusHome = corpusHomeDir();
@@ -1082,6 +1102,9 @@ describe("mcp-server map tools", () => {
 
     expect(descriptionOf("map_put")).toContain(MAP_SECTION_LIMIT_RULE);
     expect(descriptionOf("map_put")).toContain("INDEX.md and glossary.md are derived — never write them");
+    expect(descriptionOf("map_list")).toContain(
+      "With anchors: true (never together with id): one line per section with the project commit it was written at and its full anchor list, no bodies",
+    );
     for (const name of ["map_put", "map_delete"]) {
       expect(descriptionOf(name)).toContain("no human gate: the map is a synthetic layer the plugin rebuilds");
     }

@@ -12,12 +12,20 @@ import { EventWriter, readEvents } from "../events";
 import type { StoredEvent } from "../events";
 import { initRepo, runGit } from "../git";
 import { openReadOnlyDatabase } from "../index-db";
-import { formatMapDelete, formatMapList } from "../mcp-rendering";
+import { formatMapAnchors, formatMapDelete, formatMapList } from "../mcp-rendering";
 import { recall } from "../recall";
 import type { StagingDeps } from "../staging";
 import { MapSectionValidationError, parseMapSection } from "./map-section";
 import { MAP_INDEX_HEADING, writeMapSection } from "./map-store";
-import { MapToolError, mapDelete, mapList, mapPut, showMapSection } from "./map-tools";
+import {
+  MapToolError,
+  listMapAnchors,
+  mapDelete,
+  mapList,
+  mapPut,
+  requireOneListingForm,
+  showMapSection,
+} from "./map-tools";
 import type { MapPutInput } from "./map-tools";
 
 // Real deps end to end: a real project repository, a real corpus repository, the real index and the
@@ -524,5 +532,48 @@ describe("mapList and showMapSection", () => {
     });
     expect(() => showMapSection(deps.corpus, "nowhere")).toThrow('no map section "nowhere" exists');
     expect(() => showMapSection(deps.corpus, "Nowhere")).toThrow('invalid map section id: "Nowhere"');
+  });
+});
+
+describe("listMapAnchors and formatMapAnchors", () => {
+  test("print every section's commit and whole anchor list, domains then flows by id, and no body", async () => {
+    const { deps, projectHead } = await makeWorkbench();
+    const twentyAnchors = Array.from({ length: 20 }, (_, index) => `src/billing/part-${String(index + 1).padStart(2, "0")}.ts`);
+    await mapPut(deps, ORDER_TO_INVOICE);
+    await mapPut(deps, { ...BILLING, anchors: twentyAnchors });
+    writeFileSync(join(deps.projectRoot, "src/b.ts"), "more\n");
+    await runGit(deps.projectRoot, ["add", "."]);
+    await runGit(deps.projectRoot, ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "next"]);
+    const movedHead = (await runGit(deps.projectRoot, ["rev-parse", "HEAD"])).stdout.trim();
+    await mapPut(deps, { kind: "domain", id: "orders", body: "Orders are placed by customers.", anchors: ["src/b.ts"] });
+
+    const listed = listMapAnchors(deps.corpus);
+    const printed = formatMapAnchors(listed);
+
+    expect(movedHead).not.toBe(projectHead);
+    expect(listed[0]!.anchors).toHaveLength(20);
+    expect(printed.split("\n")).toEqual([
+      `billing [domain] commit ${projectHead} anchors: ${twentyAnchors.join(", ")}`,
+      `orders [domain] commit ${movedHead} anchors: src/b.ts`,
+      `order-to-invoice [flow] commit ${projectHead} anchors: (none)`,
+    ]);
+    for (const bodyLine of [...BILLING.body.split("\n"), ...ORDER_TO_INVOICE.body.split("\n"), "Orders are placed by customers."]) {
+      expect(printed).not.toContain(bodyLine);
+    }
+  });
+
+  test("an empty map prints the empty-map line", async () => {
+    const { deps } = await makeWorkbench();
+
+    expect(formatMapAnchors(listMapAnchors(deps.corpus))).toBe("The project map is empty.");
+  });
+
+  test("one listing form per call: an id together with anchors: true is refused, every other pair passes", () => {
+    expect(() => requireOneListingForm("billing", true)).toThrow(MapToolError);
+    expect(() => requireOneListingForm("billing", true)).toThrow("pass id or anchors: true, not both");
+    expect(() => requireOneListingForm("billing", false)).not.toThrow();
+    expect(() => requireOneListingForm("billing", undefined)).not.toThrow();
+    expect(() => requireOneListingForm(undefined, true)).not.toThrow();
+    expect(() => requireOneListingForm(undefined, undefined)).not.toThrow();
   });
 });

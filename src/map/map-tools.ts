@@ -74,6 +74,17 @@ export interface MapListResult {
   dangling: DanglingDependency[];
 }
 
+// What a consumer needs to tell which sections a change touches — the section's anchors and the
+// project HEAD it was written at — without the bodies the whole-section read carries.
+export interface MapAnchorsEntry {
+  id: string;
+  kind: MapSectionKind;
+  commit: string;
+  anchors: string[];
+}
+
+export const MAP_LIST_FORMS_REFUSAL = "pass id or anchors: true, not both";
+
 export async function mapPut(deps: StagingDeps, input: MapPutInput): Promise<MapWriteResult> {
   const commit = await resolveHead(deps.projectRoot);
   // The document is assembled and parsed back as the exact text the store will hold: what the
@@ -171,6 +182,24 @@ export async function mapList(deps: StagingDeps): Promise<MapListResult> {
     });
   }
   return { entries, dangling: findDanglingDependencies(sections) };
+}
+
+// Read straight from map/ in the listing's order: no git and no anchor liveness, so the form costs
+// no more than the files it reads — liveness stays the overview's business.
+export function listMapAnchors(corpus: Corpus): MapAnchorsEntry[] {
+  return readMapSections(corpus).map((section) => ({
+    id: section.frontmatter.id,
+    kind: section.frontmatter.kind,
+    commit: section.frontmatter.commit,
+    anchors: section.frontmatter.anchors,
+  }));
+}
+
+// map_list reads one form per call: the whole section by id, or every section's anchors.
+export function requireOneListingForm(id: string | undefined, anchors: boolean | undefined): void {
+  if (id !== undefined && anchors === true) {
+    throw new MapToolError(MAP_LIST_FORMS_REFUSAL);
+  }
 }
 
 // Read through the store, so a section whose file disagrees with its frontmatter is a named error

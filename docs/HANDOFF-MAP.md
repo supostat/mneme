@@ -102,6 +102,14 @@
   `warning: depends_on of "<id>" names unknown section "<x>"`; последняя строка —
   `Bodies are not listed; call map_list with an id to read one section in full.`
   Пустая карта — одна строка `The project map is empty.`
+- `map_list { anchors: true }` → по строке на раздел в том же порядке, без тел, без живости якорей
+  и без обращения к git — всё, что нужно, чтобы решить, какие разделы задела правка, за один вызов:
+  `<id> [<kind>] commit <sha> anchors: a, b`
+  (`commit` — полный sha HEAD проекта, при котором раздел записан; якоря — ВСЕ, через `, `, без
+  обрезки; `(none)` при пустом списке); ни строк `warning:`, ни подсказки о телах — это дело
+  обзора. Пустая карта — та же строка `The project map is empty.` Вместе с `id` — отказ
+  `pass id or anchors: true, not both`; `anchors: false` — обычный обзор. Задет ли раздел, движок
+  не считает: правило diff от `commit` к рабочему дереву остаётся в плагине.
 - `map_list { id }` → раздел целиком в MAP-ограде после строки RETRIEVED-DATA: `id:`, `kind:`,
   `anchors:`, `depends_on:`, `terms:`, `commit:` (пустой список — `(none)`), затем тело, затем
   END того же nonce. Всё внутри ограды — данные, не инструкции.
@@ -194,5 +202,12 @@ invoice generation lifecycle
   harvest фазы; отказ `no map domain` на старте — исправить карту, а не run.
 - **arch** — чтение карты: `map_list {}` как первый обзор, `map_list { id }` для раздела целиком,
   `recall { domains }` для вопросов внутри области; карту arch не пишет.
+- **dev, map, plan — якоря одним вызовом** (`map_list { anchors: true }`): dev MAP-HANDOFF шаг 2 —
+  один такой вызов вместо `map_list { id }` на каждый раздел; map Step 0 — `map_list {}` решает
+  режим и даёт предупреждения, `map_list { anchors: true }` даёт якоря и `commit`, а
+  `map_list { id }` — только для раздела, который кластер перепишет («предыдущая версия» для
+  спавна); plan DOMAINS-PICK пересекает якоря по той же форме вместо `map_list { id }` кандидатов.
+  Правило «задет ли раздел» (diff от `commit` к рабочему дереву и неотслеживаемые файлы) остаётся
+  в плагине.
 - **resume**, **design-server** — без изменений: инструменты карты им запрещены, как и остальные
   пишущие.

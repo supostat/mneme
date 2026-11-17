@@ -27,7 +27,8 @@ sections the plugin writes over the notes: `map_put` (create or replace a sectio
 corpus `map/` directly and committed with no human gate; `INDEX.md` and `glossary.md` are derived
 from the sections and never written by hand), `map_delete` (remove a section and rewrite the derived
 files), and `map_list` (one line per section with anchor health and a warning for every dependency
-that names an unknown section, or one whole section by id). A domain links the notes whose anchors
+that names an unknown section, one whole section by id, or — with `anchors: true` — every section's
+commit and full anchor list without bodies). A domain links the notes whose anchors
 intersect its own, so `recall` can be scoped to it. Five drive the workflow engine: `workflow_start` opens a run anchored to
 the current project branch; `workflow_step` is the live executor — it loops directives (recall at
 phase start, gated steps, harvest on close) decided by the reducer, resumes a branch's unfinished

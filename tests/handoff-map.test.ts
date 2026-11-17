@@ -12,9 +12,10 @@ import { initRepo, runGit } from "../src/git";
 import { openReadOnlyDatabase } from "../src/index-db";
 import { MAP_SECTION_LIMIT_RULE } from "../src/map/map-section";
 import { MAP_INDEX_HEADING, readSectionFiles, sectionPath } from "../src/map/map-store";
-import { mapDelete, mapPut } from "../src/map/map-tools";
+import { mapDelete, mapPut, requireOneListingForm } from "../src/map/map-tools";
 import type { MapListResult, MapPutInput } from "../src/map/map-tools";
 import {
+  formatMapAnchors,
   formatMapDelete,
   formatMapList,
   formatMapPut,
@@ -284,6 +285,23 @@ function roundTrips(workbench: Workbench): RoundTrip[] {
         "<первая строка тела>": "An order becomes an invoice.",
       },
       engineText: async () => formatMapList(CHECKOUT_LISTING),
+    },
+    {
+      template: "<id> [<kind>] commit <sha> anchors: a, b",
+      placeholderValues: {
+        "<id>": "checkout",
+        "<kind>": "flow",
+        "<sha>": SAMPLE_COMMIT,
+        a: "src/checkout",
+        b: "src/cart.ts",
+      },
+      engineText: async () =>
+        formatMapAnchors([{ id: "checkout", kind: "flow", commit: SAMPLE_COMMIT, anchors: ["src/checkout", "src/cart.ts"] }]),
+    },
+    {
+      template: "pass id or anchors: true, not both",
+      placeholderValues: {},
+      engineText: () => refusalOf(() => requireOneListingForm("billing", true)),
     },
     {
       template: 'warning: depends_on of "<id>" names unknown section "<x>"',

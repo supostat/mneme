@@ -193,6 +193,13 @@ describe("the project map, end to end", () => {
         `${MAP_INDEX_HEADING}\n\n- billing — Invoices are produced by billing.\n- orders — Orders are placed by customers.\n`,
       );
       expect(readFileSync(corpus.glossaryPath, "utf8")).toBe("| term | domain |\n| --- | --- |\n| invoice | billing |\n");
+      // One anchors call names every section's commit and anchors, which the per-id reads used to collect.
+      const projectHead = (await runGit(projectRoot, ["rev-parse", "HEAD"])).stdout.trim();
+      expect((await callText(session, "map_list", { anchors: true })).split("\n")).toEqual([
+        `billing [domain] commit ${projectHead} anchors: ${INVOICE_PATH}`,
+        `orders [domain] commit ${projectHead} anchors: ${ORDER_PATH}`,
+        `order-to-invoice [flow] commit ${projectHead} anchors: (none)`,
+      ]);
 
       // 2. A note anchored in billing crosses the gate; recall frames it with its domain first.
       const noteId = await acceptNote(session, "Invoices are produced by the billing module after the order closes.", INVOICE_PATH);

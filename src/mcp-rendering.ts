@@ -12,7 +12,7 @@ import { isJudgeFlagged } from "./corpus-adopt";
 import type { AdoptOutcome } from "./corpus-adopt";
 import type { IndexRefresh } from "./index-refresh";
 import type { MapSection } from "./map/map-section";
-import type { MapDeleteResult, MapListResult, MapWriteResult } from "./map/map-tools";
+import type { MapAnchorsEntry, MapDeleteResult, MapListResult, MapWriteResult } from "./map/map-tools";
 
 // Renders tool results as the delimiter-fenced text handed back to the LLM. Kept apart from the
 // server wiring so mcp-server.ts stays focused on dispatch, lifecycle and dependency assembly.
@@ -320,6 +320,16 @@ export function formatMapList(result: MapListResult): string {
     dangling.missing.map((missing) => `warning: depends_on of "${dangling.id}" names unknown section "${missing}"`),
   );
   return [...lines, ...warnings, MAP_LIST_BODIES_HINT].join("\n");
+}
+
+// One line per section with the project HEAD it was written at and EVERY anchor — the consumer
+// intersects them with changed paths, so the list is never cut. No bodies, no warnings, no hint:
+// the overview keeps those.
+export function formatMapAnchors(entries: MapAnchorsEntry[]): string {
+  if (entries.length === 0) return MAP_EMPTY_LINE;
+  return entries
+    .map((entry) => `${entry.id} [${entry.kind}] commit ${entry.commit} anchors: ${listOrNone(entry.anchors)}`)
+    .join("\n");
 }
 
 // The whole section under the MAP fence: every frontmatter field, then the body, retrieved DATA.
