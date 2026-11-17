@@ -183,8 +183,14 @@ function requireNoConflicts(writes: PlannedWrite[]): void {
   }
 }
 
+// The one slug grammar: migrate writes under it, and every reader of a migrated spec checks it before
+// a path is built from the slug.
+export function isSpecSlug(candidate: string): boolean {
+  return SPEC_SLUG_PATTERN.test(candidate);
+}
+
 function assertSafeSlug(specSlug: string): void {
-  if (!SPEC_SLUG_PATTERN.test(specSlug)) {
+  if (!isSpecSlug(specSlug)) {
     throw new MigrationError(`spec slug is not a safe path component: ${specSlug}`);
   }
 }

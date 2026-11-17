@@ -58,7 +58,7 @@ export function phaseDocumentsFromSpec(specText: string): PhaseDocument[] {
   if (specPhases.length === 0) {
     throw new PhaseGenerationError("the # Gameplan section contains no phase headings");
   }
-  const knowledge = extractKnowledgeSection(specText);
+  const knowledge = knowledgeOfSpec(specText);
   const documents: PhaseDocument[] = [];
   let previousId: string | null = null;
   for (const specPhase of specPhases) {
@@ -90,8 +90,9 @@ function extractGameplanSection(specText: string): string {
 // Total over its section past the preamble: after the first bullet, every non-blank line must be a
 // bullet, a continuation of the bullet above, or an HTML comment — anything else is a silent-loss
 // candidate and fails generation. Lines BEFORE the first bullet are the section preamble (the same
-// sanctioned skip as the gameplan's).
-function extractKnowledgeSection(specText: string): string[] {
+// sanctioned skip as the gameplan's). Exported because a run started from a migrated spec carries the
+// archive's Knowledge in its start event, extracted by this same rule.
+export function knowledgeOfSpec(specText: string): string[] {
   const lines = specText.split("\n");
   const startIndex = lines.indexOf(KNOWLEDGE_HEADING);
   if (startIndex === -1) {
