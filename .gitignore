@@ -48,6 +48,8 @@ docs/*
 !docs/HANDOFF-DIARY.md
 # Same reason: tests/handoff-judge.test.ts pins the judge's staging-card and remember-answer lines.
 !docs/HANDOFF-JUDGE.md
+# Same reason: tests/handoff-run-spec.test.ts pins the spec line, the workflow_spec answers and the start refusals.
+!docs/HANDOFF-RUN-SPEC.md
 
 # analytics package (generated, local-only)
 mneme-analytics/

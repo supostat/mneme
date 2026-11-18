@@ -107,6 +107,10 @@ export const WORKFLOW_SURVEY_DESCRIPTION =
   "Pass brief: true for a ONE-LINE summary instead of the map (for a session-start hook). This " +
   "tool never starts, advances, or submits anything.";
 
+// The two refusals of a start that names its phases zero or two ways, quoted by the run-spec handoff.
+export const START_BOTH_SOURCES_TEXT = "pass phases or spec_slug, not both";
+export const START_NO_SOURCE_TEXT = "pass phases or spec_slug: neither was given";
+
 export const WORKFLOW_START_INPUT = {
   phases: z.array(z.string()).min(1).optional(),
   spec_slug: z.string().optional(),
@@ -552,11 +556,11 @@ type PhaseSourceArgument = { kind: "slug"; slug: string } | { kind: "texts"; tex
 // Checked before git, the log or the corpus is touched: a start names its phases exactly one way.
 function phaseSourceOf(args: WorkflowStartArgs): PhaseSourceArgument {
   if (args.phases !== undefined && args.spec_slug !== undefined) {
-    throw new WorkflowToolError("pass phases or spec_slug, not both");
+    throw new WorkflowToolError(START_BOTH_SOURCES_TEXT);
   }
   if (args.spec_slug !== undefined) return { kind: "slug", slug: args.spec_slug };
   if (args.phases !== undefined) return { kind: "texts", texts: args.phases };
-  throw new WorkflowToolError("pass phases or spec_slug: neither was given");
+  throw new WorkflowToolError(START_NO_SOURCE_TEXT);
 }
 
 interface PhaseSource {
