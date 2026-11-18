@@ -8,6 +8,7 @@ import packageJson from "../package.json";
 import { runCli } from "./cli/dispatch";
 import { defaultIsProcessAlive } from "./diary/diary-session-facts";
 import { DIARY_FACTS_DESCRIPTION, DIARY_FACTS_INPUT, diaryFactsTool } from "./diary/diary-tool";
+import { WORKFLOW_SPEC_DESCRIPTION, WORKFLOW_SPEC_INPUT, workflowSpecTool } from "./workflow/spec-tool";
 import { resolveCorpus } from "./corpus";
 import type { Corpus } from "./corpus";
 import { EventWriter, readEvents } from "./events";
@@ -368,6 +369,9 @@ function registerTools(
   );
   server.registerTool("workflow_survey", { description: WORKFLOW_SURVEY_DESCRIPTION, inputSchema: WORKFLOW_SURVEY_INPUT }, (args) =>
     dispatch(context, "workflow_survey", (current) => workflowSurveyTool(buildStagingDeps(current), args)),
+  );
+  server.registerTool("workflow_spec", { description: WORKFLOW_SPEC_DESCRIPTION, inputSchema: WORKFLOW_SPEC_INPUT }, (args) =>
+    dispatch(context, "workflow_spec", (current) => workflowSpecTool({ corpus: current.corpus }, args)),
   );
   server.registerTool("diary_facts", { description: DIARY_FACTS_DESCRIPTION, inputSchema: DIARY_FACTS_INPUT }, (args) =>
     dispatch(context, "diary_facts", (current) => diaryFactsTool({ corpus: current.corpus, projectRoot, sessionId }, args)),

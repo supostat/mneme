@@ -216,6 +216,7 @@ function runFactsFixture(overrides: Partial<RunFacts> = {}): RunFacts {
       { phaseId: "tool", reached: true, attempts: 1, bundleGap: false, harvest: { kind: "not-run" }, gateFailures: [] },
       { phaseId: "cli", reached: false, attempts: 0, bundleGap: null, harvest: { kind: "not-run" }, gateFailures: [] },
     ],
+    provenance: null,
     ...overrides,
   };
 }

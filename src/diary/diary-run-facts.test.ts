@@ -395,3 +395,47 @@ describe("lastTerminalRunOf", () => {
     expect(lastTerminalRunOf(log.events(), "other")).toBeNull();
   });
 });
+
+describe("runFacts carries where the run came from", () => {
+  const SPEC_PROVENANCE: RunProvenance = {
+    spec: { kind: "spec", slug: "sample-spec", knowledge: ["**Rule.** keep it"] },
+    baseCommit: { kind: "commit", sha: "0123456789abcdef0123456789abcdef01234567" },
+  };
+
+  function abandonedRunWith(log: Log, startedEvent: EventInput): RunFacts {
+    log.append(startedEvent);
+    log.append({ ...runAbandonedPayload(RUN_ID, "main", "dropped"), type: "workflow_run_abandoned" });
+    return factsOf(runFacts(log.events(), RUN_ID));
+  }
+
+  function startedEventWith(provenance: RunProvenance): EventInput {
+    return { ...runStartedPayload(RUN_ID, "main", definition(["schema"], 2), RETRIEVAL, provenance), type: "workflow_run_started" };
+  }
+
+  test("a run started from a migrated spec carries its slug, Knowledge and base commit into the facts", () => {
+    const facts = abandonedRunWith(createLog(), startedEventWith(SPEC_PROVENANCE));
+
+    expect(facts.provenance).toEqual(SPEC_PROVENANCE);
+    expect(renderRunAnswer({ kind: "facts", facts }).split("\n")[2]).toBe(
+      "spec sample-spec · base commit 0123456789abcdef0123456789abcdef01234567",
+    );
+  });
+
+  test("a run started from texts in a repository without commits says so", () => {
+    const facts = abandonedRunWith(createLog(), startedEventWith(INLINE_PROVENANCE));
+
+    expect(facts.provenance).toEqual(INLINE_PROVENANCE);
+    expect(renderRunAnswer({ kind: "facts", facts }).split("\n")[2]).toBe("spec none · base commit none");
+  });
+
+  test("a run started before schema v25 reads as not recorded", () => {
+    const event = startedEventWith(SPEC_PROVENANCE) as Record<string, unknown>;
+    delete event["spec"];
+    delete event["base_commit"];
+
+    const facts = abandonedRunWith(createLog(), event as EventInput);
+
+    expect(facts.provenance).toBeNull();
+    expect(renderRunAnswer({ kind: "facts", facts }).split("\n")[2]).toBe("spec not recorded · base commit not recorded");
+  });
+});

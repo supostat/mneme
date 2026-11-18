@@ -1,9 +1,11 @@
 import type { z } from "zod";
 import { workflowStepAppliedRestore } from "../event-schema";
 import type { StoredEvent } from "../events";
-import { isNoteId } from "../note";
 import { restoreRuns } from "../workflow/run-events";
 import type { ReadableRun } from "../workflow/run-events";
+import { lookUpRun } from "../workflow/run-lookup";
+import type { RunLookupMiss } from "../workflow/run-lookup";
+import type { RunProvenance } from "../workflow/run-payloads";
 import { runIdsWithDiaryEntry } from "./diary-entries";
 
 // The facts a retro of one finished run stands on, read off the run's own events and nothing else:
@@ -70,23 +72,22 @@ export interface RunFacts {
   escalation: { phaseId: string; stepId: string; reason: string } | null;
   curation: CurationCounts;
   phases: PhaseFacts[];
+  // The spec and the project HEAD the run started from; null when its start predates schema v25.
+  provenance: RunProvenance | null;
 }
 
 export type RunFactsAnswer =
   | { kind: "facts"; facts: RunFacts }
-  | { kind: "invalid-id" }
-  | { kind: "unknown"; runId: string }
-  | { kind: "unreadable"; runId: string; problem: string }
+  | RunLookupMiss
   | { kind: "running"; runId: string; branch: string };
 
 const ABANDONED_EVENT = "workflow_run_abandoned";
 const STALE_EVENT = "workflow_run_marked_stale";
 
 export function runFacts(events: StoredEvent[], runId: string): RunFactsAnswer {
-  if (!isNoteId(runId)) return { kind: "invalid-id" };
-  const restored = restoreRuns(events).find((run) => run.runId === runId);
-  if (restored === undefined) return { kind: "unknown", runId };
-  if (restored.kind === "unreadable") return { kind: "unreadable", runId, problem: restored.problem };
+  const lookup = lookUpRun(events, runId);
+  if (lookup.kind !== "found") return lookup;
+  const restored = lookup.run;
   const ending = terminalEndingOf(events, restored);
   if (ending === null) return { kind: "running", runId, branch: restored.branch };
   const applications = stepApplicationsOf(events, runId);
@@ -106,6 +107,7 @@ export function runFacts(events: StoredEvent[], runId: string): RunFactsAnswer {
       phases: Object.keys(restored.definition.graph.phases).map((phaseId) =>
         phaseFactsOf(phaseId, applications.filter((application) => application.phase_id === phaseId)),
       ),
+      provenance: restored.provenance,
     },
   };
 }

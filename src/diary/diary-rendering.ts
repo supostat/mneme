@@ -1,3 +1,6 @@
+import { singleLine } from "../single-line";
+import { NOT_WRITTEN, renderRunLookupMiss } from "../workflow/run-lookup";
+import { renderSpecLine } from "../workflow/spec-rendering";
 import { READ_ONLY_NOTICE } from "../workflow/run-survey-rendering";
 import type { PhaseFacts, PhaseHarvest, RunFacts, RunFactsAnswer, TerminalRunRef } from "./diary-run-facts";
 import type { SessionFacts } from "./diary-session-facts";
@@ -12,8 +15,6 @@ export const DIARY_LINE_PREFIX = "diary: ";
 export const DIARY_BRIEF_NOTHING = "diary: nothing to note";
 export const MAX_BRIEF_GAPS = 5;
 export const MAX_BRIEF_QUERY_CODE_POINTS = 80;
-export const NOT_WRITTEN = "Nothing was written.";
-export const RUN_ID_INVALID_TEXT = `run_id is not a ULID or UUID. ${NOT_WRITTEN}`;
 export const BRIEF_WITH_RUN_ID_TEXT = `brief describes the session only: pass brief or run_id, not both. ${NOT_WRITTEN}`;
 
 const SEPARATOR = " · ";
@@ -35,10 +36,8 @@ export type BriefGaps =
   | { kind: "shared"; liveSessions: number };
 
 export function renderRunAnswer(answer: RunFactsAnswer): string {
-  if (answer.kind === "invalid-id") return RUN_ID_INVALID_TEXT;
-  if (answer.kind === "unknown") return `No workflow run ${answer.runId} in this corpus. ${NOT_WRITTEN}`;
-  if (answer.kind === "unreadable") {
-    return `Run ${answer.runId} cannot be read from the log: ${singleLine(answer.problem)}. ${NOT_WRITTEN}`;
+  if (answer.kind === "invalid-id" || answer.kind === "unknown" || answer.kind === "unreadable") {
+    return renderRunLookupMiss(answer);
   }
   if (answer.kind === "running") {
     return (
@@ -55,6 +54,7 @@ function renderRunFacts(facts: RunFacts): string {
     `Diary facts for run ${facts.runId} on branch "${singleLine(facts.branch)}". ${READ_ONLY_NOTICE}`,
     `status ${facts.status}${SEPARATOR}started ${facts.startedTs}${SEPARATOR}ended ${facts.endedTs ?? UNKNOWN_TS}` +
       `${SEPARATOR}iterations ${facts.iterationsUsed}/${facts.maxIterations}`,
+    renderSpecLine(facts.provenance),
     `diary entry: ${facts.diaryEntry ? "present" : "none"}`,
     ...(facts.escalation === null
       ? []
@@ -145,12 +145,6 @@ function gapSegment(gaps: BriefGaps): string | null {
   const quoted = shown.map((gap) => `"${clipForBrief(singleLine(gap.query))}"`).join(", ");
   const earlier = open.length - shown.length;
   return `memory gaps since the last note: ${quoted}${earlier === 0 ? "" : ` (+${earlier} earlier)`}`;
-}
-
-// Control characters (C0, DEL, C1) and the Unicode line and paragraph separators become spaces,
-// whitespace runs collapse to one space, and the ends are trimmed: the text can no longer break a line.
-export function singleLine(text: string): string {
-  return text.replace(/[\p{Cc}\u2028\u2029]/gu, " ").replace(/\s+/gu, " ").trim();
 }
 
 // Clipping counts code points, never UTF-16 units, so an astral character is never cut in half.

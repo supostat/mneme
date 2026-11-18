@@ -8,9 +8,9 @@ import {
   renderDiaryLine,
   renderRunAnswer,
   renderSessionFacts,
-  RUN_ID_INVALID_TEXT,
-  singleLine,
 } from "./diary-rendering";
+import { RUN_ID_INVALID_TEXT } from "../workflow/run-lookup";
+import type { RunProvenance } from "../workflow/run-payloads";
 import type { RunFacts } from "./diary-run-facts";
 import type { MemoryGap, SessionFacts } from "./diary-session-facts";
 
@@ -19,6 +19,11 @@ import type { MemoryGap, SessionFacts } from "./diary-session-facts";
 // one line everywhere; the brief line additionally caps and clips what a prompt hook injects.
 
 const RUN_ID = "01ARZ3NDEKTSV4RRFFQ69G5FA0";
+const BASE_SHA = "0123456789abcdef0123456789abcdef01234567";
+const SPEC_PROVENANCE: RunProvenance = {
+  spec: { kind: "spec", slug: "sample-spec", knowledge: ["**Rule.** keep it"] },
+  baseCommit: { kind: "commit", sha: BASE_SHA },
+};
 
 function runFacts(overrides: Partial<RunFacts> = {}): RunFacts {
   return {
@@ -55,6 +60,7 @@ function runFacts(overrides: Partial<RunFacts> = {}): RunFacts {
       { phaseId: "tool", reached: true, attempts: 1, bundleGap: false, harvest: { kind: "not-run" }, gateFailures: [] },
       { phaseId: "cli", reached: false, attempts: 0, bundleGap: null, harvest: { kind: "not-run" }, gateFailures: [] },
     ],
+    provenance: SPEC_PROVENANCE,
     ...overrides,
   };
 }
@@ -72,6 +78,7 @@ describe("renderRunAnswer", () => {
     expect(renderRunAnswer({ kind: "facts", facts: runFacts() }).split("\n")).toEqual([
       `Diary facts for run ${RUN_ID} on branch "main". Nothing was written: no event, no file, no stale mark.`,
       "status complete · started 2026-10-30T10:00:00.000Z · ended 2026-10-30T11:00:00.000Z · iterations 3/20",
+      `spec sample-spec · base commit ${BASE_SHA}`,
       "diary entry: none",
       "curation: staged 1 · accepted 1 · rejected 1 · superseded 0",
       "phase schema: attempts 2 · bundle gap yes · harvest bugfix 1, decision 2 · used notes 1",
@@ -94,11 +101,13 @@ describe("renderRunAnswer", () => {
         escalation: { phaseId: "schema", stepId: "implement", reason: "retry_budget_exhausted" },
         curation: { staged: 0, accepted: 0, rejected: 0, superseded: 0, uninstrumentedHarvests: 2 },
         phases: [],
+        provenance: null,
       }),
     });
 
     expect(rendered.split("\n").slice(1)).toEqual([
       "status escalated · started 2026-10-30T10:00:00.000Z · ended unknown · iterations 3/20",
+      "spec not recorded · base commit not recorded",
       "diary entry: present",
       "escalation: schema/implement — retry_budget_exhausted",
       "curation: staged 0 · accepted 0 · rejected 0 · superseded 0",
@@ -223,11 +232,7 @@ describe("renderDiaryLine", () => {
   });
 });
 
-describe("singleLine and clipForBrief", () => {
-  test("every control character and line separator becomes one space, ends trimmed", () => {
-    expect(singleLine("\ta\r\nb\u0085c\u2028d\u2029e\u0000f  g ")).toBe("a b c d e f g");
-  });
-
+describe("clipForBrief", () => {
   test("clipping counts code points: an astral character is never split", () => {
     const astral = "😀".repeat(MAX_BRIEF_QUERY_CODE_POINTS);
     const atLimit = clipForBrief(astral);

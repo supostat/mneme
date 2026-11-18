@@ -164,6 +164,7 @@ describe("mcp-server tool surface", () => {
       "stats",
       "workflow_abandon",
       "workflow_migrate",
+      "workflow_spec",
       "workflow_start",
       "workflow_step",
       "workflow_survey",

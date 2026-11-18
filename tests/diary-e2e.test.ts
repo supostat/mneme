@@ -257,9 +257,11 @@ describe("the diary over MCP: a run's facts, the curation of its notes and its e
 
       const fresh = await diaryFactsUntouched(session, corpusDir, { run_id: runId });
 
+      const projectHead = (await runGit(project.projectRoot, ["rev-parse", "HEAD"])).stdout.trim();
       expect(fresh.split("\n")).toEqual([
         `Diary facts for run ${runId} on branch "main". Nothing was written: no event, no file, no stale mark.`,
         "status complete · started 2026-10-30T10:00:00.000Z · ended 2026-10-30T10:00:00.000Z · iterations 2/10",
+        `spec none · base commit ${projectHead}`,
         "diary entry: none",
         "curation: staged 2 · accepted 0 · rejected 0 · superseded 0",
         "phase phase-one: attempts 2 · bundle gap yes · harvest bugfix 1, decision 1 · used notes 0",

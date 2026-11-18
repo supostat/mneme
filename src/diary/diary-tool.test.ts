@@ -12,7 +12,8 @@ import { initRepo, runGit } from "../git";
 import { createServer } from "../mcp-server";
 import { serializePhaseDocument } from "../workflow/phase-document";
 import { DIARY_TAG, runTag } from "./diary-entries";
-import { BRIEF_WITH_RUN_ID_TEXT, DIARY_BRIEF_NOTHING, RUN_ID_INVALID_TEXT } from "./diary-rendering";
+import { BRIEF_WITH_RUN_ID_TEXT, DIARY_BRIEF_NOTHING } from "./diary-rendering";
+import { RUN_ID_INVALID_TEXT } from "../workflow/run-lookup";
 
 // diary_facts through a real MCP server: a run driven to completion with the workflow tools, a
 // manual recall that finds nothing, then every form of the tool. The tool must answer each
@@ -128,10 +129,12 @@ describe("diary_facts over MCP", () => {
     const sessionForm = await call(bench, "diary_facts", {});
     const brief = await call(bench, "diary_facts", { brief: true });
 
+    const projectHead = (await runGit(bench.projectRoot, ["rev-parse", "HEAD"])).stdout.trim();
     expect(runForm.isError).toBe(false);
     expect(runForm.text.split("\n")).toEqual([
       `Diary facts for run ${runId} on branch "main". Nothing was written: no event, no file, no stale mark.`,
       "status complete · started 2026-10-30T10:00:00.000Z · ended 2026-10-30T10:00:00.000Z · iterations 1/10",
+      `spec none · base commit ${projectHead}`,
       "diary entry: none",
       "curation: staged 1 · accepted 0 · rejected 0 · superseded 0",
       "phase phase-one: attempts 1 · bundle gap yes · harvest decision 1 · used notes not instrumented",

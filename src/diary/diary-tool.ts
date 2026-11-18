@@ -17,7 +17,8 @@ import { sessionFacts } from "./diary-session-facts";
 export const DIARY_FACTS_DESCRIPTION =
   "Read the facts a diary retro stands on WITHOUT side effects: it reads the event log and git and " +
   "writes NOTHING — no event, no file, no stale mark. With run_id: the facts of one FINISHED run of " +
-  "any branch — branch, status, start and end, iterations; per phase the attempts, every gate " +
+  "any branch — branch, status, start and end, iterations; the spec it started from and the project " +
+  "HEAD at start (the line `spec <slug> · base commit <sha>`); per phase the attempts, every gate " +
   "failure with its criterion and reason, the harvest by note kind, the used-notes count and the " +
   "bundle's memory gap; the escalation; the curation of the notes the run staged (staged / accepted " +
   "/ rejected / superseded); and whether the run already has a diary entry (a note tagged diary " +

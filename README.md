@@ -29,15 +29,18 @@ from the sections and never written by hand), `map_delete` (remove a section and
 files), and `map_list` (one line per section with anchor health and a warning for every dependency
 that names an unknown section, one whole section by id, or — with `anchors: true` — every section's
 commit and full anchor list without bodies). A domain links the notes whose anchors
-intersect its own, so `recall` can be scoped to it. Five drive the workflow engine: `workflow_start` opens a run anchored to
-the current project branch; `workflow_step` is the live executor — it loops directives (recall at
+intersect its own, so `recall` can be scoped to it. Six drive the workflow engine: `workflow_start` opens a run anchored to
+the current project branch — from a migrated spec named by its slug or from phase texts — and records
+the spec and the project HEAD it started from; `workflow_step` is the live executor — it loops directives (recall at
 phase start, gated steps, harvest on close) decided by the reducer, resumes a branch's unfinished
 run from the event log after an interruption, and never silently resumes a run whose branch is gone;
 `workflow_migrate` converts a spec's gameplan into runnable phase files; `workflow_abandon`
 records a terminal human refusal of an unfinished run, distinct from failure; and `workflow_survey`
 is the read-only orientation — the current branch's run, its pending directive and last activity,
 staged-note count, and runs elsewhere, as a map or (with `brief: true`) a single line — writing
-nothing: no event, no file, no stale mark. The same binary answers `mneme survey --brief` from a
+nothing: no event, no file, no stale mark; `workflow_spec` is read-only too — the spec a run started
+from (its slug, base commit, Knowledge and every phase's done-when), a migrated spec as it is now, or
+the list of migrated specs, read through the engine's own corpus. The same binary answers `mneme survey --brief` from a
 shell: the brief line when the current branch has an unfinished run, nothing otherwise, exit 0
 either way and writing nothing — the orientation line a SessionStart hook prints. One feeds the
 agent's diary: `diary_facts` is read-only like the survey — given a `run_id` it returns the facts a
